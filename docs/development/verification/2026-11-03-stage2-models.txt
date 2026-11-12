@@ -1,0 +1,63 @@
+> uv run ruff check .
+All checks passed!
+
+exit=0
+
+> uv run ruff format --check .
+20 files already formatted
+
+exit=0
+
+> uv run mypy app/
+Success: no issues found in 13 source files
+
+exit=0
+
+> uv run pytest
+============================= test session starts =============================
+platform win32 -- Python 3.13.9, pytest-9.2.0, pluggy-1.7.0
+rootdir: D:\project\enterprise-agent\backend
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.16.0, asyncio-1.4.1.post1, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 14 items
+
+tests\test_config_logging.py .....                                       [ 35%]
+tests\test_database_integration.py .                                     [ 42%]
+tests\test_health.py ........                                            [100%]
+
+=============================== tests coverage ================================
+_______________ coverage: platform win32, python 3.13.9-final-0 _______________
+
+Name                         Stmts   Miss  Cover   Missing
+----------------------------------------------------------
+app\__init__.py                  0      0   100%
+app\api\__init__.py              0      0   100%
+app\api\health.py               28      0   100%
+app\core\__init__.py             0      0   100%
+app\core\config.py              34      0   100%
+app\core\database.py            16      0   100%
+app\core\errors.py              30      0   100%
+app\core\logging.py             18      0   100%
+app\main.py                     41      0   100%
+app\models\__init__.py           0      0   100%
+app\models\base.py               4      0   100%
+app\models\conversation.py      41      0   100%
+app\models\system.py             9      0   100%
+----------------------------------------------------------
+TOTAL                          221      0   100%
+Required test coverage of 80% reached. Total coverage: 100.00%
+============================= 14 passed in 8.52s ==============================
+
+exit=0
+
+> uv run alembic check
+No new upgrade operations detected.
+
+exit=0
+
+> uv run alembic current
+0002 (head)
+
+exit=0

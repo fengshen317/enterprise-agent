@@ -1,0 +1,15 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.9, pytest-9.2.0, pluggy-1.7.0
+rootdir: D:\project\enterprise-agent\backend
+configfile: pyproject.toml
+plugins: anyio-4.16.0, langsmith-0.14.17, asyncio-1.4.1.post1, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 65 items
+
+tests\test_task_validation.py .......................................... [ 64%]
+                                                                         [ 64%]
+tests\test_task_provider.py ......                                       [ 73%]
+tests\test_tasks_integration.py .................                        [100%]
+
+============================= 65 passed in 45.10s =============================
+

@@ -1,0 +1,24 @@
+# 本地环境与敏感配置
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+*.log
+.DS_Store
+.vscode/
+.idea/
+# 原型保留独立仓库，不嵌套提交
+prototype/
+prototype-*.tar.gz
+
+.local/

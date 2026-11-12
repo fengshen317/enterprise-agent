@@ -1,0 +1,29 @@
+阶段二验收摘要（根据本次工具返回记录整理，并非逐行原始终端日志）
+日期：2026-11-03（Asia/Shanghai）
+
+统一命令：node scripts/check.mjs --database
+退出码：0
+后端 Ruff：通过
+后端 Ruff format：29 files already formatted
+后端 mypy：Success: no issues found in 18 source files
+后端 pytest：32 passed in 24.20s
+总体 app 覆盖率：92.12%（609 statements, 48 missed，门禁 >=80%）
+前端 ESLint：通过
+前端 vue-tsc：通过
+前端 Vitest：4 files / 11 tests passed
+前端生产构建：通过；35 modules；JS 108.74 kB，gzip 42.80 kB
+
+真实模型独立验证：uv run python -m scripts.verify_real_chat
+verified: true
+model: deepseek-flash
+turn 1: completed, error_code=null, answer_characters=2
+turn 2: completed, error_code=null, answer_characters=11
+persisted_messages: 4
+context_remembered: true
+本次临时对话与消息已清理，未输出密钥。
+
+真实传输验证：test_live_sse_disconnect_keeps_generation
+本机 TCP HTTP/SSE 首帧含持久化部分内容；断开订阅后仍 running；取消后 cancelled；再次订阅收到 cancelled 终态。
+
+未执行真实浏览器视觉验收：浏览器访问宿主不可用。组件测试使用 jsdom。
+本机 8000 检查时仍运行旧后端，OpenAPI 中没有新问答路由；未擅自结束旧进程。

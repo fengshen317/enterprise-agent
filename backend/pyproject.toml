@@ -1,0 +1,53 @@
+[project]
+name = "enterprise-agent-backend"
+version = "0.1.0"
+description = "企业 Agent 工作台后端"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "fastapi>=0.115,<1.0",
+  "uvicorn[standard]>=0.34,<1.0",
+  "pydantic-settings>=2.8,<3.0",
+  "sqlalchemy[asyncio]>=2.0,<2.1",
+  "asyncpg>=0.30,<1.0",
+  "alembic>=1.15,<2.0",
+  "deepagents>=0.7.32",
+  "langchain-deepseek>=1.1.1",
+  "pwdlib[argon2]>=0.3,<1",
+  "croniter>=6.0,<7.0",
+  "tzdata>=2024.1",
+  "httpx>=0.28.1",
+  "python-multipart>=0.0.33",
+]
+
+[dependency-groups]
+dev = [
+  "httpx>=0.28,<1.0",
+  "pytest>=8.3,<10.0",
+  "pytest-asyncio>=0.25,<2.0",
+  "pytest-cov>=6,<8",
+  "ruff>=0.11,<1.0",
+  "mypy>=1.15,<2.0",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["croniter.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--cov=app --cov-report=term-missing --cov-fail-under=80"
+markers = ["integration: 需要独立测试 PostgreSQL 数据库"]
