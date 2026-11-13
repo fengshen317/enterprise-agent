@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import and_, case, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agents.context_types import ContextMessage, ContextState
@@ -266,6 +266,15 @@ class ChatStore:
             .order_by(Approval.requested_at.desc(), Approval.id.desc())
             .limit(1)
         )
+        if message is None:
+            # 失败的替代运行已经把可见回答指回原消息，快照必须用那条真实记录，不能另造一个 id。
+            message = await session.scalar(
+                select(Message).where(
+                    Message.conversation_id == run.conversation_id,
+                    Message.sequence == run.input_sequence + 1,
+                    Message.role == "assistant",
+                )
+            )
         conversation = await session.get(Conversation, run.conversation_id)
         if message is None:
             message_view = MessageView(
@@ -539,7 +548,11 @@ class ChatStore:
                     Run.input_sequence < run.input_sequence,
                     Run.superseded_by_run_id.is_(None),
                 )
-                .order_by(Run.input_sequence.desc(), Run.created_at.desc())
+                .order_by(
+                    Run.input_sequence.desc(),
+                    case((Run.status == "completed", 0), else_=1),
+                    Run.created_at.desc(),
+                )
                 .limit(1)
             )
             if previous is None:

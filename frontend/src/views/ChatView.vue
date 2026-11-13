@@ -58,6 +58,7 @@ let revision = 0
 let pending: { conversationId: string; content: string; key: string } | null = null
 let pendingRegenerate: { messageId: string; key: string } | null = null
 let replacing = false
+let reloading = false
 let alive = true
 
 function showError(value: unknown): void {
@@ -134,6 +135,13 @@ function applySnapshot(snapshot: Snapshot): void {
   approval.value = snapshot.approval ?? null
   applyUsage(snapshot.context_usage)
   const index = messages.value.findIndex(item => item.id === snapshot.message.id)
+  if (index < 0 && !isActive(snapshot.run)) {
+    if (!reloading) {
+      reloading = true
+      void loadConversation().finally(() => { reloading = false })
+    }
+    return
+  }
   if (index < 0) messages.value.push(snapshot.message)
   else messages.value[index] = snapshot.message
   if (!isActive(snapshot.run)) {

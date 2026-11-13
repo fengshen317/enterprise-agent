@@ -146,6 +146,26 @@ it('失败后在同一对话重新生成，不追加一条用户消息', async (
   expect(router.currentRoute.value.path).toBe('/chat/c1')
   wrapper.unmount()
 })
+it('失败替代运行的未知快照不会追加幽灵消息', async () => {
+  let receive: ((snapshot: Snapshot) => void) | undefined
+  vi.mocked(api.watchRun).mockImplementation((_id, onSnapshot) => { receive = onSnapshot; return vi.fn() })
+  const streaming: Snapshot = { run: { ...current.run, id: 'r2', status: 'running' }, message: { ...old.message, status: 'streaming', run_id: 'r2', content: '' } }
+  vi.mocked(api.getMessages).mockResolvedValue({ items: [first, streaming.message], has_more: false, active_run_id: 'r2' })
+  vi.mocked(api.getRun).mockResolvedValue(streaming)
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/chat/:conversationId?', component: ChatView }] })
+  await router.push('/chat/c1')
+  const wrapper = mount(ChatView, { global: { plugins: [router] } })
+  await flushPromises()
+  expect(receive).toBeTypeOf('function')
+  const restored: Snapshot = { run: old.run, message: { ...old.message, content: '原来的回答', status: 'completed' } }
+  vi.mocked(api.getMessages).mockResolvedValue({ items: [first, restored.message], has_more: false, active_run_id: null })
+  vi.mocked(api.getRun).mockResolvedValue(restored)
+  receive?.({ run: { ...current.run, id: 'r2', status: 'failed', error_message: '失败' }, message: { ...old.message, id: 'phantom', run_id: 'r2', content: '', status: 'interrupted' } })
+  await flushPromises()
+  expect(wrapper.text()).toContain('原来的回答')
+  expect(wrapper.findAll('.chat__message')).toHaveLength(2)
+  wrapper.unmount()
+})
 it('补充要求先停止正在运行的对话，再提交新要求', async () => {
   vi.mocked(api.getMessages).mockResolvedValue({ items: [first, current.message], has_more: false, active_run_id: 'r2' })
   vi.mocked(api.cancelRun).mockResolvedValue({ run: { ...current.run, status: 'cancelled' }, message: { ...current.message, status: 'interrupted' } })

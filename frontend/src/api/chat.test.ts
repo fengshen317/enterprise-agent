@@ -12,6 +12,13 @@ describe('问答接口', () => {
     expect(JSON.parse(fetcher.mock.calls[0]?.[1]?.body as string)).toEqual({ content: '问题', idempotency_key: 'same-key' })
     expect(() => parseSnapshot({ ...snapshot, message: { ...snapshot.message, conversation_id: 'other' } })).toThrow('数据格式')
     expect(() => parseSnapshot({ run: { ...snapshot.run, status: 'unknown' }, message: snapshot.message })).toThrow('数据格式')
+    const restored = parseSnapshot({
+      run: { ...snapshot.run, id: 'run-2', status: 'failed', error_message: '失败' },
+      message: { ...snapshot.message, run_id: 'run-1', content: '原来的回答', status: 'completed' },
+    })
+    expect(restored.message.id).toBe('msg-1')
+    expect(restored.message.run_id).toBe('run-1')
+    expect(() => parseSnapshot({ run: { ...snapshot.run, id: 'run-2', status: 'running' }, message: snapshot.message })).toThrow('数据格式')
   })
   it('快照覆盖与终态关闭连接，断线错误可展示', () => {
     class Source {

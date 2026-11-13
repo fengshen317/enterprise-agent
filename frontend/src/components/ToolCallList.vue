@@ -112,8 +112,15 @@ function toggle(event: Event): void {
   else { generation++; clearTimeout(timer); loading.value = false }
 }
 onMounted(() => { if (opened.value) void load() })
-watch(() => props.runId, () => { loaded.value = false; if (opened.value) void load() })
-watch(() => props.messageStatus, () => { if (opened.value) void load() })
+watch(() => props.runId, () => {
+  loaded.value = false
+  if (props.messageStatus === 'streaming') opened.value = true
+  if (opened.value) void load()
+})
+watch(() => props.messageStatus, status => {
+  if (status === 'streaming') opened.value = true
+  if (opened.value) void load()
+})
 onBeforeUnmount(() => { alive = false; generation++; clearTimeout(timer); clearInterval(clock) })
 </script>
 

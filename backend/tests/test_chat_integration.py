@@ -7,6 +7,7 @@ import socket
 import subprocess
 import sys
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -573,6 +574,9 @@ async def test_failed_regenerate_restores_answer(chat: tuple[FastAPI, AsyncClien
     assert regenerated.status_code == 202, regenerated.text
     failed = await settled(client, regenerated.json()["run"]["id"])
     assert failed["run"]["status"] == "failed"
+    assert failed["message"]["id"] == assistant_id
+    assert failed["message"]["run_id"] == created["run"]["id"]
+    assert failed["message"]["content"] == original
     page = (await client.get(f"/api/conversations/{conversation}/messages")).json()
     assert page["items"][1]["content"] == original
     assert page["items"][1]["status"] == "completed"
@@ -581,6 +585,48 @@ async def test_failed_regenerate_restores_answer(chat: tuple[FastAPI, AsyncClien
     follow = await submit(client, conversation, "下一问", "keep-follow")
     await settled(client, follow["run"]["id"])
     assert original in json.dumps(provider.histories[-1], ensure_ascii=False)
+
+
+async def test_agent_context_keeps_restored_plan(chat: tuple[FastAPI, AsyncClient, ControlledProvider]) -> None:
+    """失败的替代运行不盖过已恢复的成功计划。"""
+    app, client, provider = chat
+    conversation = await new_conversation(client)
+    created = await submit(client, conversation, "先做计划", "plan-1")
+    completed = await settled(client, created["run"]["id"])
+    from app.models.tool_call import ToolCall
+
+    async with app.state.chat_runtime.database.session_factory.begin() as session:
+        session.add(
+            ToolCall(
+                run_id=UUID(created["run"]["id"]),
+                tool_name="update_plan",
+                status="completed",
+                result='{"steps":[{"title":"计划甲","status":"completed"}]}',
+                finished_at=datetime.now(UTC),
+            )
+        )
+    provider.mode = "fail"
+    regenerated = await client.post(
+        f"/api/messages/{completed['message']['id']}/regenerate", json={"idempotency_key": "plan-regen"}
+    )
+    assert regenerated.status_code == 202, regenerated.text
+    failed = await settled(client, regenerated.json()["run"]["id"])
+    async with app.state.chat_runtime.database.session_factory.begin() as session:
+        session.add(
+            ToolCall(
+                run_id=UUID(failed["run"]["id"]),
+                tool_name="update_plan",
+                status="completed",
+                result='{"steps":[{"title":"失败计划","status":"completed"}]}',
+                finished_at=datetime.now(UTC),
+            )
+        )
+    provider.mode = "success"
+    follow = await submit(client, conversation, "继续", "plan-follow")
+    context = await app.state.chat_runtime.store.agent_context(UUID(follow["run"]["id"]))
+    assert "计划甲" in context
+    assert "失败计划" not in context
+    await settled(client, follow["run"]["id"])
 
 
 async def test_reasoning_stays_out_of_later_context(chat: tuple[FastAPI, AsyncClient, ControlledProvider]) -> None:

@@ -40,7 +40,9 @@ export function parseSnapshot(value: unknown): Snapshot {
   if (typeof run.id !== 'string' || typeof run.conversation_id !== 'string' || !RUN_STATUSES.includes(String(run.status)) || typeof run.model !== 'string' || !(run.error_code === null || typeof run.error_code === 'string') || !(run.error_message === null || typeof run.error_message === 'string')) return invalid()
   if ('phase' in run && !(run.phase === null || run.phase === 'compressing' || run.phase === 'generating')) return invalid()
   const message = parseMessage(value.message)
-  if (message.run_id !== run.id || message.conversation_id !== run.conversation_id) return invalid()
+  if (message.conversation_id !== run.conversation_id) return invalid()
+  const restored = message.run_id !== run.id && (run.status === 'failed' || run.status === 'cancelled')
+  if (message.run_id !== run.id && !restored) return invalid()
   const approval = value.approval === undefined || value.approval === null ? null : parseApproval(value.approval)
   const snapshot: Snapshot = approval ? { run: run as unknown as Run, message, approval } : { run: run as unknown as Run, message }
   if (value.context_usage != null) snapshot.context_usage = parseUsage(value.context_usage)

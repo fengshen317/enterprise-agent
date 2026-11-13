@@ -20,6 +20,17 @@ it('展开后才查询并展示真实执行结果', async () => {
   expect(wrapper.text()).toContain('包含本次')
   wrapper.unmount()
 })
+it('已完成的回答在原地重新生成时重新打开并读取新运行', async () => {
+  vi.mocked(getToolCalls).mockResolvedValue([])
+  const wrapper = mount(ToolCallList, { props: { runId: 'r1', messageStatus: 'completed' } })
+  expect(wrapper.get('details').attributes('open')).toBeUndefined()
+  expect(getToolCalls).not.toHaveBeenCalled()
+  await wrapper.setProps({ runId: 'r2', messageStatus: 'streaming' })
+  await flushPromises()
+  expect(wrapper.get('details').attributes('open')).toBe('')
+  expect(getToolCalls).toHaveBeenCalledWith('r2')
+  wrapper.unmount()
+})
 it('失败和没有调用不会展示成查询成功', async () => {
   vi.mocked(getToolCalls).mockResolvedValue([{ ...row, status: 'failed', result: null, error_code: 'TOOL_TIMEOUT' }])
   const wrapper = mount(ToolCallList, { props: { runId: 'r1', messageStatus: 'streaming' } })
