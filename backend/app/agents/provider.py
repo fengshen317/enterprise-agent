@@ -3,17 +3,69 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from importlib import import_module
 from typing import TYPE_CHECKING, Protocol
 
 from app.core.config import Settings
 from app.core.errors import ApplicationError
+from app.services.model_catalog import is_reasoner, max_tokens_for, thinking_extra
 
 if TYPE_CHECKING:
     from app.capabilities.spec import AgentAssembly
     from app.services.tools import ToolExecutor
 
 ChatHistory = list[tuple[str, str]]
+
+
+@dataclass(frozen=True)
+class StreamFragment:
+    """模型增量。思考过程与正文分开，摘要只使用正文。"""
+
+    content: str = ""
+    reasoning: str = ""
+
+
+def read_reasoning(message: object) -> str:
+    """从供应商消息中取出思考过程。
+
+    Args:
+        message: 模型返回的消息对象。
+
+    Returns:
+        思考文本；没有时为空字符串。
+    """
+    for source in (getattr(message, "additional_kwargs", None), getattr(message, "response_metadata", None)):
+        if isinstance(source, dict):
+            value = source.get("reasoning_content")
+            if isinstance(value, str) and value:
+                return value
+    direct = getattr(message, "reasoning_content", None)
+    return direct if isinstance(direct, str) else ""
+
+
+def read_prompt_tokens(message: object) -> int | None:
+    """读取本次请求的输入 token，用于校准字符估算。
+
+    Args:
+        message: 模型返回的消息对象。
+
+    Returns:
+        输入 token 数；供应商未返回时为空。
+    """
+    usage = getattr(message, "usage_metadata", None)
+    if isinstance(usage, dict):
+        value = usage.get("input_tokens") or usage.get("prompt_tokens")
+        if isinstance(value, int):
+            return value
+    meta = getattr(message, "response_metadata", None)
+    if isinstance(meta, dict):
+        token_usage = meta.get("token_usage")
+        if isinstance(token_usage, dict):
+            value = token_usage.get("prompt_tokens") or token_usage.get("input_tokens")
+            if isinstance(value, int):
+                return value
+    return None
 
 
 def load_agent_sdk() -> None:
@@ -36,24 +88,28 @@ class StreamProvider(Protocol):
         """在创建运行前确认本地配置可用。"""
         ...
 
-    def stream(self, history: ChatHistory) -> AsyncIterator[str]:
+    def stream(self, history: ChatHistory, *, model: str | None = None) -> AsyncIterator[str | StreamFragment]:
         """流式生成助手正文。
 
         Args:
             history: 已筛选的完整历史与本次用户输入。
+            model: 本次运行的模型；为空时使用适配器自己的选择。
 
         Returns:
-            文本片段异步迭代器。
+            正文或思考片段的异步迭代器。
         """
         ...
 
-    async def summarize(self, previous: str, history: ChatHistory, max_characters: int) -> str:
+    async def summarize(
+        self, previous: str, history: ChatHistory, max_characters: int, *, model: str | None = None
+    ) -> str:
         """合并旧摘要与新增历史，不处理本轮用户输入。
 
         Args:
             previous: 已有摘要。
             history: 本批待压缩消息。
             max_characters: 摘要字符上限。
+            model: 摘要模型。思考过程不会写入摘要。
 
         Returns:
             新摘要正文。
@@ -71,6 +127,7 @@ class DeepSeekProvider:
         assembly: "AgentAssembly | None" = None,
         *,
         child_role: str | None = None,
+        model: str | None = None,
     ) -> None:
         """保存配置，不在启动或导入时发送模型请求。
 
@@ -79,26 +136,31 @@ class DeepSeekProvider:
             tool_executor: 当前运行独享的可信工具入口。
             assembly: 本次运行的能力装配；为空时从执行器读取。
             child_role: 子 Agent 固定职责；非空时禁止规划和再次委派。
+            model: 本次运行实际使用的模型。
         """
         self.settings = settings
         self.tool_executor = tool_executor
         self.assembly = assembly
         self.child_role = child_role
+        self.run_model = model
+        self.last_prompt_tokens: int | None = None
 
     def validate(self) -> None:
         """缺少凭证时明确拒绝生成，仍允许查看已有历史。"""
         if not self.settings.deepseek_api_key.get_secret_value().strip():
             raise ApplicationError("MODEL_NOT_CONFIGURED", "请在 backend/.env 配置 EA_DEEPSEEK_API_KEY 并重启后端", 503)
 
-    async def stream(self, history: ChatHistory) -> AsyncIterator[str]:
+    async def stream(self, history: ChatHistory, *, model: str | None = None) -> AsyncIterator[str | StreamFragment]:
         """每次运行建立独立图，不跨对话共享可变状态。
 
         Args:
             history: 由业务消息重建的上下文。
+            model: 本次运行的模型，优先于构造时绑定的模型。
 
         Yields:
-            主模型生成的可展示正文。
+            思考过程与可展示正文，二者不会混在同一字段。
         """
+        chosen = model or self.run_model or self.settings.deepseek_model
         if sum(len(content) for _, content in history) > self.settings.model_context_characters:
             raise ApplicationError("CONTEXT_TOO_LONG", "对话或子任务资料超过上下文限制", 422)
         # 首次导入较慢，放到线程中，避免并发状态查询耗尽数据库连接超时。
@@ -205,19 +267,19 @@ class DeepSeekProvider:
                             raise ApplicationError("TOOL_NOT_ALLOWED", "当前工具未获授权", 403)
             return response
 
-        model = ChatDeepSeek(
+        model_client = ChatDeepSeek(
             streaming=True,
-            model=self.settings.deepseek_model,
+            model=chosen,
             api_key=self.settings.deepseek_api_key,
             base_url="https://api.deepseek.com",
-            max_tokens=self.settings.model_max_tokens,
+            max_tokens=max_tokens_for(self.settings, chosen),
             timeout=self.settings.model_timeout_seconds,
             max_retries=0,
-            extra_body={"thinking": {"type": "disabled"}},
+            extra_body=thinking_extra(self.settings, chosen),
         )
         try:
             agent = create_deep_agent(
-                model=model,
+                model=model_client,
                 tools=allowed_tools,
                 system_prompt=system_prompt,
                 middleware=[authorized_model, authorized_tool],
@@ -230,32 +292,42 @@ class DeepSeekProvider:
                     continue
                 for message in node.get("messages", []):
                     if isinstance(message, AIMessage):
+                        tokens = read_prompt_tokens(message)
+                        if tokens is not None:
+                            self.last_prompt_tokens = tokens
                         if message.response_metadata.get("finish_reason") == "length":
                             raise ApplicationError(
                                 "MODEL_OUTPUT_TRUNCATED", "模型回答达到长度限制，请缩小问题范围", 422
                             )
+                        reasoning = read_reasoning(message) if is_reasoner(self.settings, chosen) else ""
                         if not message.tool_calls and isinstance(message.content, str) and message.content:
-                            yield message.content
+                            if reasoning:
+                                yield StreamFragment(reasoning=reasoning)
+                            yield StreamFragment(content=message.content)
         finally:
-            await model.root_async_client.close()
-            await asyncio.to_thread(model.root_client.close)
+            await model_client.root_async_client.close()
+            await asyncio.to_thread(model_client.root_client.close)
 
-    async def summarize(self, previous: str, history: ChatHistory, max_characters: int) -> str:
+    async def summarize(
+        self, previous: str, history: ChatHistory, max_characters: int, *, model: str | None = None
+    ) -> str:
         """使用独立非流式调用生成可跨运行复用的资料摘要。
 
         Args:
             previous: 上次持久化或本批已生成的摘要。
             history: 本次新增的历史消息片段。
             max_characters: 允许的摘要正文字符数。
+            model: 摘要模型。始终关闭思考，避免推理文本进入摘要。
 
         Returns:
             摘要正文，不包含推理或工具结果。
         """
+        chosen = model or self.run_model or self.settings.deepseek_model
         await asyncio.to_thread(load_agent_sdk)
         from langchain_deepseek import ChatDeepSeek
 
-        model = ChatDeepSeek(
-            model=self.settings.deepseek_model,
+        model_client = ChatDeepSeek(
+            model=chosen,
             api_key=self.settings.deepseek_api_key,
             base_url="https://api.deepseek.com",
             max_tokens=min(4096, max(512, max_characters * 2)),
@@ -264,7 +336,7 @@ class DeepSeekProvider:
             extra_body={"thinking": {"type": "disabled"}},
         )
         try:
-            response = await model.ainvoke(
+            response = await model_client.ainvoke(
                 [
                     (
                         "system",
@@ -289,5 +361,5 @@ class DeepSeekProvider:
                 raise ApplicationError("INVALID_SUMMARY", "模型未返回纯文本摘要", 502)
             return response.content
         finally:
-            await model.root_async_client.close()
-            await asyncio.to_thread(model.root_client.close)
+            await model_client.root_async_client.close()
+            await asyncio.to_thread(model_client.root_client.close)

@@ -22,3 +22,4 @@ class ContextState:
     summary_through_sequence: int
     summary_version: int
     messages: list[ContextMessage]
+    model: str = "deepseek-flash"

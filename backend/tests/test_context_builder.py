@@ -5,6 +5,7 @@ import json
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import httpx
 import pytest
 
 from app.agents.context_types import ContextMessage, ContextState
@@ -120,12 +121,15 @@ async def test_bad_summary_does_not_advance_cursor(answer: str | Exception) -> N
 
 async def test_cancel_and_timeout_do_not_save_summary() -> None:
     """模型等待被取消或超时时旧摘要仍完整保留。"""
-    context, store, provider = builder()
-    for error in (asyncio.CancelledError(), TimeoutError()):
-        provider.summarize.side_effect = error
-        with pytest.raises(type(error)):
-            await context.build(make_state(3))
+    context, store, provider = builder(task_retry_base_seconds=0.01, task_retry_max_seconds=0.02)
+    provider.summarize.side_effect = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await context.build(make_state(3))
+    provider.summarize.side_effect = TimeoutError()
+    with pytest.raises(TimeoutError):
+        await context.build(make_state(3))
     store.save_summary.assert_not_awaited()
+    assert provider.summarize.await_count > 2
 
 
 async def test_cancellation_before_commit_prevents_answer() -> None:
@@ -144,6 +148,29 @@ async def test_batches_are_merged_in_order_and_saved_once() -> None:
     assert provider.summarize.await_count > 1
     assert provider.summarize.call_args_list[1].args[0] == provider.summarize.return_value
     store.save_summary.assert_awaited_once()
+
+
+async def test_injected_material_is_counted_before_compression() -> None:
+    """检索和协作资料占用预算，必要时把更早轮次纳入摘要。"""
+    context, _, provider = builder()
+    state = make_state(1)
+    await context.build(state)
+    provider.summarize.assert_not_awaited()
+    context, _, provider = builder()
+    await context.build(make_state(1), extra_characters=500)
+    provider.summarize.assert_awaited()
+    assert context.last_usage is not None
+    assert context.last_usage.injected_characters == 500
+    assert context.last_usage.estimated_characters > 500
+
+
+async def test_summary_retries_transient_network_error() -> None:
+    """摘要遇到瞬时网络错误时退避重试，成功后才提交游标。"""
+    context, store, provider = builder(task_retry_base_seconds=0.01, task_retry_max_seconds=0.02)
+    provider.summarize.side_effect = [httpx.ConnectError("reset"), "保留项目代号、约定与尚未解决事项。"]
+    await context.build(make_state(3))
+    assert provider.summarize.await_count == 2
+    store.save_summary.assert_awaited()
 
 
 def test_split_large_escaped_messages_without_losing_content() -> None:

@@ -10,7 +10,7 @@ import CapabilityDrawer from '../components/chat/CapabilityDrawer.vue'
 import ChunkSourceCard, { type SourceChunk } from '../components/chat/ChunkSourceCard.vue'
 import MarkdownBody from '../components/MarkdownBody.vue'
 import ToolCallList from '../components/ToolCallList.vue'
-import { bindConversationAgent, cancelRun, createConversation, createRun, getMessages, getRun, isActive, listConversations, watchRun, type Conversation, type Message, type Run, type Snapshot } from '../api/chat'
+import { bindConversationAgent, cancelRun, createConversation, createRun, editMessage, getMessages, getRun, isActive, listConversations, listModels, regenerateMessage, setConversationModel, watchRun, type ContextUsage, type Conversation, type Message, type ModelOption, type Run, type Snapshot } from '../api/chat'
 
 const route = useRoute()
 const router = useRouter()
@@ -28,11 +28,26 @@ const stopping = ref(false)
 const error = ref('')
 const connection = ref('')
 const more = ref(false)
+const models = ref<ModelOption[]>([])
+const usage = ref<ContextUsage | null>(null)
+const sourcesByMessage = ref<Record<string, SourceChunk[]>>({})
+const editing = ref<Message | null>(null)
+const draftModel = ref<string | null>(null)
 const transcript = ref<HTMLElement | null>(null)
 const currentId = computed(() => typeof route.params.conversationId === 'string' ? route.params.conversationId : '')
 const active = computed(() => run.value !== null && isActive(run.value))
 const title = computed(() => conversations.value.find(item => item.id === currentId.value)?.title ?? '新对话')
 const currentAgent = computed(() => agents.value.find(item => item.id === selectedAgentId.value) ?? null)
+const defaultModel = computed(() => models.value.find(item => item.is_default)?.id || models.value[0]?.id || '')
+const selectedModel = computed(() => {
+  if (!currentId.value) return draftModel.value || currentAgent.value?.model || defaultModel.value
+  const conversation = conversations.value.find(item => item.id === currentId.value)
+  return conversation?.model || currentAgent.value?.model || defaultModel.value
+})
+const usagePercent = computed(() => {
+  if (!usage.value?.limit_characters) return 0
+  return Math.min(100, Math.round(usage.value.estimated_characters / usage.value.limit_characters * 100))
+})
 const prompts = computed(() => currentAgent.value?.starter_prompts.length
   ? currentAgent.value.starter_prompts
   : ['请帮我制定一个学习企业级 Agent 开发的实践计划', '查询最近七天的运行统计', '检索知识库并给出带来源的结论'])
@@ -40,6 +55,7 @@ const statuses: Record<string, string> = { pending: '等待生成', running: '�
 let dispose: (() => void) | null = null
 let revision = 0
 let pending: { conversationId: string; content: string; key: string } | null = null
+let pendingRegenerate: { messageId: string; key: string } | null = null
 let alive = true
 
 function showError(value: unknown): void {
@@ -52,6 +68,21 @@ async function refreshList(append = false): Promise<void> {
   more.value = items.length === 50
   const found = conversations.value.find(item => item.id === currentId.value)
   if (found) selectedAgentId.value = found.agent_profile_id ?? null
+}
+function applyUsage(value: ContextUsage | null | undefined): void {
+  if (value && value.limit_characters > 0) usage.value = value
+}
+async function loadModels(): Promise<void> {
+  try { models.value = await listModels() } catch (value) { showError(value) }
+}
+async function switchModel(value: string): Promise<void> {
+  if (active.value || !value) return
+  if (!currentId.value) { draftModel.value = value; return }
+  try {
+    const conversation = await setConversationModel(currentId.value, value)
+    const index = conversations.value.findIndex(item => item.id === conversation.id)
+    if (index >= 0) conversations.value[index] = conversation
+  } catch (value) { showError(value) }
 }
 async function loadAgents(): Promise<void> {
   try {
@@ -84,10 +115,11 @@ async function applyDecision(updated: Approval): Promise<void> {
   await reconnect()
 }
 function usePrompt(text: string): void { input.value = text }
-const sourceChunks = ref<SourceChunk[]>([])
-function handleAutoChunks(chunks: SourceChunk[]): void { sourceChunks.value = chunks }
-function handleCite(index: number): void {
-  const el = document.getElementById('source-' + index)
+function handleAutoChunks(messageId: string, chunks: SourceChunk[]): void {
+  sourcesByMessage.value = { ...sourcesByMessage.value, [messageId]: chunks }
+}
+function handleCite(messageId: string, index: number): void {
+  const el = document.getElementById('source-' + messageId + '-' + index)
   if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.style.outline = '2px solid #18775c'; setTimeout(() => { el.style.outline = '' }, 2000) }
 }
 async function scrollToEnd(): Promise<void> {
@@ -98,6 +130,7 @@ function applySnapshot(snapshot: Snapshot): void {
   if (snapshot.run.conversation_id !== currentId.value) return
   run.value = snapshot.run
   approval.value = snapshot.approval ?? null
+  applyUsage(snapshot.context_usage)
   const index = messages.value.findIndex(item => item.id === snapshot.message.id)
   if (index < 0) messages.value.push(snapshot.message)
   else messages.value[index] = snapshot.message
@@ -123,6 +156,7 @@ async function loadConversation(): Promise<void> {
   const token = ++revision
   dispose?.(); dispose = null
   run.value = null; approval.value = null; messages.value = []; error.value = ''; connection.value = ''; pending = null
+  editing.value = null; sourcesByMessage.value = {}; usage.value = null; pendingRegenerate = null
   const currentConversation = conversations.value.find(item => item.id === currentId.value)
   if (currentConversation) selectedAgentId.value = currentConversation.agent_profile_id ?? null
   if (!currentId.value) { loading.value = false; return }
@@ -134,6 +168,7 @@ async function loadConversation(): Promise<void> {
       const page = await getMessages(id, after)
       if (!alive || token !== revision) return
       messages.value.push(...page.items)
+      applyUsage(page.context_usage)
       if (!page.has_more) {
         if (page.active_run_id) {
           const snapshot = await getRun(page.active_run_id)
@@ -164,7 +199,7 @@ async function send(): Promise<void> {
   try {
     let id = currentId.value
     if (!id) {
-      const conversation = await createConversation('新对话', selectedAgentId.value)
+      const conversation = await createConversation('新对话', selectedAgentId.value, selectedModel.value || null)
       conversations.value.unshift(conversation)
       if (selectedAgentId.value) localStorage.setItem('ea-last-agent', selectedAgentId.value)
       await router.replace('/chat/' + conversation.id)
@@ -172,6 +207,22 @@ async function send(): Promise<void> {
       await nextTick()
       while (loading.value && alive) await new Promise(resolve => setTimeout(resolve, 20))
       id = conversation.id
+    }
+    if (editing.value) {
+      if (!pending || pending.conversationId !== id || pending.content !== content) pending = { conversationId: id, content, key: crypto.randomUUID() }
+      const edited = editing.value
+      const snapshot = await editMessage(edited.id, content, pending.key)
+      pending = null
+      editing.value = null
+      input.value = ''
+      const index = messages.value.findIndex(item => item.id === edited.id)
+      if (index >= 0) messages.value[index] = { ...messages.value[index]!, content }
+      if (currentId.value === id && alive) {
+        applySnapshot(snapshot)
+        await reconnect()
+        await refreshList()
+      }
+      return
     }
     if (!pending || pending.conversationId !== id || pending.content !== content) pending = { conversationId: id, content, key: crypto.randomUUID() }
     const snapshot = await createRun(id, content, pending.key)
@@ -192,11 +243,38 @@ async function stop(): Promise<void> {
   try { applySnapshot(await cancelRun(run.value.id)) } catch (value) { showError(value) }
   finally { stopping.value = false }
 }
+function canEdit(message: Message): boolean {
+  if (active.value || message.role !== 'user') return false
+  const lastUser = [...messages.value].reverse().find(item => item.role === 'user')
+  const last = messages.value.at(-1)
+  return lastUser?.id === message.id && !!last && last.sequence <= message.sequence + 1
+}
+function canRegenerate(message: Message): boolean {
+  return !active.value && message.role === 'assistant' && messages.value.at(-1)?.id === message.id
+}
+function startEdit(message: Message): void {
+  editing.value = message
+  input.value = message.content
+}
+async function regenerate(message: Message): Promise<void> {
+  if (!canRegenerate(message) || submitting.value) return
+  submitting.value = true
+  error.value = ''
+  try {
+    if (!pendingRegenerate || pendingRegenerate.messageId !== message.id) pendingRegenerate = { messageId: message.id, key: crypto.randomUUID() }
+    const snapshot = await regenerateMessage(message.id, pendingRegenerate.key)
+    pendingRegenerate = null
+    if (alive) {
+      applySnapshot(snapshot)
+      await reconnect()
+    }
+  } catch (value) { showError(value) }
+  finally { submitting.value = false }
+}
 async function retry(): Promise<void> {
-  const previous = [...messages.value].reverse().find(message => message.role === 'user')
-  if (!previous || active.value) return
-  input.value = previous.content
-  await send()
+  const latest = [...messages.value].reverse().find(message => message.role === 'assistant')
+  if (!latest) return
+  await regenerate(latest)
 }
 async function supplement(): Promise<void> {
   await stop()
@@ -208,6 +286,7 @@ function keydown(event: KeyboardEvent): void {
 watch(currentId, loadConversation, { immediate: true })
 void refreshList().catch(showError)
 void loadAgents()
+void loadModels()
 onBeforeUnmount(() => { alive = false; revision++; dispose?.() })
 </script>
 
@@ -277,7 +356,23 @@ onBeforeUnmount(() => { alive = false; revision++; dispose?.() })
           >
             能力 {{ currentAgent?.tools.length ?? 0 }}
           </button>
-          <span class="chat__model">{{ currentAgent?.model || 'DeepSeek' }}</span>
+          <label class="chat__model">
+            <span class="chat__sr-only">模型</span>
+            <select
+              aria-label="模型"
+              :disabled="active || !models.length"
+              :value="selectedModel"
+              @change="switchModel(($event.target as HTMLSelectElement).value)"
+            >
+              <option
+                v-for="item in models"
+                :key="item.id"
+                :value="item.id"
+              >
+                {{ item.id }}{{ item.thinking ? ' · 思考' : '' }}
+              </option>
+            </select>
+          </label>
         </div>
       </div>
       <div class="chat__stage">
@@ -315,24 +410,49 @@ onBeforeUnmount(() => { alive = false; revision++; dispose?.() })
             :class="'chat__message--' + message.role"
           >
             <div class="chat__speaker">
-              {{ message.role === 'user' ? '你' : '序列' }}<span v-if="message.status === 'streaming'">正在思考与生成</span><span v-else-if="message.status === 'interrupted'">部分回答 · 未完成</span>
+              {{ message.role === 'user' ? '你' : '序列' }}<span v-if="message.model">{{ message.model }}</span><span v-if="message.status === 'streaming'">{{ run?.phase === 'compressing' ? '正在整理更早的对话' : '正在思考与生成' }}</span><span v-else-if="message.status === 'interrupted'">部分回答 · 未完成</span>
+              <button
+                v-if="canEdit(message)"
+                type="button"
+                class="chat__link"
+                @click="startEdit(message)"
+              >
+                编辑
+              </button>
+              <button
+                v-if="canRegenerate(message)"
+                type="button"
+                class="chat__link"
+                :disabled="submitting"
+                @click="regenerate(message)"
+              >
+                重新生成
+              </button>
             </div>
+            <details
+              v-if="message.reasoning"
+              class="chat__reasoning"
+            >
+              <summary>思考过程</summary>
+              <p>{{ message.reasoning }}</p>
+            </details>
             <MarkdownBody
               class="chat__body"
               :content="message.content || (message.status === 'streaming' ? '正在处理；规划与执行情况见下方…' : '本次未生成正文')"
               :citations="message.role === 'assistant'"
-              @cite="handleCite"
+              @cite="index => handleCite(message.id, index)"
             />
             <ChunkSourceCard
-              v-if="message.role === 'assistant' && sourceChunks.length"
-              :chunks="sourceChunks"
+              v-if="message.role === 'assistant' && sourcesByMessage[message.id]?.length"
+              :chunks="sourcesByMessage[message.id] || []"
+              :anchor-prefix="message.id"
               :collapsible="true"
             />
             <ToolCallList
               v-if="message.run_id"
               :run-id="message.run_id"
               :message-status="message.status"
-              @auto-chunks="handleAutoChunks"
+              @auto-chunks="chunks => handleAutoChunks(message.id, chunks)"
             />
           </article>
         </div>
@@ -361,7 +481,7 @@ onBeforeUnmount(() => { alive = false; revision++; dispose?.() })
           class="chat__run"
           role="status"
         >
-          <span>{{ statuses[run.status] }}<template v-if="run.error_message"> · {{ run.error_message }}</template></span><button
+          <span>{{ run.phase === 'compressing' ? '正在整理更早的对话' : statuses[run.status] }}<template v-if="run.error_message"> · {{ run.error_message }}</template></span><button
             v-if="run.status === 'failed' || run.status === 'cancelled'"
             type="button"
             class="chat__link"
@@ -383,6 +503,28 @@ onBeforeUnmount(() => { alive = false; revision++; dispose?.() })
             重新连接
           </button>
         </div>
+        <div
+          v-if="usage"
+          class="chat__usage"
+        >
+          <div
+            class="chat__usage-track"
+            role="meter"
+            :aria-valuenow="usagePercent"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            :aria-label="'上下文估算 ' + usagePercent + '%'"
+          >
+            <span :style="{ width: usagePercent + '%' }" />
+          </div>
+          <p>
+            上下文估算 {{ usage.estimated_characters }} / {{ usage.limit_characters }} 字符
+            <template v-if="usage.estimated_tokens != null">
+              · 上次实际输入约 {{ usage.estimated_tokens }} tokens
+            </template>
+            · 按字符估算，不是精确 token
+          </p>
+        </div>
         <form
           class="chat__form"
           @submit.prevent="send"
@@ -400,7 +542,14 @@ onBeforeUnmount(() => { alive = false; revision++; dispose?.() })
             @keydown="keydown"
           />
           <div class="chat__actions">
-            <span>Enter 发送 · Shift + Enter 换行</span><button
+            <span>{{ editing ? '正在编辑最近一条问题' : 'Enter 发送 · Shift + Enter 换行' }}</span><button
+              v-if="editing"
+              type="button"
+              class="chat__link"
+              @click="editing = null"
+            >
+              取消编辑
+            </button><button
               v-if="active"
               type="button"
               class="chat__stop"
@@ -449,7 +598,10 @@ onBeforeUnmount(() => { alive = false; revision++; dispose?.() })
   &__capabilities { border: 1px solid #cbd7be; background: #eef2e7; color: $green; border-radius: 20px; padding: 7px 11px; font-size: 11px; }
   &__stage { flex: 1; display: flex; min-height: 0; min-width: 0; }
   &__eyebrow { font-size: 9px; letter-spacing: 2px; color: #859576; }
-  &__model { font-size: 10px; color: $green; border: 1px solid #cbd7be; border-radius: 20px; padding: 7px 12px; }
+  &__model { font-size: 10px; color: $green; border: 1px solid #cbd7be; border-radius: 20px; padding: 4px 10px; select { border: 0; background: transparent; color: inherit; font: inherit; max-width: 180px; &:disabled { opacity: 0.6; } } }
+  &__reasoning { margin: 0 0 12px; color: $muted; font-size: 12px; summary { cursor: pointer; color: $green; } p { white-space: pre-wrap; margin: 8px 0 0; line-height: 1.8; } }
+  &__usage { margin-bottom: 8px; p { margin: 4px 0 0; color: #8b9683; font-size: 10px; } }
+  &__usage-track { height: 4px; background: #e4eadc; border-radius: 99px; overflow: hidden; span { display: block; height: 100%; background: #76925f; } }
   &__transcript { flex: 1; overflow-y: auto; padding: 25px max(24px, 9%); scroll-behavior: smooth; }
   &__welcome { padding: 30px 0 40px; h2 { font-size: clamp(25px, 3vw, 40px); font-weight: 400; line-height: 1.6; letter-spacing: -1px; margin: 20px 0; } p { line-height: 2; color: $muted; font-size: 12px; } }
   &__prompts { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 26px; button { background: #eef2e7; border: 1px solid $line; border-radius: 6px; padding: 11px 15px; color: #516b42; font-size: 12px; text-align: left; } }

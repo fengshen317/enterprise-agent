@@ -17,8 +17,12 @@ from app.schemas.approval import ApprovalDecisionInput, ApprovalView, RunTrace
 from app.schemas.chat import (
     ConversationAgentInput,
     ConversationCreate,
+    ConversationModelInput,
     ConversationView,
+    MessageEdit,
     MessagePage,
+    ModelOption,
+    RegenerateInput,
     RunCreate,
     RunSnapshot,
 )
@@ -27,6 +31,7 @@ from app.services.agents import AgentService
 from app.services.approvals import ApprovalService
 from app.services.chat_runtime import ChatRuntime
 from app.services.chat_store import ACTIVE
+from app.services.model_catalog import is_reasoner, max_tokens_for, resolve_model
 from app.services.tools import list_tool_calls
 
 router = APIRouter(prefix="/api", tags=["问答"])
@@ -102,7 +107,61 @@ async def create_conversation(
     """
     if body.agent_profile_id is not None:
         await agent_service(request).ensure_usable_scope(scope, body.agent_profile_id)
-    return await runtime.store.create_conversation(body.title, scope, body.agent_profile_id)
+    selected = body.model.strip() if body.model else None
+    if selected == "":
+        selected = None
+    if selected is not None:
+        resolve_model(runtime.settings, selected, None)
+    return await runtime.store.create_conversation(body.title, scope, body.agent_profile_id, selected)
+
+
+@router.get("/models", response_model=list[ModelOption])
+async def models(_scope: ScopeDependency, runtime: RuntimeDependency) -> list[ModelOption]:
+    """返回当前允许的问答模型。
+
+    Args:
+        _scope: 已登录用户。登录校验由依赖完成。
+        runtime: 应用执行器。
+
+    Returns:
+        白名单中的模型及输出上限。
+    """
+    settings = runtime.settings
+    return [
+        ModelOption(
+            id=name,
+            max_tokens=max_tokens_for(settings, name),
+            thinking=is_reasoner(settings, name),
+            is_default=name == settings.deepseek_model,
+        )
+        for name in settings.allowed_models
+    ]
+
+
+@router.post("/conversations/{conversation_id}/model", response_model=ConversationView)
+async def set_conversation_model(
+    conversation_id: UUID,
+    body: ConversationModelInput,
+    request: Request,
+    scope: ScopeDependency,
+    runtime: RuntimeDependency,
+) -> ConversationView:
+    """设置或清除对话级模型。
+
+    Args:
+        conversation_id: 对话标识。
+        body: 目标模型。
+        request: 当前请求。
+        scope: 已验证用户和空间。
+        runtime: 应用执行器。
+
+    Returns:
+        更新后的对话。
+    """
+    await auth_service(request).conversation(scope, conversation_id)
+    if body.model is not None:
+        resolve_model(runtime.settings, body.model, None)
+    return await runtime.store.set_conversation_model(conversation_id, body.model, scope)
 
 
 @router.post("/conversations/{conversation_id}/agent", response_model=ConversationView)
@@ -191,6 +250,52 @@ async def create_run(
     await auth_service(request).conversation(scope, conversation_id)
     runtime.provider.validate()
     snapshot = await runtime.create_run(conversation_id, body, scope)
+    if snapshot.run.status == "pending":
+        runtime.schedule(snapshot.run.id, request.state.request_id)
+    return snapshot
+
+
+@router.post("/messages/{message_id}/regenerate", response_model=RunSnapshot, status_code=202)
+async def regenerate_message(
+    message_id: UUID, body: RegenerateInput, request: Request, scope: ScopeDependency, runtime: RuntimeDependency
+) -> RunSnapshot:
+    """重新生成最近一条助手回答，不追加用户消息。
+
+    Args:
+        message_id: 助手消息。
+        body: 幂等键。
+        request: HTTP 关联上下文。
+        scope: 已验证用户和空间。
+        runtime: 应用执行器。
+
+    Returns:
+        替代运行的快照。
+    """
+    runtime.provider.validate()
+    snapshot = await runtime.replace_answer(message_id, body.idempotency_key, scope, content=None, role="assistant")
+    if snapshot.run.status == "pending":
+        runtime.schedule(snapshot.run.id, request.state.request_id)
+    return snapshot
+
+
+@router.post("/messages/{message_id}/edit", response_model=RunSnapshot, status_code=202)
+async def edit_message(
+    message_id: UUID, body: MessageEdit, request: Request, scope: ScopeDependency, runtime: RuntimeDependency
+) -> RunSnapshot:
+    """修改最近一条用户消息并重新生成其后的回答。
+
+    Args:
+        message_id: 用户消息。
+        body: 新正文与幂等键。
+        request: HTTP 关联上下文。
+        scope: 已验证用户和空间。
+        runtime: 应用执行器。
+
+    Returns:
+        替代运行的快照。
+    """
+    runtime.provider.validate()
+    snapshot = await runtime.replace_answer(message_id, body.idempotency_key, scope, content=body.content, role="user")
     if snapshot.run.status == "pending":
         runtime.schedule(snapshot.run.id, request.state.request_id)
     return snapshot

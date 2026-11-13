@@ -53,6 +53,8 @@ class Conversation(Base):
     created_by_user_id: Mapped[UUID | None] = mapped_column()
     agent_profile_id: Mapped[UUID | None] = mapped_column(ForeignKey("agent_profiles.id", ondelete="SET NULL"))
     title: Mapped[str] = mapped_column(String(200))
+    model: Mapped[str | None] = mapped_column(String(200))
+    context_usage: Mapped[dict[str, object] | None] = mapped_column(JSONB)
     status: Mapped[str] = mapped_column(String(20), default="active", server_default="active")
     summary: Mapped[str] = mapped_column(Text, default="", server_default="")
     summary_through_sequence: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
@@ -79,6 +81,7 @@ class Run(Base):
             "(status IN ('completed', 'failed', 'cancelled') AND finished_at IS NOT NULL)",
             name="terminal_timestamp",
         ),
+        CheckConstraint("phase IS NULL OR phase IN ('compressing', 'generating')", name="phase"),
         Index(
             "uq_runs_one_active_per_conversation",
             "conversation_id",
@@ -97,6 +100,12 @@ class Run(Base):
     input_sequence: Mapped[int] = mapped_column(BigInteger)
     error_code: Mapped[str | None] = mapped_column(String(64))
     error_message: Mapped[str | None] = mapped_column(String(500))
+    phase: Mapped[str | None] = mapped_column(String(20))
+    superseded_by_run_id: Mapped[UUID | None] = mapped_column(ForeignKey("runs.id", ondelete="SET NULL"))
+    archived_content: Mapped[str | None] = mapped_column(Text)
+    archived_reasoning: Mapped[str | None] = mapped_column(Text)
+    archived_prompt: Mapped[str | None] = mapped_column(Text)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer)
     cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -128,6 +137,8 @@ class Message(Base):
     sequence: Mapped[int] = mapped_column(BigInteger)
     role: Mapped[str] = mapped_column(String(20))
     content: Mapped[str] = mapped_column(Text, default="", server_default="")
+    reasoning: Mapped[str | None] = mapped_column(Text)
+    model: Mapped[str | None] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

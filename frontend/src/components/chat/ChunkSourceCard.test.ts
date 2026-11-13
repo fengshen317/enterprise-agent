@@ -31,6 +31,12 @@ it('可折叠模式默认收起', () => {
   wrapper.unmount()
 })
 
+it('按消息生成不同的来源锚点', () => {
+  const wrapper = mount(ChunkSourceCard, { props: { chunks: chunks.slice(0, 1), collapsible: false, anchorPrefix: 'm9' } })
+  expect(wrapper.get('article').attributes('id')).toBe('source-m9-1')
+  wrapper.unmount()
+})
+
 it('相似度为 null 时显示未知', () => {
   const wrapper = mount(ChunkSourceCard, {
     props: { chunks: [{ index: 1, content: 'x', document_name: 'a.pdf', similarity: null }], collapsible: false },

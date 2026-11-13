@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from app.agents.provider import DeepSeekProvider
+from app.agents.provider import DeepSeekProvider, StreamFragment
 from app.core.config import Settings
 from app.core.errors import ApplicationError
 
@@ -97,7 +97,9 @@ async def test_real_sdk_stream_with_mock_http(monkeypatch: pytest.MonkeyPatch, f
             with pytest.raises(ApplicationError, match="模型回答达到长度限制"):
                 _ = [part async for part in provider.stream([("user", "你好")])]
             return
-        output = "".join([part async for part in provider.stream([("user", "你好")])])
+        parts = [part async for part in provider.stream([("user", "你好")])]
+        output = "".join(part if isinstance(part, str) else part.content for part in parts)
+        assert all(isinstance(part, StreamFragment) for part in parts)
     assert output == "你好，世界"
     assert len(captured) == 1
     assert captured[0]["messages"][-1] == {"role": "user", "content": "你好"}

@@ -12,6 +12,7 @@ from app.models.agent import AgentCapability, AgentProfile, WorkspaceToolPolicy
 from app.models.approval import Approval, ApprovalEvent
 from app.models.base import Base
 from app.models.config import IntegrationConfig
+from app.models.connector import Connector
 from app.models.conversation import Conversation, Message, Run
 from app.models.identity import AuthSession, LoginLimit, User, Workspace, WorkspaceMembership
 from app.models.knowledge import KnowledgeBase, KnowledgeDocument
@@ -45,6 +46,7 @@ assert all(
         Skill,
         SkillVersion,
         IntegrationConfig,
+        Connector,
         Approval,
         ApprovalEvent,
         Task,

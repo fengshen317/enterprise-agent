@@ -48,6 +48,7 @@ class ChatAgentExecutor(ToolExecutor):
         registry: ToolRegistry | None = None,
         approval_service: ApprovalService | None = None,
         schedule_store: ScheduleStore | None = None,
+        model: str | None = None,
     ) -> None:
         """绑定运行身份、共享并发门限与本次能力装配。
 
@@ -60,6 +61,7 @@ class ChatAgentExecutor(ToolExecutor):
             registry: 工具目录。
             approval_service: 写操作审批服务。
             schedule_store: 定时任务存储。
+            model: 本次运行实际使用的模型，子 Agent 与主 Agent 保持一致。
         """
         super().__init__(
             factory,
@@ -83,6 +85,7 @@ class ChatAgentExecutor(ToolExecutor):
         if system_specs:
             self.assembly = replace(self.assembly, tools=self.assembly.tools + tuple(system_specs))
         self.child_slots = asyncio.Semaphore(2)
+        self.model = model
 
     def _plan_spec(self) -> ToolSpec:
         """构造主 Agent 的公开计划工具。
@@ -265,10 +268,12 @@ class ChatAgentExecutor(ToolExecutor):
             if not allowed:
                 raise ApplicationError("DELEGATION_LIMIT", "本次对话的子任务数量已达上限", 422)
             await self.progress(identifier, public)
-            provider = DeepSeekProvider(self.settings, self, assembly=self.assembly.for_child(), child_role=task.role)
+            provider = DeepSeekProvider(
+                self.settings, self, assembly=self.assembly.for_child(), child_role=task.role, model=self.model
+            )
             output = ""
-            async for fragment in provider.stream([("user", task.instruction)]):
-                output += fragment
+            async for fragment in provider.stream([("user", task.instruction)], model=self.model):
+                output += fragment if isinstance(fragment, str) else fragment.content
                 if len(output) > self.settings.model_output_characters:
                     raise ApplicationError("OUTPUT_TOO_LONG", "子任务结果超过长度限制", 422)
             if not output.strip():

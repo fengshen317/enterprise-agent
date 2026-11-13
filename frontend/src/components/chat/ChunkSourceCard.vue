@@ -9,7 +9,7 @@ export interface SourceChunk {
   document_id?: string
 }
 
-const props = defineProps<{ chunks: SourceChunk[]; collapsible?: boolean }>()
+const props = defineProps<{ chunks: SourceChunk[]; collapsible?: boolean; anchorPrefix?: string }>()
 const expanded = ref(!props.collapsible)
 
 function similarityLabel(value: number | null): string {
@@ -46,7 +46,7 @@ const summary = computed(() => {
     >
       <article
         v-for="chunk in chunks"
-        :id="'source-' + chunk.index"
+        :id="(anchorPrefix ? 'source-' + anchorPrefix + '-' : 'source-') + chunk.index"
         :key="chunk.index"
         class="chunk-sources__item"
       >
