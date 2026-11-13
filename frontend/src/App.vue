@@ -75,6 +75,10 @@ async function changeWorkspace(event: Event): Promise<void> {
       >⏱ 定时任务</RouterLink>
       <RouterLink
         class="workspace__nav"
+        to="/channels/wechat"
+      >✉ 微信</RouterLink>
+      <RouterLink
+        class="workspace__nav"
         to="/system"
       >◈ 系统概览</RouterLink>
       <RouterLink

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from time import monotonic
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -72,6 +73,8 @@ class ChatRuntime:
         self.lock = asyncio.Lock()
         self.lease: AsyncConnection | None = None
         self.closing = False
+        # 渠道等旁路在运行落库后推送结果；监听器失败不能改变问答终态。
+        self.on_run_finished: list[Callable[[UUID], Awaitable[None]]] = []
 
     async def ensure_ready(self) -> None:
         """首次问答访问获得数据库会话锁并恢复遗留状态。
@@ -303,7 +306,20 @@ class ChatRuntime:
         if not claimed and status == "completed":
             return
         await self.store.finish(run_id, content, status, code, error)
+        await self._emit_finished(run_id)
         logger.info("run_finished", extra={"run_id": str(run_id), "request_id": request_id})
+
+    async def _emit_finished(self, run_id: UUID) -> None:
+        """通知已注册的完成监听器；单个监听器失败不影响其他监听器。
+
+        Args:
+            run_id: 已写入终态的运行。
+        """
+        for callback in list(self.on_run_finished):
+            try:
+                await callback(run_id)
+            except Exception:
+                logger.warning("run_finished_listener_failed", extra={"run_id": str(run_id)})
 
     async def _watch_access(self, run_id: UUID) -> None:
         """供应商暂时没有输出时也持续检测账号禁用和成员撤销。
