@@ -94,6 +94,19 @@ class ChannelStore:
             )
             return self._account(row) if row is not None else None
 
+    async def mark_active(self, account_id: UUID) -> None:
+        """暂停结束后把账号标回可轮询，设置页不再一直显示暂停。
+
+        Args:
+            account_id: 渠道账号。
+        """
+        async with self.factory.begin() as session:
+            await session.execute(
+                update(ChannelAccount)
+                .where(ChannelAccount.id == account_id, ChannelAccount.status == "paused")
+                .values(status="active", paused_until=None, updated_at=datetime.now(UTC))
+            )
+
     async def mark_paused(self, account_id: UUID, until: datetime) -> None:
         """因 errcode -14 暂停该账号的长轮询。
 
@@ -175,7 +188,7 @@ class ChannelStore:
 
         Args:
             account_id: 渠道账号。
-            message_id: iLink message_id。空值无法去重，调用方应跳过或自造 id。
+            message_id: iLink message_id。空值无法去重，直接返回 False，避免未入库的消息被当成已处理。
             peer_id: 发送者。
             status: received 或 skipped。
             reason: 跳过原因。
@@ -185,7 +198,7 @@ class ChannelStore:
             是否第一次看到这条消息。
         """
         if not message_id:
-            return True
+            return False
         stmt = (
             pg_insert(ChannelMessage)
             .values(

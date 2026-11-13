@@ -10,7 +10,7 @@ from collections.abc import Coroutine
 from datetime import UTC, datetime, timedelta
 from time import monotonic
 from typing import Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from app.channels.commands import chunk_text, parse_inbound
 from app.channels.ilink import ILinkClient, ILinkMessage
@@ -192,6 +192,18 @@ class InboundHandler:
         # 生成中的增量不占去重位，避免后面的完成态被丢掉。服务端是否会用同一 id 再推一次，尚未在真机验证。
         if message.message_state == 1:
             return
+        # 没有 message_id 时无法去重。若共用同一个幂等键，第二条及以后的文本会被静默丢掉。
+        if not message.message_id:
+            message = ILinkMessage(
+                f"local-{uuid4().hex}",
+                message.from_user_id,
+                message.to_user_id,
+                message.group_id,
+                message.context_token,
+                message.text,
+                message.message_type,
+                message.message_state,
+            )
         inserted = await self.repo.record_inbound(
             account.id, message.message_id, message.from_user_id, "received", None, message.text[:500]
         )

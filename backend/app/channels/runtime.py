@@ -28,6 +28,26 @@ from app.services.chat_runtime import ChatRuntime
 logger = logging.getLogger(__name__)
 # 与问答锁、调度锁错开。第二段按账号散列，避免一个进程重复轮询同一账号。
 CHANNEL_LOCK = 782341920
+# 凭证解不开时不能紧循环打数据库。密钥轮换后每分钟再试一次。
+TOKEN_RETRY_SECONDS = 60.0
+
+
+def poll_wait_seconds(account: AccountRecord, now: datetime) -> float | None:
+    """决定这一轮要不要先等待。None 表示可以立刻拉更新。
+
+    Args:
+        account: 当前账号。
+        now: 当前时间。
+
+    Returns:
+        等待秒数；可以轮询时为 None。
+    """
+    if not account.token:
+        return TOKEN_RETRY_SECONDS
+    if account.paused_until is not None and account.paused_until > now:
+        remaining = (account.paused_until - now).total_seconds()
+        return min(5.0, max(0.2, remaining))
+    return None
 
 
 def advisory_key(account_id: UUID) -> int:
@@ -284,10 +304,12 @@ class ChannelRuntime:
             account: 当前账号快照。暂停状态会写回数据库。
         """
         now = datetime.now(UTC)
-        if account.paused_until is not None and account.paused_until > now:
+        if poll_wait_seconds(account, now) is not None:
             return
-        if not account.token:
-            return
+        if account.status == "paused":
+            await self.repo.mark_active(account.id)
+            account.status = "active"
+            account.paused_until = None
         page = await self.ilink.get_updates(account, self._timeouts.get(account.id))
         if page.long_poll_ms is not None and page.long_poll_ms > 0:
             self._timeouts[account.id] = page.long_poll_ms / 1000
@@ -297,11 +319,12 @@ class ChannelRuntime:
             account.status = "paused"
             account.paused_until = until
             return
+        # 先处理完本批再推进游标。中途失败时下次长轮询还会带回这些消息，已入库的由 message_id 去重。
+        for message in page.messages:
+            await self.handler.handle(account, message)
         if page.cursor and page.cursor != account.updates_cursor:
             await self.repo.save_cursor(account.id, page.cursor)
             account.updates_cursor = page.cursor
-        for message in page.messages:
-            await self.handler.handle(account, message)
 
     async def on_run_finished(self, run_id: UUID) -> None:
         """把不是微信当场触发的运行结果推回微信。
@@ -408,9 +431,11 @@ class ChannelRuntime:
                 account = await self.repo.get_account(account_id)
                 if account is None or account.status == "unbound":
                     break
-                if account.paused_until is not None and account.paused_until > datetime.now(UTC):
-                    remaining = (account.paused_until - datetime.now(UTC)).total_seconds()
-                    await self._sleep(min(5.0, max(0.2, remaining)))
+                wait = poll_wait_seconds(account, datetime.now(UTC))
+                if wait is not None:
+                    if not account.token:
+                        logger.warning("ilink_token_unavailable", extra={"account_id": str(account_id)})
+                    await self._sleep(wait)
                     continue
                 try:
                     await self.poll_once(account)

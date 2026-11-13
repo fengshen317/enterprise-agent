@@ -14,7 +14,7 @@ from app.channels.crypto import ChannelCrypto
 from app.channels.handler import InboundHandler
 from app.channels.ilink import ILinkMessage, QrCode, QrStatus, UpdatesPage
 from app.channels.records import AccountRecord, ApprovalTicket, BindSessionRecord, PeerLink, RunDelivery
-from app.channels.runtime import ChannelRuntime
+from app.channels.runtime import TOKEN_RETRY_SECONDS, ChannelRuntime, poll_wait_seconds
 from app.channels.service import ChannelService
 from app.core.config import Settings
 from app.core.errors import ApplicationError
@@ -92,6 +92,12 @@ class MemoryStore:
         account.status = "paused"
         account.paused_until = until
 
+    async def mark_active(self, account_id: UUID) -> None:
+        """暂停结束后恢复为可轮询。"""
+        account = self.accounts[account_id]
+        account.status = "active"
+        account.paused_until = None
+
     async def save_cursor(self, account_id: UUID, cursor: str) -> None:
         """保存游标。"""
         self.accounts[account_id].updates_cursor = cursor
@@ -102,7 +108,7 @@ class MemoryStore:
         """按 message_id 去重。"""
         del peer_id, status, reason, excerpt
         if not message_id:
-            return True
+            return False
         key = (account_id, message_id)
         if key in self.seen:
             return False
@@ -699,3 +705,81 @@ async def test_bind_status_edges_and_unbind() -> None:
     assert not hasattr(listed[0], "token")
     await service.unbind(scope, account.id)
     assert store.accounts[account.id].status == "unbound"
+
+
+def test_missing_token_waits_a_minute() -> None:
+    """解不开凭证时按分钟重试，避免空转打数据库。"""
+    account = _account()
+    account.token = ""
+    assert poll_wait_seconds(account, datetime.now(UTC)) == TOKEN_RETRY_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_pause_status_returns_to_active_after_the_hour() -> None:
+    """暂停时间一过，设置页看到的状态回到已连接。"""
+    settings = _settings()
+    store = MemoryStore(ChannelCrypto(settings))
+    ilink = FakeILink()
+    ilink.page = UpdatesPage([], "cursor-next", False, None)
+    account = _account()
+    account.status = "paused"
+    account.paused_until = datetime.now(UTC) - timedelta(seconds=5)
+    store.accounts[account.id] = account
+    runtime = ChannelRuntime(
+        MagicMock(),
+        settings,
+        ChannelCrypto(settings),
+        ilink,  # type: ignore[arg-type]
+        store,  # type: ignore[arg-type]
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+    )
+    await runtime.poll_once(account)
+    assert account.status == "active"
+    assert account.paused_until is None
+    assert account.updates_cursor == "cursor-next"
+
+
+@pytest.mark.asyncio
+async def test_cursor_advances_only_after_the_batch_is_handled() -> None:
+    """处理中途失败时不推进游标，下一次长轮询还能看到这批消息。"""
+    settings = _settings()
+    store = MemoryStore(ChannelCrypto(settings))
+    ilink = FakeILink()
+    ilink.page = UpdatesPage([_message("你好", "42")], "cursor-next", False, None)
+    account = _account()
+    store.accounts[account.id] = account
+    runtime = ChannelRuntime(
+        MagicMock(),
+        settings,
+        ChannelCrypto(settings),
+        ilink,  # type: ignore[arg-type]
+        store,  # type: ignore[arg-type]
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+    )
+
+    async def fail(current: AccountRecord, message: ILinkMessage) -> None:
+        del current, message
+        raise RuntimeError("处理失败")
+
+    runtime.handler.handle = fail  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        await runtime.poll_once(account)
+    assert account.updates_cursor == ""
+    assert ilink.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_messages_without_id_each_create_a_run() -> None:
+    """没有 message_id 的两条文本不会共用同一个幂等键。"""
+    store = MemoryStore(ChannelCrypto(_settings()))
+    ilink = FakeILink()
+    handler, chat = _handler(store, ilink)
+    account = _account()
+    await handler.handle(account, _message("第一条", ""))
+    await handler.handle(account, _message("第二条", ""))
+    await handler.drain()
+    assert chat.runs == 2
