@@ -180,7 +180,9 @@ async def test_cancel_delegation_settles_all_children(
     started = 0
     both = asyncio.Event()
 
-    async def blocked(self: DeepSeekProvider, history: list[tuple[str, str]]) -> AsyncIterator[str]:
+    async def blocked(
+        self: DeepSeekProvider, history: list[tuple[str, str]], *, model: str | None = None
+    ) -> AsyncIterator[str]:
         """保持子图运行以验证取消传播。
 
         Args:
@@ -190,6 +192,7 @@ async def test_cancel_delegation_settles_all_children(
         Yields:
             不会发送的正文。
         """
+        del model
         nonlocal started
         started += 1
         if started == 2:
@@ -311,16 +314,20 @@ async def test_plan_validation_and_delegation_quota(
     assert invalid["error_code"] == "TOOL_INVALID_ARGUMENTS"
     calls = 0
 
-    async def generated(self: DeepSeekProvider, history: list[tuple[str, str]]):
+    async def generated(
+        self: DeepSeekProvider, history: list[tuple[str, str]], *, model: str | None = None
+    ) -> AsyncIterator[str]:
         """只统计实际进入子模型的次数。
 
         Args:
             self: 模型适配器。
             history: 独立上下文。
+            model: 本次运行模型。
 
         Yields:
             最小测试结果。
         """
+        del history, model
         nonlocal calls
         calls += 1
         yield "已分析"

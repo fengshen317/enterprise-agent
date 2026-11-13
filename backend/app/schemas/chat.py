@@ -16,6 +16,7 @@ class ConversationCreate(BaseModel):
 
     title: str = Field(default="新对话", min_length=1, max_length=200)
     agent_profile_id: UUID | None = None
+    model: str | None = Field(default=None, max_length=200)
 
     @field_validator("title")
     @classmethod
@@ -63,8 +64,52 @@ class ConversationView(BaseModel):
     title: str
     status: str
     agent_profile_id: UUID | None = None
+    model: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class ConversationModelInput(BaseModel):
+    """更新对话级模型；空值表示回到 Agent 或全局默认。"""
+
+    model_config = ConfigDict(extra="forbid")
+    model: str | None = Field(default=None, max_length=200)
+
+    @field_validator("model")
+    @classmethod
+    def clean_model(cls, value: str | None) -> str | None:
+        """空白模型名视为取消显式选择。
+
+        Args:
+            value: 原始模型名。
+
+        Returns:
+            去掉空白后的模型名。
+        """
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+
+class ModelOption(BaseModel):
+    """前端可选的模型。"""
+
+    id: str
+    max_tokens: int
+    thinking: bool
+    is_default: bool
+
+
+class ContextUsageView(BaseModel):
+    """上下文占用估算。字符预算是估算，token 仅在供应商返回后填充。"""
+
+    estimated_characters: int = 0
+    limit_characters: int = 0
+    summary_characters: int = 0
+    injected_characters: int = 0
+    estimated_tokens: int | None = None
+    estimate: Literal[True] = True
 
 
 class ConversationAgentInput(BaseModel):
@@ -84,6 +129,8 @@ class MessageView(BaseModel):
     sequence: int
     role: Literal["user", "assistant"]
     content: str
+    reasoning: str | None = None
+    model: str | None = None
     status: Literal["streaming", "completed", "interrupted"]
     created_at: datetime
     updated_at: datetime
@@ -97,6 +144,7 @@ class RunView(BaseModel):
     conversation_id: UUID
     status: RunStatus
     model: str
+    phase: str | None = None
     input_sequence: int
     error_code: str | None
     error_message: str | None
@@ -112,6 +160,35 @@ class RunSnapshot(BaseModel):
     run: RunView
     message: MessageView
     approval: ApprovalView | None = None
+    context_usage: ContextUsageView | None = None
+
+
+class MessageEdit(BaseModel):
+    """编辑最近一条用户消息并重新生成回答。"""
+
+    content: str = Field(min_length=1, max_length=20000)
+    idempotency_key: str = Field(min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9_-]+$")
+
+    @field_validator("content")
+    @classmethod
+    def clean_content(cls, value: str) -> str:
+        """拒绝空白问题。
+
+        Args:
+            value: 原始正文。
+
+        Returns:
+            保留格式的正文。
+        """
+        if not value.strip():
+            raise ValueError("问题不能为空")
+        return value
+
+
+class RegenerateInput(BaseModel):
+    """为最近一条助手消息创建替代运行。"""
+
+    idempotency_key: str = Field(min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9_-]+$")
 
 
 class MessagePage(BaseModel):
@@ -120,3 +197,4 @@ class MessagePage(BaseModel):
     items: list[MessageView]
     has_more: bool
     active_run_id: UUID | None
+    context_usage: ContextUsageView

@@ -36,7 +36,7 @@ class NoopProvider:
     def validate(self) -> None:
         """测试不调用真实模型。"""
 
-    async def stream(self, history: ChatHistory) -> AsyncIterator[str]:
+    async def stream(self, history: ChatHistory, *, model: str | None = None) -> AsyncIterator[str]:
         """返回固定正文。
 
         Args:
@@ -45,9 +45,12 @@ class NoopProvider:
         Yields:
             固定文本。
         """
+        del model
         yield "测试回答"
 
-    async def summarize(self, previous: str, history: ChatHistory, max_characters: int) -> str:
+    async def summarize(
+        self, previous: str, history: ChatHistory, max_characters: int, *, model: str | None = None
+    ) -> str:
         """返回固定摘要。
 
         Args:
@@ -58,6 +61,7 @@ class NoopProvider:
         Returns:
             固定摘要。
         """
+        del model
         return "摘要"
 
 

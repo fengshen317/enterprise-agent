@@ -1,11 +1,13 @@
 """真实 PostgreSQL 问答契约验证，模型使用可控替身而非收费 API。"""
 
 import asyncio
+import json
 import os
 import socket
 import subprocess
 import sys
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -38,13 +40,14 @@ class ControlledProvider:
         self.release = asyncio.Event()
         self.summary_received = asyncio.Event()
         self.summary_calls: list[tuple[str, ChatHistory, int]] = []
+        self.models: list[str | None] = []
 
     def validate(self) -> None:
         """模拟未配置模型的创建前拒绝。"""
         if self.mode == "missing":
             raise ApplicationError("MODEL_NOT_CONFIGURED", "未配置模型", 503)
 
-    async def stream(self, history: ChatHistory) -> AsyncIterator[str]:
+    async def stream(self, history: ChatHistory, *, model: str | None = None) -> AsyncIterator[str]:
         """返回可控片段，异常包含私密串以验证脱敏。
 
         Args:
@@ -54,6 +57,11 @@ class ControlledProvider:
             测试回复片段。
         """
         self.histories.append(history)
+        self.models.append(model)
+        if self.mode == "reason":
+            from app.agents.provider import StreamFragment
+
+            yield StreamFragment(reasoning="内部推理不应进入摘要")
         if self.mode == "empty":
             return
         yield "已保存的部分回答。" * 32
@@ -64,7 +72,9 @@ class ControlledProvider:
             raise RuntimeError("private-api-key-and-provider-body")
         yield "完成。"
 
-    async def summarize(self, previous: str, history: ChatHistory, max_characters: int) -> str:
+    async def summarize(
+        self, previous: str, history: ChatHistory, max_characters: int, *, model: str | None = None
+    ) -> str:
         """记录摘要输入并模拟失败或等待，日常测试不调用模型。
 
         Args:
@@ -75,6 +85,7 @@ class ControlledProvider:
         Returns:
             含固定事实的短摘要。
         """
+        del model
         self.summary_calls.append((previous, history, max_characters))
         self.summary_received.set()
         if self.mode == "summary_fail":
@@ -324,6 +335,8 @@ async def test_recovery_and_single_process(chat: tuple[FastAPI, AsyncClient, Con
         app.state.test_scope,
     )
     await runtime.store.save_content(snapshot.run.id, "重启前的内容")
+    await runtime.store.begin_run(snapshot.run.id)
+    assert await runtime.store.set_phase(snapshot.run.id, "compressing")
     await runtime.close()
     replacement = create_app(app.state.settings, provider)
     async with replacement.router.lifespan_context(replacement):
@@ -333,6 +346,7 @@ async def test_recovery_and_single_process(chat: tuple[FastAPI, AsyncClient, Con
             recovered = (await fresh.get(f"/api/runs/{snapshot.run.id}")).json()
             assert recovered["run"]["status"] == "failed"
             assert recovered["run"]["error_code"] == "PROCESS_RESTARTED"
+            assert recovered["run"]["phase"] is None
             assert recovered["message"]["content"] == "重启前的内容"
 
 
@@ -500,3 +514,132 @@ async def test_summary_version_and_boundary_guard(chat: tuple[FastAPI, AsyncClie
     assert not await store.save_summary(pending.run.id, 1, 2, "取消后的摘要", "test")
     await app.state.chat_runtime.cancel(pending.run.id)
     assert await summary_state(app, conversation) == ("摘要", 2, 1)
+
+
+async def test_model_selection_regenerate_and_usage(chat: tuple[FastAPI, AsyncClient, ControlledProvider]) -> None:
+    """对话级模型生效，重新生成不复制用户消息，用量标记为估算。"""
+    _, client, provider = chat
+    options = (await client.get("/api/models")).json()
+    assert {item["id"] for item in options} >= {"deepseek-flash", "deepseek-chat", "deepseek-reasoner"}
+    conversation = await new_conversation(client)
+    denied = await client.post(f"/api/conversations/{conversation}/model", json={"model": "gpt-4"})
+    assert denied.status_code == 422 and denied.json()["error"]["code"] == "MODEL_NOT_ALLOWED"
+    selected = await client.post(f"/api/conversations/{conversation}/model", json={"model": "deepseek-chat"})
+    assert selected.status_code == 200 and selected.json()["model"] == "deepseek-chat"
+    created = await submit(client, conversation, "第一个问题", "model-key")
+    assert created["run"]["model"] == "deepseek-chat"
+    await settled(client, created["run"]["id"])
+    assert provider.models[-1] == "deepseek-chat"
+    page = (await client.get(f"/api/conversations/{conversation}/messages")).json()
+    assert page["context_usage"]["estimate"] is True
+    assert page["context_usage"]["limit_characters"] > 0
+    assert len(page["items"]) == 2
+    assistant = page["items"][1]
+    user = page["items"][0]
+    regenerated = await client.post(f"/api/messages/{assistant['id']}/regenerate", json={"idempotency_key": "regen-1"})
+    assert regenerated.status_code == 202, regenerated.text
+    assert regenerated.json()["run"]["id"] != created["run"]["id"]
+    await settled(client, regenerated.json()["run"]["id"])
+    again = (await client.get(f"/api/conversations/{conversation}/messages")).json()
+    assert [item["role"] for item in again["items"]] == ["user", "assistant"]
+    assert again["items"][0]["content"] == "第一个问题"
+    assert again["items"][1]["run_id"] == regenerated.json()["run"]["id"]
+    assert provider.histories[-1] == [("user", "第一个问题")]
+    edited = await client.post(
+        f"/api/messages/{user['id']}/edit",
+        json={"content": "改写后的问题", "idempotency_key": "edit-1"},
+    )
+    assert edited.status_code == 202, edited.text
+    await settled(client, edited.json()["run"]["id"])
+    final = (await client.get(f"/api/conversations/{conversation}/messages")).json()
+    assert len(final["items"]) == 2
+    assert final["items"][0]["content"] == "改写后的问题"
+    assert provider.histories[-1] == [("user", "改写后的问题")]
+    follow = await submit(client, conversation, "下一问", "follow")
+    await settled(client, follow["run"]["id"])
+    older = await client.post(f"/api/messages/{assistant['id']}/regenerate", json={"idempotency_key": "regen-old"})
+    assert older.status_code == 409 and older.json()["error"]["code"] == "NOT_LAST_TURN"
+
+
+async def test_failed_regenerate_restores_answer(chat: tuple[FastAPI, AsyncClient, ControlledProvider]) -> None:
+    """替代运行失败时恢复原来的成功问答，后续上下文仍能看见它。"""
+    _, client, provider = chat
+    conversation = await new_conversation(client)
+    created = await submit(client, conversation, "需要保留的问题", "keep-1")
+    completed = await settled(client, created["run"]["id"])
+    original = completed["message"]["content"]
+    assistant_id = completed["message"]["id"]
+    provider.mode = "fail"
+    regenerated = await client.post(f"/api/messages/{assistant_id}/regenerate", json={"idempotency_key": "keep-regen"})
+    assert regenerated.status_code == 202, regenerated.text
+    failed = await settled(client, regenerated.json()["run"]["id"])
+    assert failed["run"]["status"] == "failed"
+    assert failed["message"]["id"] == assistant_id
+    assert failed["message"]["run_id"] == created["run"]["id"]
+    assert failed["message"]["content"] == original
+    page = (await client.get(f"/api/conversations/{conversation}/messages")).json()
+    assert page["items"][1]["content"] == original
+    assert page["items"][1]["status"] == "completed"
+    assert page["items"][1]["run_id"] == created["run"]["id"]
+    provider.mode = "success"
+    follow = await submit(client, conversation, "下一问", "keep-follow")
+    await settled(client, follow["run"]["id"])
+    assert original in json.dumps(provider.histories[-1], ensure_ascii=False)
+
+
+async def test_agent_context_keeps_restored_plan(chat: tuple[FastAPI, AsyncClient, ControlledProvider]) -> None:
+    """失败的替代运行不盖过已恢复的成功计划。"""
+    app, client, provider = chat
+    conversation = await new_conversation(client)
+    created = await submit(client, conversation, "先做计划", "plan-1")
+    completed = await settled(client, created["run"]["id"])
+    from app.models.tool_call import ToolCall
+
+    async with app.state.chat_runtime.database.session_factory.begin() as session:
+        session.add(
+            ToolCall(
+                run_id=UUID(created["run"]["id"]),
+                tool_name="update_plan",
+                status="completed",
+                result='{"steps":[{"title":"计划甲","status":"completed"}]}',
+                finished_at=datetime.now(UTC),
+            )
+        )
+    provider.mode = "fail"
+    regenerated = await client.post(
+        f"/api/messages/{completed['message']['id']}/regenerate", json={"idempotency_key": "plan-regen"}
+    )
+    assert regenerated.status_code == 202, regenerated.text
+    failed = await settled(client, regenerated.json()["run"]["id"])
+    async with app.state.chat_runtime.database.session_factory.begin() as session:
+        session.add(
+            ToolCall(
+                run_id=UUID(failed["run"]["id"]),
+                tool_name="update_plan",
+                status="completed",
+                result='{"steps":[{"title":"失败计划","status":"completed"}]}',
+                finished_at=datetime.now(UTC),
+            )
+        )
+    provider.mode = "success"
+    follow = await submit(client, conversation, "继续", "plan-follow")
+    context = await app.state.chat_runtime.store.agent_context(UUID(follow["run"]["id"]))
+    assert "计划甲" in context
+    assert "失败计划" not in context
+    await settled(client, follow["run"]["id"])
+
+
+async def test_reasoning_stays_out_of_later_context(chat: tuple[FastAPI, AsyncClient, ControlledProvider]) -> None:
+    """思考过程单独保存，后续上下文和摘要只看到正文。"""
+    app, client, provider = chat
+    provider.mode = "reason"
+    conversation = await new_conversation(client)
+    first = await submit(client, conversation, "需要推理的问题", "reason-1")
+    completed = await settled(client, first["run"]["id"])
+    assert completed["message"]["reasoning"] == "内部推理不应进入摘要"
+    assert "内部推理" not in completed["message"]["content"]
+    provider.mode = "success"
+    second = await submit(client, conversation, "继续", "reason-2")
+    await settled(client, second["run"]["id"])
+    assert "内部推理" not in json.dumps(provider.histories[-1], ensure_ascii=False)
+    assert await summary_state(app, conversation) == ("", 0, 0)

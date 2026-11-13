@@ -8,11 +8,11 @@ from uuid import uuid4
 import pytest
 
 from app.agents.context_types import ContextMessage, ContextState
-from app.agents.provider import ChatHistory
+from app.agents.provider import ChatHistory, StreamFragment
 from app.core.config import Settings
 from app.core.database import Database
 from app.core.errors import ApplicationError
-from app.services.chat_runtime import ChatRuntime
+from app.services.chat_runtime import ChatRuntime, injected_prefix
 from app.services.chat_store import ChatStore
 
 
@@ -22,7 +22,7 @@ class TextProvider:
     def validate(self) -> None:
         """测试替身始终已配置。"""
 
-    async def stream(self, history: ChatHistory) -> AsyncIterator[str]:
+    async def stream(self, history: ChatHistory, *, model: str | None = None) -> AsyncIterator[str]:
         """输出超过配置上限的片段。
 
         Args:
@@ -31,6 +31,7 @@ class TextProvider:
         Yields:
             边界测试正文。
         """
+        del model
         yield "字" * 1001
 
 
@@ -109,6 +110,58 @@ async def test_cancel_without_owned_task(runtime: ChatRuntime) -> None:
     )
     await runtime.cancel(run_id)
     runtime.store.finish.assert_awaited_once_with(run_id, "部分文本", "cancelled")
+
+
+def test_injected_prefix_reserves_retrieval_and_background() -> None:
+    """检索资料和上一轮协作资料都计入即将注入的前缀。"""
+    assert injected_prefix("", "") == ""
+    prefix = injected_prefix("资料甲", "计划乙")
+    assert "资料甲" in prefix and "计划乙" in prefix and prefix.endswith("本次用户要求：\n")
+
+
+async def test_reasoning_is_saved_apart_from_content() -> None:
+    """思考片段不写入正文，结束时单独交给存储。"""
+    settings = Settings(_env_file=None, environment="test")
+    database = Database(settings)
+    runtime = ChatRuntime(database, settings, ReasoningProvider())
+    runtime.store = AsyncMock(spec=ChatStore)
+    runtime.store.begin_run.return_value = ContextState(uuid4(), "", 0, 0, [ContextMessage(1, "user", "问题")])
+    try:
+        await runtime._execute(uuid4(), "request")
+    finally:
+        await runtime.close()
+        await database.close()
+    runtime.store.finish.assert_awaited_once()
+    assert runtime.store.finish.await_args.args[1] == "正文"
+    assert runtime.store.finish.await_args.args[5] == "先分析"
+
+
+class ReasoningProvider:
+    """同时产出思考过程和正文。"""
+
+    def validate(self) -> None:
+        """测试替身无需配置。"""
+
+    async def stream(self, history: ChatHistory, *, model: str | None = None) -> AsyncIterator[str | StreamFragment]:
+        """先给出思考，再给出正文。
+
+        Args:
+            history: 上下文。
+            model: 本次模型。
+
+        Yields:
+            思考片段和正文。
+        """
+        del history, model
+        yield StreamFragment(reasoning="先分析")
+        yield "正文"
+
+    async def summarize(
+        self, previous: str, history: ChatHistory, max_characters: int, *, model: str | None = None
+    ) -> str:
+        """测试不触发摘要。"""
+        del previous, history, max_characters, model
+        return "摘要"
 
 
 async def test_shutdown_rejects_new_requests(runtime: ChatRuntime) -> None:

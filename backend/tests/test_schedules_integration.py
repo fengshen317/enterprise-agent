@@ -31,7 +31,7 @@ class ScheduledProvider:
     def validate(self) -> None:
         """测试替身始终可用。"""
 
-    async def stream(self, history: ChatHistory) -> AsyncIterator[str]:
+    async def stream(self, history: ChatHistory, *, model: str | None = None) -> AsyncIterator[str]:
         """返回可断言的固定回答。
 
         Args:
@@ -40,9 +40,12 @@ class ScheduledProvider:
         Yields:
             固定正文。
         """
+        del model
         yield "定时回答。"
 
-    async def summarize(self, previous: str, history: ChatHistory, max_characters: int) -> str:
+    async def summarize(
+        self, previous: str, history: ChatHistory, max_characters: int, *, model: str | None = None
+    ) -> str:
         """测试不触发摘要时返回占位摘要。
 
         Args:
@@ -53,6 +56,7 @@ class ScheduledProvider:
         Returns:
             固定摘要。
         """
+        del model
         return "定时摘要"
 
 

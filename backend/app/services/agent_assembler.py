@@ -141,7 +141,7 @@ class AgentAssembler:
 
     async def snapshot_for_conversation(
         self, scope: ResourceScope, conversation_id: UUID
-    ) -> tuple[dict[str, object], UUID | None]:
+    ) -> tuple[dict[str, object], UUID | None, str | None, str]:
         """在创建运行前生成能力快照，保证提交和执行使用同一配置。
 
         Args:
@@ -149,7 +149,7 @@ class AgentAssembler:
             conversation_id: 目标对话。
 
         Returns:
-            (快照, Agent 标识)。
+            (快照, Agent 标识, 对话级模型, Agent 或默认模型)。
 
         Raises:
             ApplicationError: 对话不存在。
@@ -165,7 +165,8 @@ class AgentAssembler:
             if conversation is None:
                 raise ApplicationError("CONVERSATION_NOT_FOUND", "对话不存在", 404)
             assembly = await self.assemble(scope, conversation.agent_profile_id)
-        return assembly.snapshot, assembly.agent_id
+            conversation_model = conversation.model
+        return assembly.snapshot, assembly.agent_id, conversation_model, assembly.model
 
     async def _readable_agent(
         self, session: AsyncSession, scope: ResourceScope, agent_profile_id: UUID

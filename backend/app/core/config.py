@@ -1,5 +1,6 @@
 """集中加载并校验环境配置。"""
 
+import json
 from pathlib import Path
 from typing import Literal
 
@@ -26,6 +27,11 @@ class Settings(BaseSettings):
     # 工程检查不依赖模型凭证；调用模型时再检查是否已配置。
     deepseek_api_key: SecretStr = SecretStr("")
     deepseek_model: str = Field(default="deepseek-flash", min_length=1, max_length=200)
+    allowed_models: list[str] = Field(default_factory=lambda: ["deepseek-flash", "deepseek-chat", "deepseek-reasoner"])
+    reasoner_models: list[str] = Field(default_factory=lambda: ["deepseek-reasoner"])
+    model_max_tokens_by_model: dict[str, int] = Field(
+        default_factory=lambda: {"deepseek-flash": 4096, "deepseek-chat": 8192, "deepseek-reasoner": 16384}
+    )
     model_timeout_seconds: float = Field(default=120, gt=0, le=600)
     chat_run_timeout_seconds: float = Field(default=1800, gt=0, le=3600)
     model_max_tokens: int = Field(default=4096, ge=1, le=8192)
@@ -111,6 +117,85 @@ class Settings(BaseSettings):
         "http://localhost:8000",
     ]
     database_timeout_seconds: float = Field(default=3, gt=0, le=30)
+
+    @field_validator("allowed_models", "reasoner_models", mode="before")
+    @classmethod
+    def parse_model_list(cls, value: object) -> object:
+        """接受 JSON 数组或逗号分隔的模型名。
+
+        Args:
+            value: 环境变量或默认列表。
+
+        Returns:
+            模型名列表。
+        """
+        if isinstance(value, str):
+            text = value.strip()
+            if text.startswith("["):
+                parsed = json.loads(text)
+                if not isinstance(parsed, list):
+                    raise ValueError("模型列表必须是数组")
+                return parsed
+            return [item.strip() for item in text.split(",") if item.strip()]
+        return value
+
+    @field_validator("allowed_models", "reasoner_models")
+    @classmethod
+    def clean_model_list(cls, value: list[str]) -> list[str]:
+        """去掉空白项，并拒绝空的允许列表。
+
+        Args:
+            value: 已解析的模型名。
+
+        Returns:
+            去重后仍保持原顺序的模型名。
+        """
+        cleaned: list[str] = []
+        for item in value:
+            name = item.strip()
+            if name and name not in cleaned:
+                cleaned.append(name)
+        if not cleaned:
+            raise ValueError("模型列表不能为空")
+        return cleaned
+
+    @field_validator("model_max_tokens_by_model", mode="before")
+    @classmethod
+    def parse_token_caps(cls, value: object) -> object:
+        """接受 JSON 对象形式的分模型输出上限。
+
+        Args:
+            value: 环境变量或默认字典。
+
+        Returns:
+            模型名到 token 上限的映射。
+        """
+        if isinstance(value, str):
+            parsed = json.loads(value)
+            if not isinstance(parsed, dict):
+                raise ValueError("分模型输出上限必须是对象")
+            return parsed
+        return value
+
+    @field_validator("model_max_tokens_by_model")
+    @classmethod
+    def validate_token_caps(cls, value: dict[str, int]) -> dict[str, int]:
+        """限制每个模型的输出上限，推理模型可以高于全局默认值。
+
+        Args:
+            value: 模型名到 token 上限。
+
+        Returns:
+            校验后的映射。
+        """
+        cleaned: dict[str, int] = {}
+        for name, cap in value.items():
+            key = str(name).strip()
+            number = int(cap)
+            if not key or number < 1 or number > 128000:
+                raise ValueError("分模型输出上限必须在 1 到 128000 之间")
+            cleaned[key] = number
+        return cleaned
 
     @field_validator("database_host", "database_user", "database_name")
     @classmethod

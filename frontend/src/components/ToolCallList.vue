@@ -78,7 +78,8 @@ const autoRetrieve = computed(() => {
     return Array.isArray(parsed.chunks) ? parsed.chunks : []
   } catch { return [] }
 })
-watch(autoRetrieve, chunks => { if (chunks.length) emit('auto-chunks', chunks) }, { immediate: true })
+const loaded = ref(false)
+watch(autoRetrieve, chunks => { if (loaded.value) emit('auto-chunks', chunks) })
 const stepLabels: Record<string, string> = { pending: '待处理', in_progress: '进行中', completed: '已完成' }
 const agentLabels: Record<string, string> = { awaiting_approval: '等待审批', running: '执行中', completed: '已完成', failed: '失败', cancelled: '已停止', denied: '已拒绝', expired: '已过期' }
 const now = ref(Date.now())
@@ -94,6 +95,7 @@ async function load(): Promise<void> {
   try {
     const rows = await getToolCalls(props.runId)
     if (!alive || token !== generation) return
+    loaded.value = true
     calls.value = rows
   } catch (value) {
     if (alive && token === generation) error.value = value instanceof Error ? value.message : '暂时无法读取工具记录'
@@ -110,7 +112,15 @@ function toggle(event: Event): void {
   else { generation++; clearTimeout(timer); loading.value = false }
 }
 onMounted(() => { if (opened.value) void load() })
-watch(() => props.messageStatus, () => { if (opened.value) void load() })
+watch(() => props.runId, () => {
+  loaded.value = false
+  if (props.messageStatus === 'streaming') opened.value = true
+  if (opened.value) void load()
+})
+watch(() => props.messageStatus, status => {
+  if (status === 'streaming') opened.value = true
+  if (opened.value) void load()
+})
 onBeforeUnmount(() => { alive = false; generation++; clearTimeout(timer); clearInterval(clock) })
 </script>
 

@@ -22,7 +22,7 @@
 
 ## 数据
 
-迁移 `0016`，就绪检查 `schema_version=16`。
+渠道表在迁移 `0016`，交互补充在 `0017`。当前仓库 head 已到 `0018`，就绪检查以 `schema_version=18` 为准。
 
 - `channel_accounts`：用户、当前空间、bot id、user id、baseurl、token 密文、游标、状态、暂停到何时。同一用户同时只能有一条未解绑记录。
 - `channel_bind_sessions`：扫码完成前的二维码。
