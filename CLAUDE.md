@@ -140,7 +140,7 @@ cd backend && uv run python -m app.cli.accounts init --username admin --claim-le
 
 ### 数据与迁移
 
-- 迁移 head 为 `0013`（`backend/alembic/versions/`）。应用启动**不会**自动迁移；新增模型后必须在 `backend/alembic/env.py` 显式导入，否则 `alembic check` 会漏表。
+- 迁移 head 为 `0017`（`backend/alembic/versions/`，0016/0017 为微信 iLink 渠道）。应用启动**不会**自动迁移；新增模型后必须在 `backend/alembic/env.py` 显式导入，否则 `alembic check` 会漏表。
 - 配置统一前缀 `EA_`，从 `backend/.env` 读取（`app/core/config.py`），密码用 `SecretStr`；测试库必须与开发库不同且以 `_test` 结尾。
 
 ## 关键约束

@@ -13,7 +13,7 @@ from app.core.errors import ApplicationError
 from app.models.system import SystemMetadata
 
 router = APIRouter(prefix="/api/health", tags=["系统健康"])
-SCHEMA_VERSION = "15"
+SCHEMA_VERSION = "17"
 
 
 class HealthResponse(BaseModel):
