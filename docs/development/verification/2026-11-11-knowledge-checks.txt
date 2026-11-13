@@ -1,0 +1,181 @@
+
+检查：backend / uv run --frozen ruff check .
+All checks passed!
+
+检查：backend / uv run --frozen ruff format --check .
+99 files already formatted
+
+检查：backend / uv run --frozen mypy app/
+Success: no issues found in 56 source files
+
+检查：backend / uv run --frozen pytest
+============================= test session starts =============================
+platform win32 -- Python 3.13.9, pytest-9.2.0, pluggy-1.7.0
+rootdir: D:\project\enterprise-agent\backend
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.16.0, langsmith-0.14.17, asyncio-1.4.1.post1, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 241 items
+
+tests\test_accounts_cli.py ...                                           [  1%]
+tests\test_admin_integration.py .......                                  [  4%]
+tests\test_auth_integration.py ..................                        [ 11%]
+tests\test_chat_agent_integration.py ..........                          [ 15%]
+tests\test_chat_integration.py ...........                               [ 20%]
+tests\test_chat_runtime.py .....                                         [ 22%]
+tests\test_config_logging.py ...........                                 [ 26%]
+tests\test_context_builder.py ...............                            [ 33%]
+tests\test_database_integration.py .                                     [ 33%]
+tests\test_health.py ........                                            [ 36%]
+tests\test_identity_integration.py .                                     [ 37%]
+tests\test_knowledge_integration.py .....                                [ 39%]
+tests\test_knowledge_schema.py .........                                 [ 43%]
+tests\test_provider.py .......                                           [ 46%]
+tests\test_ragflow_client.py .......                                     [ 48%]
+tests\test_schedules_integration.py ....                                 [ 50%]
+tests\test_scheduling.py .......                                         [ 53%]
+tests\test_security.py .......                                           [ 56%]
+tests\test_task_provider.py ......                                       [ 58%]
+tests\test_task_retry.py .....................                           [ 67%]
+tests\test_task_retry_recovery.py ....                                   [ 69%]
+tests\test_task_runtime.py ...                                           [ 70%]
+tests\test_task_validation.py .......................................... [ 87%]
+                                                                         [ 87%]
+tests\test_tasks_integration.py .................                        [ 95%]
+tests\test_tools_integration.py ............                             [100%]
+
+=============================== tests coverage ================================
+_______________ coverage: platform win32, python 3.13.9-final-0 _______________
+
+Name                               Stmts   Miss  Cover   Missing
+----------------------------------------------------------------
+app\__init__.py                        0      0   100%
+app\agents\context_types.py           14      0   100%
+app\agents\provider.py               112      8    93%   95, 128, 140, 179-180, 192, 226, 252
+app\agents\task_provider.py           57      4    93%   64, 111, 115, 144
+app\api\__init__.py                    0      0   100%
+app\api\admin.py                      23      0   100%
+app\api\auth.py                       61      3    95%   79-80, 169
+app\api\chat.py                       82      1    99%   203
+app\api\health.py                     28      0   100%
+app\api\knowledge.py                  49      2    96%   36, 184
+app\api\schedules.py                  33      0   100%
+app\api\tasks.py                      77      9    88%   144, 165, 201-203, 211-214
+app\cli\__init__.py                    0      0   100%
+app\cli\accounts.py                   49     19    61%   19-41, 71-76, 80
+app\core\__init__.py                   0      0   100%
+app\core\config.py                    79      0   100%
+app\core\database.py                  16      0   100%
+app\core\errors.py                    30      0   100%
+app\core\logging.py                   18      0   100%
+app\core\security.py                  30      0   100%
+app\main.py                           81      1    99%   70
+app\models\__init__.py                 0      0   100%
+app\models\admin_audit.py             20      0   100%
+app\models\base.py                     4      0   100%
+app\models\conversation.py            48      0   100%
+app\models\identity.py                65      0   100%
+app\models\knowledge.py               46      0   100%
+app\models\schedule.py                24      0   100%
+app\models\system.py                   9      0   100%
+app\models\task.py                   104      0   100%
+app\models\tool_call.py               17      0   100%
+app\schemas\admin.py                  47      1    98%   34
+app\schemas\auth.py                   33      0   100%
+app\schemas\chat.py                   60      0   100%
+app\schemas\chat_agent.py             20      0   100%
+app\schemas\knowledge.py             102      3    97%   43, 79, 133
+app\schemas\schedule.py               49      4    92%   32, 47, 62, 65
+app\schemas\task.py                  125      1    99%   46
+app\schemas\tools.py                  23      0   100%
+app\services\accounts.py              67      6    91%   65, 67, 75, 111, 150, 165
+app\services\admin.py                 77     37    52%   56-58, 107-125, 145-166, 181-229, 244-251
+app\services\auth.py                  94     17    82%   43, 90-98, 106-110, 114, 125, 229-230, 251
+app\services\chat_agent.py           116      9    92%   88, 121-122, 127, 151, 164, 180, 184, 210
+app\services\chat_runtime.py         136     14    90%   66-71, 73-76, 99, 119, 128-129
+app\services\chat_store.py           155     25    84%   44-47, 62-68, 83-95, 119, 124-131, 133, 140, 174, 203, 250, 354, 375, 423, 450, 460
+app\services\context_builder.py       88      1    99%   148
+app\services\knowledge.py            307    149    51%   134, 158-160, 181-183, 202-204, 217, 220-236, 254-262, 265-273, 288-303, 317-319, 334-345, 350-358, 369-373, 377-384, 412, 416-437, 456-465, 480-482, 487-489, 501, 515-518, 535-545, 551-553, 565-569, 573-575, 606-607, 646, 681-686, 695-696, 721-737
+app\services\ragflow.py              157     38    76%   169-174, 177-179, 181, 219, 246, 268, 272, 340-373, 425, 430, 434, 437, 442
+app\services\read_tools.py            14      0   100%
+app\services\schedule_runtime.py     114     52    54%   47, 59-63, 67-101, 138-146, 184-186, 188-193
+app\services\schedule_store.py       119     51    57%   91-95, 123-138, 153-176, 193-203, 218-240, 251-262, 294, 297-303, 344-345
+app\services\scheduling.py            26      2    92%   65, 68
+app\services\task_retry.py            78      3    96%   70, 104, 107
+app\services\task_runtime.py         245     23    91%   107, 123-124, 132-137, 178-179, 187-188, 215, 224, 226, 235, 239, 299, 303-304, 339, 345
+app\services\task_store.py           439    130    70%   70, 85, 116, 120, 222, 236-238, 240-248, 282-289, 392, 425, 429, 469, 471, 473, 513-566, 572-577, 583-589, 604, 623-629, 631, 638, 640, 660, 665, 667, 739, 780, 822, 824, 835, 837, 896, 907, 979, 982-998, 1046-1058, 1097-1121, 1133-1138
+app\services\tools.py                113     10    91%   183, 188, 212-213, 216, 218, 222, 225, 244-255
+----------------------------------------------------------------
+TOTAL                               3980    623    84%
+Required test coverage of 80% reached. Total coverage: 84.35%
+======================= 241 passed in 317.30s (0:05:17) =======================
+
+检查：frontend / npm run lint
+
+> enterprise-agent-frontend@0.1.0 lint
+> eslint .
+
+
+检查：frontend / npm run typecheck
+
+> enterprise-agent-frontend@0.1.0 typecheck
+> vue-tsc --noEmit
+
+
+检查：frontend / npm run test
+
+> enterprise-agent-frontend@0.1.0 test
+> vitest run
+
+
+[1m[46m RUN [49m[22m [36mv3.2.7 [39m[90mD:/project/enterprise-agent/frontend[39m
+
+ [32m✓[39m src/api/chat.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 54[2mms[22m[39m
+ [32m✓[39m src/api/auth.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 34[2mms[22m[39m
+ [32m✓[39m src/api/health.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 40[2mms[22m[39m
+ [32m✓[39m src/stores/auth.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 26[2mms[22m[39m
+ [32m✓[39m src/views/SystemStatusView.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 310[2mms[22m[39m
+   [33m[2m✓[22m[39m 系统状态展示[2m > [22m数据库失败时仍展示 API 存活，并允许重试恢复 [33m 307[2mms[22m[39m
+ [32m✓[39m src/views/LoginView.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 367[2mms[22m[39m
+ [32m✓[39m src/utils/markdown.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 348[2mms[22m[39m
+ [32m✓[39m src/components/CronBuilder.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 532[2mms[22m[39m
+ [32m✓[39m src/components/ToolCallList.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 458[2mms[22m[39m
+ [32m✓[39m src/components/MarkdownBody.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 551[2mms[22m[39m
+   [33m[2m✓[22m[39m 把 Markdown 表格渲染为可读的 HTML 表格 [33m 330[2mms[22m[39m
+ [32m✓[39m src/views/KnowledgeView.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 829[2mms[22m[39m
+   [33m[2m✓[22m[39m 加载知识库并自动读取首个知识库文档 [33m 314[2mms[22m[39m
+   [33m[2m✓[22m[39m 管理员可以创建空间知识库并提交解析设置 [33m 312[2mms[22m[39m
+ [32m✓[39m src/views/AdminView.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 892[2mms[22m[39m
+ [32m✓[39m src/views/SchedulesView.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 981[2mms[22m[39m
+   [33m[2m✓[22m[39m 读取并展示当前用户的定时任务 [33m 393[2mms[22m[39m
+ [32m✓[39m src/api/knowledge.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 21[2mms[22m[39m
+ [32m✓[39m src/api/schedules.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 37[2mms[22m[39m
+ [32m✓[39m src/views/TasksView.test.ts [2m([22m[2m16 tests[22m[2m)[22m[33m 1200[2mms[22m[39m
+   [33m[2m✓[22m[39m 明确提交目标才创建任务，生成计划后不自动执行 [33m 370[2mms[22m[39m
+ [32m✓[39m src/views/ChatView.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 1366[2mms[22m[39m
+   [33m[2m✓[22m[39m 恢复数据库历史，提交追问并停止生成 [33m 775[2mms[22m[39m
+ [32m✓[39m src/api/tasks.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m18 passed[39m[22m[90m (18)[39m
+[2m      Tests [22m [1m[32m84 passed[39m[22m[90m (84)[39m
+[2m   Start at [22m 19:11:28
+[2m   Duration [22m 6.99s[2m (transform 11.14s, setup 0ms, collect 31.56s, tests 8.06s, environment 36.39s, prepare 3.59s)[22m
+
+
+检查：frontend / npm run build
+
+> enterprise-agent-frontend@0.1.0 build
+> vue-tsc -b && vite build
+
+[36mvite v7.3.7 [32mbuilding client environment for production...[36m[39m
+transforming...
+[32m✓[39m 74 modules transformed.
+rendering chunks...
+computing gzip size...
+[2mdist/[22m[32mindex.html                 [39m[1m[2m  0.42 kB[22m[1m[22m[2m │ gzip:  0.32 kB[22m
+[2mdist/[22m[35massets/index-CTh-gT36.css  [39m[1m[2m 30.81 kB[22m[1m[22m[2m │ gzip:  5.61 kB[22m
+[2mdist/[22m[36massets/index-HHuXZvtK.js   [39m[1m[2m252.14 kB[22m[1m[22m[2m │ gzip: 89.16 kB[22m
+[32m✓ built in 1.70s[39m
+
+全部本地检查通过。包含真实数据库集成测试。

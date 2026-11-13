@@ -1,0 +1,14 @@
+# Agent 工作台全量检查（2026-11-12）
+
+命令：`node scripts/check.mjs --database`（项目根目录）
+
+结果：全部通过。
+
+- 后端 Ruff 检查与格式：通过。
+- 后端 strict mypy：通过，78 个源文件。
+- 后端 pytest：270 passed；覆盖率 82.92%（门禁 80%）。
+- 前端 ESLint、vue-tsc、Vitest、Vite build：通过；Vitest 107 passed。
+- 数据库迁移：开发库 `0013 (head)`，`alembic check` 无差异。
+- 集成测试使用真实 `*_test` PostgreSQL 数据库；审批相关测试使用受控工具执行，不调用付费模型。
+
+未执行：真实浏览器视觉验收、真实模型 Agent 工作台冒烟、真实 300 秒审批人工等待。

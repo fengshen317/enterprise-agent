@@ -1,0 +1,39 @@
+{
+  "name": "enterprise-agent-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vue-tsc -b && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "typecheck": "vue-tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "dompurify": "^3.4.17",
+    "marked": "^18.2.0",
+    "pinia": "^4.1.0",
+    "vue": "^3.5.0",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/node": "^24.0.0",
+    "@vitejs/plugin-vue": "^6.0.0",
+    "@vue/test-utils": "^2.4.6",
+    "eslint": "^9.0.0",
+    "eslint-plugin-vue": "^10.0.0",
+    "jsdom": "^26.0.0",
+    "sass": "^1.89.0",
+    "typescript": "~5.9.0",
+    "typescript-eslint": "^8.0.0",
+    "vite": "^7.1.0",
+    "vitest": "^3.2.0",
+    "vue-tsc": "^3.0.0"
+  }
+}

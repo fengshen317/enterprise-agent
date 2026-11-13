@@ -1,0 +1,9 @@
+{"verified": false, "error_type": "TimeoutError"}
+
+{"timestamp": "2026-11-04T09:16:54.602562+00:00", "level": "INFO", "logger": "app.main", "event": "http_request", "request_id": "5364b7b796014e1290aeac31268c17c8", "method": "POST", "path": "/api/auth/login", "status_code": 200, "duration_ms": 88.84}
+{"timestamp": "2026-11-04T09:16:54.920694+00:00", "level": "INFO", "logger": "app.main", "event": "http_request", "request_id": "6ba917359c39490aa040ce1c5bfb4d74", "method": "POST", "path": "/api/conversations", "status_code": 201, "duration_ms": 316.05}
+{"timestamp": "2026-11-04T09:16:54.982848+00:00", "level": "INFO", "logger": "app.services.chat_runtime", "event": "run_started", "request_id": "c175a275afff409b830c3632e79e5bb8", "run_id": "1fd80819-48ec-4437-baa4-de58fb46fa77"}
+{"timestamp": "2026-11-04T09:16:54.986914+00:00", "level": "INFO", "logger": "app.main", "event": "http_request", "request_id": "c175a275afff409b830c3632e79e5bb8", "method": "POST", "path": "/api/conversations/82a3be92-8ba0-47b7-99b9-79659036c2ae/runs", "status_code": 202, "duration_ms": 63.95}
+{"timestamp": "2026-11-04T09:17:01.027049+00:00", "level": "INFO", "logger": "app.main", "event": "http_request", "request_id": "5eb506cf262e480fb7fa256265bb17e3", "method": "GET", "path": "/api/runs/1fd80819-48ec-4437-baa4-de58fb46fa77", "status_code": 500, "duration_ms": 6038.72}
+{"timestamp": "2026-11-04T09:17:01.027589+00:00", "level": "ERROR", "logger": "app.core.errors", "event": "unexpected_error", "request_id": "5eb506cf262e480fb7fa256265bb17e3", "error_type": "TimeoutError"}
+{"timestamp": "2026-11-04T09:17:01.045084+00:00", "level": "INFO", "logger": "app.services.chat_runtime", "event": "run_finished", "request_id": "c175a275afff409b830c3632e79e5bb8", "run_id": "1fd80819-48ec-4437-baa4-de58fb46fa77"}

@@ -1,0 +1,147 @@
+
+检查：backend / uv run --frozen ruff check .
+All checks passed!
+
+检查：backend / uv run --frozen ruff format --check .
+75 files already formatted
+
+检查：backend / uv run --frozen mypy app/
+Success: no issues found in 43 source files
+
+检查：backend / uv run --frozen pytest
+============================= test session starts =============================
+platform win32 -- Python 3.13.9, pytest-9.2.0, pluggy-1.7.0
+rootdir: D:\project\enterprise-agent\backend
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.16.0, langsmith-0.14.17, asyncio-1.4.1.post1, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 192 items
+
+tests\test_accounts_cli.py ...                                           [  1%]
+tests\test_admin_integration.py .......                                  [  5%]
+tests\test_auth_integration.py ..................                        [ 14%]
+tests\test_chat_integration.py ...........                               [ 20%]
+tests\test_chat_runtime.py .....                                         [ 22%]
+tests\test_config_logging.py ...........                                 [ 28%]
+tests\test_context_builder.py ...............                            [ 36%]
+tests\test_database_integration.py .                                     [ 36%]
+tests\test_health.py ........                                            [ 41%]
+tests\test_identity_integration.py .                                     [ 41%]
+tests\test_provider.py .......                                           [ 45%]
+tests\test_security.py .......                                           [ 48%]
+tests\test_task_provider.py ......                                       [ 52%]
+tests\test_task_retry.py .....................                           [ 63%]
+tests\test_task_validation.py .......................................... [ 84%]
+                                                                         [ 84%]
+tests\test_tasks_integration.py .................                        [ 93%]
+tests\test_tools_integration.py ............                             [100%]
+
+=============================== tests coverage ================================
+_______________ coverage: platform win32, python 3.13.9-final-0 _______________
+
+Name                              Stmts   Miss  Cover   Missing
+---------------------------------------------------------------
+app\__init__.py                       0      0   100%
+app\agents\context_types.py          14      0   100%
+app\agents\provider.py               88      7    92%   119, 144, 204-208
+app\agents\task_provider.py          55      3    95%   109, 113, 142
+app\api\__init__.py                   0      0   100%
+app\api\admin.py                     23      0   100%
+app\api\auth.py                      61      3    95%   79-80, 169
+app\api\chat.py                      82      1    99%   203
+app\api\health.py                    28      0   100%
+app\api\tasks.py                     77      9    88%   144, 165, 201-203, 211-214
+app\cli\__init__.py                   0      0   100%
+app\cli\accounts.py                  49     19    61%   19-41, 71-76, 80
+app\core\__init__.py                  0      0   100%
+app\core\config.py                   62      0   100%
+app\core\database.py                 16      0   100%
+app\core\errors.py                   30      0   100%
+app\core\logging.py                  18      0   100%
+app\core\security.py                 30      0   100%
+app\main.py                          63      0   100%
+app\models\__init__.py                0      0   100%
+app\models\admin_audit.py            20      0   100%
+app\models\base.py                    4      0   100%
+app\models\conversation.py           48      0   100%
+app\models\identity.py               65      0   100%
+app\models\system.py                  9      0   100%
+app\models\task.py                  104      0   100%
+app\models\tool_call.py              17      0   100%
+app\schemas\admin.py                 47      1    98%   34
+app\schemas\auth.py                  33      0   100%
+app\schemas\chat.py                  60      0   100%
+app\schemas\task.py                 124      1    99%   46
+app\schemas\tools.py                 23      0   100%
+app\services\accounts.py             67      6    91%   65, 67, 75, 111, 150, 165
+app\services\admin.py                77     37    52%   56-58, 107-125, 145-166, 181-229, 244-251
+app\services\auth.py                 94     19    80%   43, 90-98, 106-109, 113, 125, 157-158, 179, 229-230, 251
+app\services\chat_runtime.py        129     12    91%   57-62, 64-67, 90, 110
+app\services\chat_store.py          136     23    83%   44-47, 62-68, 83-95, 119, 124-131, 133, 140, 174, 203, 250, 371, 398, 408
+app\services\context_builder.py      88      1    99%   148
+app\services\read_tools.py           14      0   100%
+app\services\task_retry.py           78      5    94%   70, 103-105, 107
+app\services\task_runtime.py        230     22    90%   96-101, 116, 122-125, 177-178, 210, 212, 221, 225, 278, 282-283, 318, 324
+app\services\task_store.py          422    121    71%   69, 84, 119, 221, 235-237, 239-247, 281-288, 391, 424, 428, 462, 467, 469, 471, 509-563, 573-574, 584-585, 600, 619-625, 627, 634, 636, 656, 661, 663, 735, 810, 812, 823, 825, 880, 916, 963-971, 985-995, 1032-1056, 1068-1073
+app\services\tools.py                75      2    97%   169-180
+---------------------------------------------------------------
+TOTAL                              2660    292    89%
+Required test coverage of 80% reached. Total coverage: 89.02%
+======================= 192 passed in 195.14s (0:03:15) =======================
+
+检查：frontend / npm run lint
+
+> enterprise-agent-frontend@0.1.0 lint
+> eslint .
+
+
+检查：frontend / npm run typecheck
+
+> enterprise-agent-frontend@0.1.0 typecheck
+> vue-tsc --noEmit
+
+
+检查：frontend / npm run test
+
+> enterprise-agent-frontend@0.1.0 test
+> vitest run
+
+
+[1m[46m RUN [49m[22m [36mv3.2.7 [39m[90mD:/project/enterprise-agent/frontend[39m
+
+ [32m✓[39m src/api/auth.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m src/api/health.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m src/api/chat.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/api/tasks.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m src/stores/auth.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m src/components/ToolCallList.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 36[2mms[22m[39m
+ [32m✓[39m src/views/LoginView.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 51[2mms[22m[39m
+ [32m✓[39m src/views/SystemStatusView.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 54[2mms[22m[39m
+ [32m✓[39m src/views/AdminView.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 104[2mms[22m[39m
+ [32m✓[39m src/views/ChatView.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 126[2mms[22m[39m
+ [32m✓[39m src/views/TasksView.test.ts [2m([22m[2m16 tests[22m[2m)[22m[32m 155[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m11 passed[39m[22m[90m (11)[39m
+[2m      Tests [22m [1m[32m48 passed[39m[22m[90m (48)[39m
+[2m   Start at [22m 23:00:55
+[2m   Duration [22m 1.50s[2m (transform 1.37s, setup 0ms, collect 4.36s, tests 568ms, environment 4.97s, prepare 1.12s)[22m
+
+
+检查：frontend / npm run build
+
+> enterprise-agent-frontend@0.1.0 build
+> vue-tsc -b && vite build
+
+[36mvite v7.3.7 [32mbuilding client environment for production...[36m[39m
+transforming...
+[32m✓[39m 61 modules transformed.
+rendering chunks...
+computing gzip size...
+[2mdist/[22m[32mindex.html                 [39m[1m[2m  0.42 kB[22m[1m[22m[2m │ gzip:  0.32 kB[22m
+[2mdist/[22m[35massets/index-D9SdCDpj.css  [39m[1m[2m 26.77 kB[22m[1m[22m[2m │ gzip:  5.26 kB[22m
+[2mdist/[22m[36massets/index-DcNY2i6U.js   [39m[1m[2m154.90 kB[22m[1m[22m[2m │ gzip: 57.54 kB[22m
+[32m✓ built in 1.09s[39m
+
+全部本地检查通过。包含真实数据库集成测试。
+

@@ -1,0 +1,126 @@
+
+检查：backend / uv run --frozen ruff check .
+All checks passed!
+
+检查：backend / uv run --frozen ruff format --check .
+55 files already formatted
+
+检查：backend / uv run --frozen mypy app/
+Success: no issues found in 31 source files
+
+检查：backend / uv run --frozen pytest
+============================= test session starts =============================
+platform win32 -- Python 3.13.9, pytest-9.2.0, pluggy-1.7.0
+rootdir: D:\project\enterprise-agent\backend
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.16.0, langsmith-0.14.17, asyncio-1.4.1.post1, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 99 items
+
+tests\test_accounts_cli.py ...                                           [  3%]
+tests\test_auth_integration.py ..................                        [ 21%]
+tests\test_chat_integration.py ...........                               [ 32%]
+tests\test_chat_runtime.py .....                                         [ 37%]
+tests\test_config_logging.py ...........                                 [ 48%]
+tests\test_context_builder.py ...............                            [ 63%]
+tests\test_database_integration.py .                                     [ 64%]
+tests\test_health.py ........                                            [ 72%]
+tests\test_identity_integration.py .                                     [ 73%]
+tests\test_provider.py .......                                           [ 80%]
+tests\test_security.py .......                                           [ 87%]
+tests\test_tools_integration.py ............                             [100%]
+
+=============================== tests coverage ================================
+_______________ coverage: platform win32, python 3.13.9-final-0 _______________
+
+Name                              Stmts   Miss  Cover   Missing
+---------------------------------------------------------------
+app\__init__.py                       0      0   100%
+app\agents\context_types.py          14      0   100%
+app\agents\provider.py               82      7    91%   104, 129, 189-193
+app\api\__init__.py                   0      0   100%
+app\api\auth.py                      61      3    95%   79-80, 169
+app\api\chat.py                      82      1    99%   203
+app\api\health.py                    28      0   100%
+app\cli\__init__.py                   0      0   100%
+app\cli\accounts.py                  49     19    61%   19-41, 71-76, 80
+app\core\__init__.py                  0      0   100%
+app\core\config.py                   53      0   100%
+app\core\database.py                 16      0   100%
+app\core\errors.py                   30      0   100%
+app\core\logging.py                  18      0   100%
+app\core\security.py                 30      0   100%
+app\main.py                          53      0   100%
+app\models\__init__.py                0      0   100%
+app\models\base.py                    4      0   100%
+app\models\conversation.py           48      0   100%
+app\models\identity.py               65      0   100%
+app\models\system.py                  9      0   100%
+app\models\tool_call.py              17      0   100%
+app\schemas\auth.py                  33      0   100%
+app\schemas\chat.py                  60      0   100%
+app\schemas\tools.py                 23      0   100%
+app\services\accounts.py             67      6    91%   65, 67, 75, 111, 150, 165
+app\services\auth.py                 94     24    74%   43, 90-98, 106-125, 157-158, 179, 229-230, 251
+app\services\chat_runtime.py        129     12    91%   57-62, 64-67, 90, 110
+app\services\chat_store.py          136     23    83%   44-47, 62-68, 83-95, 119, 124-131, 133, 140, 174, 203, 250, 371, 398, 408
+app\services\context_builder.py      88      1    99%   148
+app\services\tools.py                77      1    99%   193
+---------------------------------------------------------------
+TOTAL                              1366     97    93%
+Required test coverage of 80% reached. Total coverage: 92.90%
+======================= 99 passed in 133.80s (0:02:13) ========================
+
+检查：frontend / npm run lint
+
+> enterprise-agent-frontend@0.1.0 lint
+> eslint .
+
+
+检查：frontend / npm run typecheck
+
+> enterprise-agent-frontend@0.1.0 typecheck
+> vue-tsc --noEmit
+
+
+检查：frontend / npm run test
+
+> enterprise-agent-frontend@0.1.0 test
+> vitest run
+
+
+[1m[46m RUN [49m[22m [36mv3.2.7 [39m[90mD:/project/enterprise-agent/frontend[39m
+
+ [32m✓[39m src/api/auth.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m src/api/health.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m src/api/chat.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m src/stores/auth.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m src/components/ToolCallList.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 36[2mms[22m[39m
+ [32m✓[39m src/views/SystemStatusView.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 46[2mms[22m[39m
+ [32m✓[39m src/views/LoginView.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 48[2mms[22m[39m
+ [32m✓[39m src/views/ChatView.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 146[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m8 passed[39m[22m[90m (8)[39m
+[2m      Tests [22m [1m[32m21 passed[39m[22m[90m (21)[39m
+[2m   Start at [22m 17:16:25
+[2m   Duration [22m 1.35s[2m (transform 877ms, setup 0ms, collect 2.39s, tests 308ms, environment 3.22s, prepare 803ms)[22m
+
+
+检查：frontend / npm run build
+
+> enterprise-agent-frontend@0.1.0 build
+> vue-tsc -b && vite build
+
+[36mvite v7.3.7 [32mbuilding client environment for production...[36m[39m
+transforming...
+[32m✓[39m 53 modules transformed.
+rendering chunks...
+computing gzip size...
+[2mdist/[22m[32mindex.html                 [39m[1m[2m  0.42 kB[22m[1m[22m[2m │ gzip:  0.32 kB[22m
+[2mdist/[22m[35massets/index-aK62gRNj.css  [39m[1m[2m 13.57 kB[22m[1m[22m[2m │ gzip:  3.29 kB[22m
+[2mdist/[22m[36massets/index-BEk6hPdc.js   [39m[1m[2m123.02 kB[22m[1m[22m[2m │ gzip: 48.02 kB[22m
+[32m✓ built in 1.12s[39m
+
+全部本地检查通过。包含真实数据库集成测试。
+

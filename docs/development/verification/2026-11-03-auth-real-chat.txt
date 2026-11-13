@@ -1,0 +1,8 @@
+真实登录、问答与压缩验收
+首次尝试：登录成功，供应商返回 OpenAIAPIError，未标记通过。
+独立短问答随后通过；以下为完整重试结果：
+{"verified": false, "authenticated": true, "compression_verified": false, "model": "deepseek-flash", "turns": [{"turn": 1, "status": "failed", "error_code": "MODEL_CALL_FAILED", "answer_characters": 0}], "persisted_messages": 2, "context_remembered": false}
+
+退出码：1
+
+隔离诊断：相同验收输入在登录链路外直接调用，status_code=503，code/type=service_unavailable_error；短问答直调另一次成功。未把完整真实调用判为通过。
