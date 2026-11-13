@@ -36,6 +36,7 @@ const draftModel = ref<string | null>(null)
 const transcript = ref<HTMLElement | null>(null)
 const currentId = computed(() => typeof route.params.conversationId === 'string' ? route.params.conversationId : '')
 const active = computed(() => run.value !== null && isActive(run.value))
+const organizing = computed(() => active.value && run.value?.phase === 'compressing')
 const title = computed(() => conversations.value.find(item => item.id === currentId.value)?.title ?? '新对话')
 const currentAgent = computed(() => agents.value.find(item => item.id === selectedAgentId.value) ?? null)
 const defaultModel = computed(() => models.value.find(item => item.is_default)?.id || models.value[0]?.id || '')
@@ -56,6 +57,7 @@ let dispose: (() => void) | null = null
 let revision = 0
 let pending: { conversationId: string; content: string; key: string } | null = null
 let pendingRegenerate: { messageId: string; key: string } | null = null
+let replacing = false
 let alive = true
 
 function showError(value: unknown): void {
@@ -137,6 +139,9 @@ function applySnapshot(snapshot: Snapshot): void {
   if (!isActive(snapshot.run)) {
     dispose?.(); dispose = null
     void refreshList().catch(showError)
+    const restore = replacing && (snapshot.run.status === 'failed' || snapshot.run.status === 'cancelled')
+    replacing = false
+    if (restore) void loadConversation()
   }
   void scrollToEnd()
 }
@@ -211,6 +216,13 @@ async function send(): Promise<void> {
     if (editing.value) {
       if (!pending || pending.conversationId !== id || pending.content !== content) pending = { conversationId: id, content, key: crypto.randomUUID() }
       const edited = editing.value
+      replacing = true
+      const assistant = messages.value.find(item => item.role === 'assistant' && item.sequence === edited.sequence + 1)
+      if (assistant) {
+        const nextSources = { ...sourcesByMessage.value }
+        delete nextSources[assistant.id]
+        sourcesByMessage.value = nextSources
+      }
       const snapshot = await editMessage(edited.id, content, pending.key)
       pending = null
       editing.value = null
@@ -234,7 +246,7 @@ async function send(): Promise<void> {
       await reconnect()
       await refreshList()
     }
-  } catch (value) { showError(value) }
+  } catch (value) { replacing = false; showError(value) }
   finally { submitting.value = false }
 }
 async function stop(): Promise<void> {
@@ -261,14 +273,18 @@ async function regenerate(message: Message): Promise<void> {
   submitting.value = true
   error.value = ''
   try {
+    replacing = true
     if (!pendingRegenerate || pendingRegenerate.messageId !== message.id) pendingRegenerate = { messageId: message.id, key: crypto.randomUUID() }
+    const nextSources = { ...sourcesByMessage.value }
+    delete nextSources[message.id]
+    sourcesByMessage.value = nextSources
     const snapshot = await regenerateMessage(message.id, pendingRegenerate.key)
     pendingRegenerate = null
     if (alive) {
       applySnapshot(snapshot)
       await reconnect()
     }
-  } catch (value) { showError(value) }
+  } catch (value) { replacing = false; showError(value) }
   finally { submitting.value = false }
 }
 async function retry(): Promise<void> {
@@ -410,7 +426,7 @@ onBeforeUnmount(() => { alive = false; revision++; dispose?.() })
             :class="'chat__message--' + message.role"
           >
             <div class="chat__speaker">
-              {{ message.role === 'user' ? '你' : '序列' }}<span v-if="message.model">{{ message.model }}</span><span v-if="message.status === 'streaming'">{{ run?.phase === 'compressing' ? '正在整理更早的对话' : '正在思考与生成' }}</span><span v-else-if="message.status === 'interrupted'">部分回答 · 未完成</span>
+              {{ message.role === 'user' ? '你' : '序列' }}<span v-if="message.model">{{ message.model }}</span><span v-if="message.status === 'streaming'">{{ organizing ? '正在整理更早的对话' : '正在思考与生成' }}</span><span v-else-if="message.status === 'interrupted'">部分回答 · 未完成</span>
               <button
                 v-if="canEdit(message)"
                 type="button"
@@ -481,7 +497,7 @@ onBeforeUnmount(() => { alive = false; revision++; dispose?.() })
           class="chat__run"
           role="status"
         >
-          <span>{{ run.phase === 'compressing' ? '正在整理更早的对话' : statuses[run.status] }}<template v-if="run.error_message"> · {{ run.error_message }}</template></span><button
+          <span>{{ organizing ? '正在整理更早的对话' : statuses[run.status] }}<template v-if="run.error_message"> · {{ run.error_message }}</template></span><button
             v-if="run.status === 'failed' || run.status === 'cancelled'"
             type="button"
             class="chat__link"

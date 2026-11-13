@@ -334,6 +334,8 @@ async def test_recovery_and_single_process(chat: tuple[FastAPI, AsyncClient, Con
         app.state.test_scope,
     )
     await runtime.store.save_content(snapshot.run.id, "重启前的内容")
+    await runtime.store.begin_run(snapshot.run.id)
+    assert await runtime.store.set_phase(snapshot.run.id, "compressing")
     await runtime.close()
     replacement = create_app(app.state.settings, provider)
     async with replacement.router.lifespan_context(replacement):
@@ -343,6 +345,7 @@ async def test_recovery_and_single_process(chat: tuple[FastAPI, AsyncClient, Con
             recovered = (await fresh.get(f"/api/runs/{snapshot.run.id}")).json()
             assert recovered["run"]["status"] == "failed"
             assert recovered["run"]["error_code"] == "PROCESS_RESTARTED"
+            assert recovered["run"]["phase"] is None
             assert recovered["message"]["content"] == "重启前的内容"
 
 
@@ -555,6 +558,29 @@ async def test_model_selection_regenerate_and_usage(chat: tuple[FastAPI, AsyncCl
     await settled(client, follow["run"]["id"])
     older = await client.post(f"/api/messages/{assistant['id']}/regenerate", json={"idempotency_key": "regen-old"})
     assert older.status_code == 409 and older.json()["error"]["code"] == "NOT_LAST_TURN"
+
+
+async def test_failed_regenerate_restores_answer(chat: tuple[FastAPI, AsyncClient, ControlledProvider]) -> None:
+    """替代运行失败时恢复原来的成功问答，后续上下文仍能看见它。"""
+    _, client, provider = chat
+    conversation = await new_conversation(client)
+    created = await submit(client, conversation, "需要保留的问题", "keep-1")
+    completed = await settled(client, created["run"]["id"])
+    original = completed["message"]["content"]
+    assistant_id = completed["message"]["id"]
+    provider.mode = "fail"
+    regenerated = await client.post(f"/api/messages/{assistant_id}/regenerate", json={"idempotency_key": "keep-regen"})
+    assert regenerated.status_code == 202, regenerated.text
+    failed = await settled(client, regenerated.json()["run"]["id"])
+    assert failed["run"]["status"] == "failed"
+    page = (await client.get(f"/api/conversations/{conversation}/messages")).json()
+    assert page["items"][1]["content"] == original
+    assert page["items"][1]["status"] == "completed"
+    assert page["items"][1]["run_id"] == created["run"]["id"]
+    provider.mode = "success"
+    follow = await submit(client, conversation, "下一问", "keep-follow")
+    await settled(client, follow["run"]["id"])
+    assert original in json.dumps(provider.histories[-1], ensure_ascii=False)
 
 
 async def test_reasoning_stays_out_of_later_context(chat: tuple[FastAPI, AsyncClient, ControlledProvider]) -> None:

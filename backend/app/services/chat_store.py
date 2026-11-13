@@ -268,8 +268,6 @@ class ChatStore:
         )
         conversation = await session.get(Conversation, run.conversation_id)
         if message is None:
-            if run.archived_content is None and run.superseded_by_run_id is None:
-                raise ApplicationError("RUN_NOT_FOUND", "运行不存在", 404)
             message_view = MessageView(
                 id=run.id,
                 conversation_id=run.conversation_id,
@@ -674,14 +672,16 @@ class ChatStore:
             run.status, run.finished_at = status, now
             run.phase = None
             run.error_code, run.error_message = code, error
-            message_values: dict[str, object] = {
-                "content": content,
-                "status": "completed" if status == "completed" else "interrupted",
-                "updated_at": now,
-            }
-            if reasoning:
-                message_values["reasoning"] = reasoning
-            await session.execute(update(Message).where(Message.run_id == run_id).values(**message_values))
+            restored = status != "completed" and await self._restore_replaced(session, run, now)
+            if not restored:
+                message_values: dict[str, object] = {
+                    "content": content,
+                    "status": "completed" if status == "completed" else "interrupted",
+                    "updated_at": now,
+                }
+                if reasoning:
+                    message_values["reasoning"] = reasoning
+                await session.execute(update(Message).where(Message.run_id == run_id).values(**message_values))
             await session.execute(
                 update(Conversation).where(Conversation.id == run.conversation_id).values(updated_at=now)
             )
@@ -902,13 +902,51 @@ class ChatStore:
             await session.flush()
             return await self._snapshot(session, new_run)
 
+    async def _restore_replaced(self, session: AsyncSession, run: Run, now: datetime) -> bool:
+        """失败或取消的替代运行退回被替换的问答，避免成功历史从上下文消失。
+
+        Args:
+            session: 当前事务。
+            run: 即将结束且未成功的运行。
+            now: 当前时间。
+
+        Returns:
+            是否已经把可见消息指回原来的运行。
+        """
+        previous = await session.scalar(select(Run).where(Run.superseded_by_run_id == run.id).with_for_update())
+        if previous is None:
+            return False
+        if previous.archived_prompt is not None:
+            await session.execute(
+                update(Message)
+                .where(Message.conversation_id == run.conversation_id, Message.sequence == previous.input_sequence)
+                .values(content=previous.archived_prompt, updated_at=now)
+            )
+        await session.execute(
+            update(Message)
+            .where(Message.run_id == run.id)
+            .values(
+                run_id=previous.id,
+                content=previous.archived_content or "",
+                reasoning=previous.archived_reasoning,
+                model=previous.model,
+                status="completed" if previous.status == "completed" else "interrupted",
+                updated_at=now,
+            )
+        )
+        previous.superseded_by_run_id = None
+        return True
+
     async def recover(self) -> None:
         """本机单执行进程获得数据库锁后收敛上次遗留运行。"""
         async with self.factory.begin() as session:
-            ids = list(await session.scalars(select(Run.id).where(Run.status.in_(ACTIVE))))
-            if not ids:
+            runs = list(await session.scalars(select(Run).where(Run.status.in_(ACTIVE)).with_for_update()))
+            if not runs:
                 return
             now = datetime.now(UTC)
+            for run in runs:
+                await self._restore_replaced(session, run, now)
+            ids = [run.id for run in runs]
             await session.execute(
                 update(ToolCall)
                 .where(ToolCall.status.in_(("running", "awaiting_approval")))
@@ -926,6 +964,7 @@ class ChatStore:
                 .where(Run.id.in_(ids))
                 .values(
                     status="failed",
+                    phase=None,
                     finished_at=now,
                     error_code="PROCESS_RESTARTED",
                     error_message="服务重启中断了生成，请重新提交问题",
