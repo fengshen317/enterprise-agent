@@ -15,6 +15,7 @@ from app.api.admin import router as admin_router
 from app.api.agents import router as agent_router
 from app.api.auth import router as auth_router
 from app.api.chat import router as chat_router
+from app.api.connectors import router as connector_router
 from app.api.health import router
 from app.api.knowledge import router as knowledge_router
 from app.api.schedules import router as schedule_router
@@ -22,6 +23,7 @@ from app.api.skills import router as skill_router
 from app.api.tasks import router as task_router
 from app.api.tools import router as tool_router
 from app.capabilities.registry import build_default_registry
+from app.connectors.registry import ConnectorRegistry
 from app.core.config import Settings
 from app.core.database import Database
 from app.core.errors import register_error_handlers
@@ -92,6 +94,13 @@ def create_app(
         app.state.knowledge_service = knowledge_service
         schedule_store = ScheduleStore(database.session_factory, config.schedule_timezone)
         registry = build_default_registry(config, knowledge_service, schedule_store)
+        # 连接器注册表：启动时加载已启用的连接器，工具注入 registry。
+        connector_registry = ConnectorRegistry(database.session_factory, registry, config)
+        try:
+            await connector_registry.load()
+        except Exception:
+            logger.warning("connector_registry_load_failed")
+        app.state.connector_registry = connector_registry
         approval_service = ApprovalService(database.session_factory, config)
         app.state.agent_service = AgentService(database.session_factory, config, registry)
         app.state.skill_service = SkillService(database.session_factory, config, registry)
@@ -119,6 +128,7 @@ def create_app(
                 await schedule_runtime.close()
                 await task_runtime.close()
                 await runtime.close()
+                await connector_registry.close()
                 if ragflow is not None:
                     await ragflow.aclose()
             finally:
@@ -171,6 +181,7 @@ def create_app(
     app.include_router(auth_router)
     app.include_router(admin_router)
     app.include_router(chat_router)
+    app.include_router(connector_router)
     app.include_router(task_router)
     app.include_router(schedule_router)
     app.include_router(knowledge_router)

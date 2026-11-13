@@ -79,7 +79,9 @@ class ToolSpec:
     child_allowed: bool = True
     context_eligible: bool = False
     system: bool = False
-    source: Literal["builtin"] = "builtin"
+    source: Literal["builtin", "connector"] = "builtin"
+    connector_key: str | None = None
+    input_schema_override: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
         """拒绝会在执行层产生歧义的能力声明。

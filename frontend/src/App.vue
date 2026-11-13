@@ -63,6 +63,10 @@ async function changeWorkspace(event: Event): Promise<void> {
       >✦ 能力中心</RouterLink>
       <RouterLink
         class="workspace__nav"
+        to="/connectors"
+      >⬡ 连接器</RouterLink>
+      <RouterLink
+        class="workspace__nav"
         to="/knowledge"
       >▤ 知识库</RouterLink>
       <RouterLink

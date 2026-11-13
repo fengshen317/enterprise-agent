@@ -63,6 +63,27 @@ class ToolRegistry:
         """
         return tuple(self._specs.values())
 
+    def replace_group(self, connector_key: str, specs: list[ToolSpec]) -> None:
+        """替换连接器工具组：先移除旧组，再注册新组。
+
+        Args:
+            connector_key: 连接器标识。
+            specs: 新的工具声明列表。
+        """
+        self.unregister(connector_key)
+        for spec in specs:
+            self._specs[spec.key] = spec
+
+    def unregister(self, connector_key: str) -> None:
+        """移除指定连接器的全部工具。
+
+        Args:
+            connector_key: 连接器标识。
+        """
+        to_remove = [key for key, spec in self._specs.items() if spec.connector_key == connector_key]
+        for key in to_remove:
+            del self._specs[key]
+
 
 def build_default_registry(
     settings: Settings,

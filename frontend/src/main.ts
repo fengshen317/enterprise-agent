@@ -14,6 +14,7 @@ import SkillEditorView from './views/capabilities/SkillEditorView.vue'
 import KnowledgeDetailView from './views/knowledge/KnowledgeDetailView.vue'
 import KnowledgeListView from './views/knowledge/KnowledgeListView.vue'
 import SchedulesView from './views/SchedulesView.vue'
+import ConnectorsView from './views/connectors/ConnectorsView.vue'
 import './styles/main.scss'
 
 const router = createRouter({
@@ -28,6 +29,7 @@ const router = createRouter({
     { path: '/capabilities', component: CapabilityCenterView, meta: { title: '能力中心' } },
     { path: '/capabilities/skills/new', component: SkillEditorView, meta: { title: '能力中心' } },
     { path: '/capabilities/skills/:skillId', component: SkillEditorView, meta: { title: '能力中心' } },
+    { path: '/connectors', component: ConnectorsView, meta: { title: '连接器' } },
     { path: '/system', component: SystemStatusView, meta: { title: '系统概览' } },
     { path: '/knowledge', component: KnowledgeListView, meta: { title: '知识库' } },
     { path: '/knowledge/:kbId', component: KnowledgeDetailView, meta: { title: '知识库' } },
