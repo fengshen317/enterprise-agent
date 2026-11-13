@@ -257,8 +257,7 @@ class InboundHandler:
             await self.reply(account, message, "目前只能处理文字消息。")
             return
         command = parse_inbound(text)
-        if account.welcome_pending:
-            await self.reply(account, message, WELCOME_TEXT)
+        if account.welcome_pending and await self.reply(account, message, WELCOME_TEXT):
             await self.repo.clear_welcome(account.id)
             account.welcome_pending = False
             if command.kind == "help":
@@ -302,21 +301,24 @@ class InboundHandler:
             return
         await self.send_text(account, peer.peer_id, peer.context_token, text, run_id=run_id)
 
-    async def reply(self, account: AccountRecord, message: ILinkMessage, text: str) -> None:
+    async def reply(self, account: AccountRecord, message: ILinkMessage, text: str) -> bool:
         """回复刚刚收到的消息，优先用这条消息自己的 context_token。
 
         Args:
             account: 发送账号。
             message: 入站消息。
             text: 回复正文。
+
+        Returns:
+            是否发送成功。
         """
         link = await self.repo.get_peer(account.id, account.workspace_id, message.from_user_id)
         token = message.context_token or (link.context_token if link is not None else "")
-        await self.send_text(account, message.from_user_id, token, text, run_id=None)
+        return await self.send_text(account, message.from_user_id, token, text, run_id=None)
 
     async def send_text(
         self, account: AccountRecord, to_user_id: str, context_token: str, text: str, *, run_id: UUID | None
-    ) -> None:
+    ) -> bool:
         """分段发送并写出站日志。
 
         Args:
@@ -325,18 +327,22 @@ class InboundHandler:
             context_token: 会话令牌。
             text: 完整正文。
             run_id: 关联运行。
+
+        Returns:
+            是否发送成功。失败时不把一次性提醒标成已发送。
         """
         chunks = chunk_text(text, self.settings.ilink_message_chunk_characters)
         if not chunks:
-            return
+            return False
         try:
             for chunk in chunks:
                 await self.ilink.send_text(account, to_user_id, context_token, chunk)
         except Exception:
             logger.warning("ilink_send_failed", extra={"account_id": str(account.id), "run_id": str(run_id or "")})
             await self.repo.log_outbound(account.id, to_user_id, "failed", "send_failed", run_id, text[:500])
-            return
+            return False
         await self.repo.log_outbound(account.id, to_user_id, "sent", None, run_id, text[:500])
+        return True
 
     async def _new(self, account: AccountRecord, message: ILinkMessage) -> None:
         """开启一条新的网页对话并让后续消息进入它。
@@ -517,7 +523,8 @@ class InboundHandler:
             run_id: 问答运行。
             conversation_id: 网页上打开完整回答的对话。
         """
-        progress = asyncio.create_task(self._progress(account, to_user_id, context_token, run_id))
+        stop_progress = asyncio.Event()
+        progress = asyncio.create_task(self._progress(account, to_user_id, context_token, run_id, stop_progress))
         try:
             await self.ilink.send_typing(account, to_user_id, context_token, True)
             deadline = monotonic() + self.settings.chat_run_timeout_seconds + 15
@@ -527,6 +534,9 @@ class InboundHandler:
                 if snapshot.run.status not in {"pending", "running"}:
                     break
                 await asyncio.sleep(0.4)
+            # 先等进度任务退出，再发最终回答，避免「仍在处理」排到正文后面。
+            stop_progress.set()
+            await asyncio.gather(progress, return_exceptions=True)
             body = wechat_reply(
                 _final_text(snapshot),
                 preview_characters=self.settings.channel_reply_preview_characters,
@@ -534,12 +544,21 @@ class InboundHandler:
             )
             await self.send_text(account, to_user_id, context_token, body, run_id=run_id)
         finally:
-            progress.cancel()
-            await asyncio.gather(progress, return_exceptions=True)
+            stop_progress.set()
+            if not progress.done():
+                progress.cancel()
+                await asyncio.gather(progress, return_exceptions=True)
             self.direct_runs.discard(run_id)
             await self.ilink.send_typing(account, to_user_id, context_token, False)
 
-    async def _progress(self, account: AccountRecord, to_user_id: str, context_token: str, run_id: UUID) -> None:
+    async def _progress(
+        self,
+        account: AccountRecord,
+        to_user_id: str,
+        context_token: str,
+        run_id: UUID,
+        stop: asyncio.Event,
+    ) -> None:
         """运行偏久时发一句进度，相同内容不重复刷屏。
 
         Args:
@@ -547,16 +566,28 @@ class InboundHandler:
             to_user_id: 接收用户。
             context_token: 当前会话令牌。
             run_id: 问答运行。
+            stop: 运行结束后置位，进度任务发完手头的一句就退出。
         """
-        await asyncio.sleep(self.settings.channel_progress_after_seconds)
+        try:
+            await asyncio.wait_for(stop.wait(), self.settings.channel_progress_after_seconds)
+            return
+        except TimeoutError:
+            pass
         last = ""
-        while True:
+        while not stop.is_set():
             label = await self.chat.activity(run_id)
+            if stop.is_set():
+                return
             if label and label != last and context_token:
                 await self.send_text(account, to_user_id, context_token, label, run_id=None)
                 await self.ilink.send_typing(account, to_user_id, context_token, True)
                 last = label
-            await asyncio.sleep(self.settings.channel_progress_interval_seconds)
+            if stop.is_set():
+                return
+            try:
+                await asyncio.wait_for(stop.wait(), self.settings.channel_progress_interval_seconds)
+            except TimeoutError:
+                continue
 
     async def remind_if_due(self, account: AccountRecord) -> None:
         """窗口还剩一小段时间时提醒一次。已经关闭的窗口不再发。
@@ -578,8 +609,9 @@ class InboundHandler:
             return
         if peer.reminder_for_inbound_at == inbound:
             return
-        await self.send_text(account, peer.peer_id, peer.context_token, REMINDER_TEXT, run_id=None)
-        await self.repo.mark_reminder(account.id, peer.workspace_id, peer.peer_id, inbound)
+        sent = await self.send_text(account, peer.peer_id, peer.context_token, REMINDER_TEXT, run_id=None)
+        if sent:
+            await self.repo.mark_reminder(account.id, peer.workspace_id, peer.peer_id, inbound)
 
     async def _bare_ticket(
         self, account: AccountRecord, message: ILinkMessage

@@ -12,7 +12,6 @@ _APPROVE = re.compile(r"^同意\s+([A-Za-z0-9]{4})$")
 _REJECT = re.compile(r"^拒绝\s+([A-Za-z0-9]{4})(?:\s+(.{1,200}))?$")
 _BARE_APPROVE = re.compile(r"^(?:同意|1)$")
 _BARE_REJECT = re.compile(r"^(?:拒绝|2)(?:\s+(.{1,200}))?$")
-_CODE = re.compile(r"^[A-HJ-NP-Z2-9]{4}$")
 CommandKind = Literal["chat", "new", "workspace", "agent", "help", "approve", "reject"]
 
 
@@ -57,15 +56,12 @@ def parse_inbound(text: str) -> InboundCommand:
         return InboundCommand("agent", argument=stripped[6:].strip())
     approved = _APPROVE.fullmatch(stripped)
     if approved is not None:
-        code = approved.group(1).upper()
-        if _CODE.fullmatch(code):
-            return InboundCommand("approve", code=code)
+        # 带了四位代号就按确认码处理。字母表不合规时也不要降级成不带码的「同意」。
+        return InboundCommand("approve", code=approved.group(1).upper())
     rejected = _REJECT.fullmatch(stripped)
     if rejected is not None:
-        code = rejected.group(1).upper()
-        if _CODE.fullmatch(code):
-            comment = (rejected.group(2) or "").strip()
-            return InboundCommand("reject", code=code, comment=comment)
+        comment = (rejected.group(2) or "").strip()
+        return InboundCommand("reject", code=rejected.group(1).upper(), comment=comment)
     if _BARE_APPROVE.fullmatch(stripped):
         return InboundCommand("approve")
     bare_reject = _BARE_REJECT.fullmatch(stripped)

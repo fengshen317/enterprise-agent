@@ -267,6 +267,7 @@ class FakeILink:
         self.calls = 0
         self.page = UpdatesPage([], "", False, None)
         self.qr_status = QrStatus("wait")
+        self.fail_sends = 0
 
     async def get_updates(self, account: AccountRecord, timeout_seconds: float | None = None) -> UpdatesPage:
         """返回预设页。"""
@@ -275,8 +276,11 @@ class FakeILink:
         return self.page
 
     async def send_text(self, account: AccountRecord, to_user_id: str, context_token: str, text: str) -> None:
-        """记下正文。"""
+        """记下正文。fail_sends 大于 0 时先失败一次。"""
         del account, to_user_id, context_token
+        if self.fail_sends > 0:
+            self.fail_sends -= 1
+            raise RuntimeError("发送失败")
         self.sent.append(text)
 
     async def send_typing(self, account: AccountRecord, to_user_id: str, context_token: str, active: bool) -> None:
@@ -945,3 +949,50 @@ async def test_binding_list_shows_window_and_skipped_push() -> None:
     assert listed[0].window_note.startswith("推送可用至")
     assert listed[0].skipped_pushes[0].reason == "outside_window"
     assert listed[0].skipped_pushes[0].excerpt == "晨报正文"
+
+
+@pytest.mark.asyncio
+async def test_failed_welcome_and_reminder_can_retry() -> None:
+    """发送失败时不把欢迎语和窗口提醒标成已完成。"""
+    store = MemoryStore(ChannelCrypto(_settings()))
+    ilink = FakeILink()
+    ilink.fail_sends = 1
+    handler, _chat = _handler(store, ilink)
+    account = _account()
+    account.welcome_pending = True
+    store.accounts[account.id] = account
+    await handler.handle(account, _message("你好", "hi-fail"))
+    await handler.drain()
+    assert account.welcome_pending is True
+    ilink.fail_sends = 0
+    await handler.handle(account, _message("再试一次", "hi-ok"))
+    await handler.drain()
+    assert account.welcome_pending is False
+    assert any(item.startswith("已绑定微信") for item in ilink.sent)
+    inbound = datetime.now(UTC) - timedelta(hours=23)
+    store.peers[(account.id, account.workspace_id, "wx-user")] = PeerLink(
+        account.id, account.workspace_id, "wx-user", uuid4(), "ctx", inbound
+    )
+    ilink.fail_sends = 1
+    await handler.remind_if_due(account)
+    peer = store.peers[(account.id, account.workspace_id, "wx-user")]
+    assert peer.reminder_for_inbound_at is None
+    await handler.remind_if_due(account)
+    peer = store.peers[(account.id, account.workspace_id, "wx-user")]
+    assert peer.reminder_for_inbound_at == inbound
+
+
+@pytest.mark.asyncio
+async def test_invalid_reject_code_does_not_reject_the_only_pending_item() -> None:
+    """拒绝后面带了不合规代号时，不要当成不带码的拒绝。"""
+    store = MemoryStore(ChannelCrypto(_settings()))
+    ilink = FakeILink()
+    approvals = FakeApprovals()
+    handler, _chat = _handler(store, ilink, approvals=approvals)
+    account = _account()
+    store.codes[(account.id, "AB23")] = ApprovalTicket(
+        "AB23", account.id, uuid4(), uuid4(), account.workspace_id, "write", "创建定时任务"
+    )
+    await handler.handle(account, _message("拒绝 AB12", "bad-code"))
+    assert approvals.calls == []
+    assert any("没有找到这个确认码" in item for item in ilink.sent)
