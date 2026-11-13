@@ -89,6 +89,22 @@ class Settings(BaseSettings):
     skill_load_max_calls: int = Field(default=3, ge=1, le=10)
     approval_timeout_seconds: float = Field(default=300, gt=0, le=1800)
     tool_output_characters: int = Field(default=8000, ge=1000, le=50000)
+    # 微信 iLink 渠道。未配置密钥时不轮询、不提供绑定接口。
+    # channel_version 前三段必须是 openclaw-weixin 插件版本，宿主版本放在斜杠后面。
+    channel_enabled: bool = True
+    channel_token_key: SecretStr = SecretStr("")
+    channel_reply_window_hours: int = Field(default=24, ge=1, le=168)
+    channel_window_reminder_hours: int = Field(default=2, ge=0, le=23)
+    channel_progress_after_seconds: float = Field(default=10, ge=0, le=120)
+    channel_progress_interval_seconds: float = Field(default=20, ge=0.01, le=120)
+    channel_reply_preview_characters: int = Field(default=500, ge=80, le=1800)
+    public_app_base_url: str = Field(default="http://127.0.0.1:8686", min_length=1, max_length=300)
+    ilink_base_url: str = Field(default="https://ilinkai.weixin.qq.com", min_length=1, max_length=300)
+    ilink_channel_version: str = Field(default="3.0.0/enterprise-agent-0.1.0", min_length=5, max_length=128)
+    ilink_bot_agent: str = Field(default="EnterpriseAgent/0.1.0", min_length=1, max_length=256)
+    ilink_session_pause_seconds: int = Field(default=3600, ge=1, le=86400)
+    ilink_long_poll_seconds: float = Field(default=35, gt=1, le=120)
+    ilink_message_chunk_characters: int = Field(default=1800, ge=100, le=5000)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     auth_session_hours: int = Field(default=12, ge=1, le=168)
     auth_cookie_secure: bool = False

@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from time import monotonic
 from typing import TYPE_CHECKING
@@ -30,6 +33,21 @@ if TYPE_CHECKING:
 
 ACTIVE = ("pending", "running")
 TERMINAL = {"approved", "rejected", "expired", "cancelled", "executed", "failed"}
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ApprovalNotice:
+    """写操作进入等待后，给渠道推送用的公开摘要。"""
+
+    approval_id: UUID
+    run_id: UUID
+    workspace_id: UUID
+    user_id: UUID
+    tool_name: str
+    preview: str
+    expires_at: datetime
+    risk_level: str = "write"
 
 
 class ApprovalBroker:
@@ -84,6 +102,8 @@ class ApprovalService:
         self.factory = factory
         self.settings = settings
         self.broker = ApprovalBroker()
+        # 微信等渠道在审批等待期间推送确认码；失败只记日志，网页审批仍然可用。
+        self.on_requested: list[Callable[[ApprovalNotice], Awaitable[None]]] = []
 
     async def request_and_wait(
         self,
@@ -160,6 +180,21 @@ class ApprovalService:
                         arguments_digest=digest,
                     )
                 )
+            if scope is None:
+                raise ApplicationError("ACCESS_REVOKED", "资源权限已失效，生成已停止", 403)
+            preview_text = json.dumps(preview, ensure_ascii=False, default=str)[:300]
+            await self._emit_requested(
+                ApprovalNotice(
+                    approval_id=approval_id,
+                    run_id=executor.run_id,
+                    workspace_id=scope.workspace_id,
+                    user_id=scope.user_id,
+                    tool_name=spec.display_name or spec.key,
+                    preview=preview_text,
+                    expires_at=expires_at,
+                    risk_level=spec.risk,
+                )
+            )
             deadline = monotonic() + self.settings.approval_timeout_seconds
             while True:
                 status = await self._status(approval_id)
@@ -179,6 +214,21 @@ class ApprovalService:
             raise
         finally:
             self.broker.unregister(approval_id)
+
+    async def _emit_requested(self, notice: ApprovalNotice) -> None:
+        """审批已提交后通知渠道；推送失败不取消等待。
+
+        Args:
+            notice: 不含凭证的审批摘要。
+        """
+        for callback in list(self.on_requested):
+            try:
+                await callback(notice)
+            except Exception:
+                logger.warning(
+                    "approval_notify_failed",
+                    extra={"approval_id": str(notice.approval_id), "run_id": str(notice.run_id)},
+                )
 
     async def decide(
         self,

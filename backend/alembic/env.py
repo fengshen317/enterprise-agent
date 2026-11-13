@@ -11,6 +11,7 @@ from app.models.admin_audit import AdminAudit
 from app.models.agent import AgentCapability, AgentProfile, WorkspaceToolPolicy
 from app.models.approval import Approval, ApprovalEvent
 from app.models.base import Base
+from app.models.channel import ChannelAccount, ChannelApprovalCode, ChannelBindSession, ChannelMessage, ChannelPeer
 from app.models.config import IntegrationConfig
 from app.models.connector import Connector
 from app.models.conversation import Conversation, Message, Run
@@ -49,6 +50,11 @@ assert all(
         Connector,
         Approval,
         ApprovalEvent,
+        ChannelAccount,
+        ChannelBindSession,
+        ChannelPeer,
+        ChannelMessage,
+        ChannelApprovalCode,
         Task,
         TaskRun,
         TaskPlan,

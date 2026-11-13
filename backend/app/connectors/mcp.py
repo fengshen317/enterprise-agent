@@ -206,7 +206,7 @@ class McpConnector:
         if self._session is not None:
             return
         try:
-            import mcp  # type: ignore[import-not-found]  # noqa: F401
+            import mcp  # noqa: F401  仅确认 SDK 已安装，真正的类型在下面的连接函数里导入。
         except ImportError:
             logger.warning("mcp_sdk_not_installed")
             return
@@ -224,7 +224,7 @@ class McpConnector:
     async def _connect_stdio(self) -> None:
         """通过 stdio 子进程连接 MCP 服务器。"""
         from mcp import ClientSession, StdioServerParameters
-        from mcp.client.stdio import stdio_client  # type: ignore[import-not-found]
+        from mcp.client.stdio import stdio_client
 
         command = str(self._config.get("command", ""))
         raw_args = self._config.get("args", [])
@@ -240,7 +240,7 @@ class McpConnector:
     async def _connect_http(self) -> None:
         """通过 HTTP 连接 MCP 服务器。"""
         from mcp import ClientSession
-        from mcp.client.streamable_http import streamablehttp_client  # type: ignore[import-not-found]
+        from mcp.client.streamable_http import streamablehttp_client
 
         url = str(self._config.get("url", ""))
         self._streams = await streamablehttp_client(url).__aenter__()

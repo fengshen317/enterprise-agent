@@ -14,6 +14,7 @@ from app.agents.task_provider import DeepSeekTaskProvider, TaskProvider
 from app.api.admin import router as admin_router
 from app.api.agents import router as agent_router
 from app.api.auth import router as auth_router
+from app.api.channels import router as channel_router
 from app.api.chat import router as chat_router
 from app.api.connectors import router as connector_router
 from app.api.health import router
@@ -23,6 +24,11 @@ from app.api.skills import router as skill_router
 from app.api.tasks import router as task_router
 from app.api.tools import router as tool_router
 from app.capabilities.registry import build_default_registry
+from app.channels.crypto import ChannelCrypto
+from app.channels.ilink import ILinkClient
+from app.channels.repository import ChannelStore
+from app.channels.runtime import ChannelRuntime
+from app.channels.service import ChannelService
 from app.connectors.registry import ConnectorRegistry
 from app.core.config import Settings
 from app.core.database import Database
@@ -121,14 +127,34 @@ def create_app(
         schedule_runtime = ScheduleRuntime(database, config, runtime, schedule_store)
         app.state.schedule_runtime = schedule_runtime
         await schedule_runtime.start()
+        channel_crypto = ChannelCrypto(config)
+        ilink = ILinkClient(config)
+        channel_store = ChannelStore(database.session_factory, channel_crypto)
+        app.state.channel_service = ChannelService(channel_store, ilink, channel_crypto, config)
+        channel_runtime = ChannelRuntime(
+            database,
+            config,
+            channel_crypto,
+            ilink,
+            channel_store,
+            runtime,
+            approval_service,
+            app.state.agent_service,
+        )
+        app.state.channel_runtime = channel_runtime
+        runtime.on_run_finished.append(channel_runtime.on_run_finished)
+        approval_service.on_requested.append(channel_runtime.on_approval)
+        await channel_runtime.start()
         try:
             yield
         finally:
             try:
+                await channel_runtime.close()
                 await schedule_runtime.close()
                 await task_runtime.close()
                 await runtime.close()
                 await connector_registry.close()
+                await ilink.aclose()
                 if ragflow is not None:
                     await ragflow.aclose()
             finally:
@@ -184,6 +210,7 @@ def create_app(
     app.include_router(connector_router)
     app.include_router(task_router)
     app.include_router(schedule_router)
+    app.include_router(channel_router)
     app.include_router(knowledge_router)
     app.include_router(agent_router)
     app.include_router(skill_router)

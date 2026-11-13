@@ -15,6 +15,7 @@ import KnowledgeDetailView from './views/knowledge/KnowledgeDetailView.vue'
 import KnowledgeListView from './views/knowledge/KnowledgeListView.vue'
 import SchedulesView from './views/SchedulesView.vue'
 import ConnectorsView from './views/connectors/ConnectorsView.vue'
+import WeChatChannelView from './views/channels/WeChatChannelView.vue'
 import './styles/main.scss'
 
 const router = createRouter({
@@ -34,6 +35,7 @@ const router = createRouter({
     { path: '/knowledge', component: KnowledgeListView, meta: { title: '知识库' } },
     { path: '/knowledge/:kbId', component: KnowledgeDetailView, meta: { title: '知识库' } },
     { path: '/schedules', component: SchedulesView, meta: { title: '定时任务' } },
+    { path: '/channels/wechat', component: WeChatChannelView, meta: { title: '微信' } },
     { path: '/tasks/:taskId?', redirect: '/chat' },
     { path: '/admin/members', component: AdminView, meta: { admin: true, title: '成员与权限' } },
     { path: '/:pathMatch(.*)*', redirect: '/' },

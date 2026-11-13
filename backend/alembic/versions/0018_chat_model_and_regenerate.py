@@ -1,7 +1,7 @@
 """对话级模型、上下文用量、思考过程与原地重新生成。
 
-Revision ID: 0016
-Revises: 0015
+Revision ID: 0018
+Revises: 0017
 """
 
 import sqlalchemy as sa
@@ -9,8 +9,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision: str = "0016"
-down_revision: str | None = "0015"
+revision: str = "0018"
+down_revision: str | None = "0017"
 branch_labels: str | None = None
 depends_on: str | None = None
 
@@ -51,10 +51,12 @@ def upgrade() -> None:
         WHERE message.run_id = run.id AND message.role = 'assistant' AND message.model IS NULL
         """
     )
+    op.execute("UPDATE system_metadata SET value = '18' WHERE key = 'schema_version'")
 
 
 def downgrade() -> None:
     """移除本迁移新增的列与约束，不删除消息正文。"""
+    op.execute("UPDATE system_metadata SET value = '17' WHERE key = 'schema_version'")
     op.drop_constraint("fk_runs_superseded_by_run_id_runs", "runs", type_="foreignkey")
     op.drop_constraint("ck_runs_phase", "runs", type_="check")
     op.drop_column("runs", "prompt_tokens")
