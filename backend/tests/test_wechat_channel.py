@@ -811,14 +811,16 @@ async def test_cursor_advances_only_after_the_batch_is_handled() -> None:
 
 
 @pytest.mark.asyncio
-async def test_messages_without_id_each_create_a_run() -> None:
-    """没有 message_id 的两条文本不会共用同一个幂等键。"""
+async def test_messages_without_id_dedupe_replays_but_not_distinct_text() -> None:
+    """没有 message_id 时，不同文本各开一次运行；同一条重放不再开。"""
     store = MemoryStore(ChannelCrypto(_settings()))
     ilink = FakeILink()
     handler, chat = _handler(store, ilink)
     account = _account()
-    await handler.handle(account, _message("第一条", ""))
+    first = _message("第一条", "")
+    await handler.handle(account, first)
     await handler.handle(account, _message("第二条", ""))
+    await handler.handle(account, first)
     await handler.drain()
     assert chat.runs == 2
 

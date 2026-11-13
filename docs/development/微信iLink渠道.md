@@ -27,7 +27,7 @@
 - `channel_accounts`：用户、当前空间、bot id、user id、baseurl、token 密文、游标、状态、暂停到何时。同一用户同时只能有一条未解绑记录。
 - `channel_bind_sessions`：扫码完成前的二维码。
 - `channel_peers`：每个空间一条对端记录，保存当前对话、最近 `context_token` 和最近入站时间。
-- `channel_messages`：入站按 `message_id` 去重，出站记录发送、失败或跳过原因。只存 500 字摘录。没有 `message_id` 的入站会生成本地编号，避免多条文本共用同一个问答幂等键。游标在本批消息都处理完之后才保存。
+- `channel_messages`：入站按 `message_id` 去重，出站记录发送、失败或跳过原因。只存 500 字摘录。没有 `message_id` 时用发送者、时间、序号、正文等字段做稳定摘要，同一页重放不会再开一次运行，不同正文仍然分开。游标在本批消息都处理完之后才保存。
 - `channel_approval_codes`：微信短确认码。
 
 ## 尚未在真实 iLink 上验证

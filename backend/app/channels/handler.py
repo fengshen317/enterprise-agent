@@ -10,7 +10,7 @@ from collections.abc import Coroutine
 from datetime import UTC, datetime, timedelta
 from time import monotonic
 from typing import Literal, Protocol
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from app.channels.commands import chunk_text, parse_inbound
 from app.channels.ilink import ILinkClient, ILinkMessage
@@ -124,6 +124,30 @@ def wechat_idempotency_key(message_id: str) -> str:
     return "wx" + hashlib.sha256(message_id.encode()).hexdigest()[:40]
 
 
+def fallback_message_id(message: ILinkMessage) -> str:
+    """没有 message_id 时用稳定字段做摘要，让同一页重放仍能去重。
+
+    Args:
+        message: 入站消息。
+
+    Returns:
+        以 local- 开头的编号。
+    """
+    parts = [
+        message.from_user_id,
+        message.to_user_id,
+        message.client_id,
+        "" if message.seq is None else str(message.seq),
+        "" if message.create_time_ms is None else str(message.create_time_ms),
+        message.context_token,
+        "" if message.message_type is None else str(message.message_type),
+        "" if message.message_state is None else str(message.message_state),
+        message.text,
+    ]
+    digest = hashlib.sha256("\n".join(parts).encode()).hexdigest()[:32]
+    return f"local-{digest}"
+
+
 class InboundHandler:
     """处理一个账号收到的文本。长轮询本身不等待模型生成。"""
 
@@ -205,10 +229,10 @@ class InboundHandler:
         # 生成中的增量不占去重位，避免后面的完成态被丢掉。服务端是否会用同一 id 再推一次，尚未在真机验证。
         if message.message_state == 1:
             return
-        # 没有 message_id 时无法去重。若共用同一个幂等键，第二条及以后的文本会被静默丢掉。
+        # 没有 message_id 时用内容摘要做稳定编号。游标未推进而整页重放时，不会再开一次运行。
         if not message.message_id:
             message = ILinkMessage(
-                f"local-{uuid4().hex}",
+                fallback_message_id(message),
                 message.from_user_id,
                 message.to_user_id,
                 message.group_id,
@@ -216,6 +240,9 @@ class InboundHandler:
                 message.text,
                 message.message_type,
                 message.message_state,
+                message.client_id,
+                message.seq,
+                message.create_time_ms,
             )
         inserted = await self.repo.record_inbound(
             account.id, message.message_id, message.from_user_id, "received", None, message.text[:500]

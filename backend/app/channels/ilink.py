@@ -54,6 +54,9 @@ class ILinkMessage:
     text: str
     message_type: int | None
     message_state: int | None
+    client_id: str = ""
+    seq: int | None = None
+    create_time_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -325,6 +328,9 @@ def _parse_message(value: object) -> ILinkMessage:
         text=_message_text(body.get("item_list")),
         message_type=_as_int(body.get("message_type")),
         message_state=_as_int(body.get("message_state")),
+        client_id=_as_str(body.get("client_id")),
+        seq=_as_int(body.get("seq")),
+        create_time_ms=_as_int(body.get("create_time_ms")),
     )
 
 
