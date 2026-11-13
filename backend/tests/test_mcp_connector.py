@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -162,14 +163,13 @@ async def test_call_fallback_to_text(settings: Settings, mcp_config: dict[str, A
 
 
 async def test_connect_without_mcp_sdk(settings: Settings, mcp_config: dict[str, Any]) -> None:
-    """MCP SDK 未安装时 connect 应返回 error 或 degraded。"""
+    """MCP SDK 未安装时 connect 不启动子进程，工具列表为空。"""
     connector = McpConnector(key="test_mcp", config=mcp_config, settings=settings)
-    # 模拟 _ensure_session 静默失败（MCP SDK 未安装）
-    await connector.connect()
-    # 未安装 SDK 时 _ensure_session 返回 None，connect 认为已连接
-    # 但 session 仍为 None，list_tools 返回空
-    defs = await connector.list_tools()
-    assert isinstance(defs, list)
+    # sys.modules 置空会让 import mcp 抛出 ImportError，即使环境里已经安装了 SDK。
+    with patch.dict(sys.modules, {"mcp": None}):
+        await connector.connect()
+        defs = await connector.list_tools()
+    assert defs == []
 
 
 async def test_aclose(settings: Settings, mcp_config: dict[str, Any]) -> None:

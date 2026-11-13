@@ -17,6 +17,8 @@ dependencies = [
   "tzdata>=2024.1",
   "httpx>=0.28.1",
   "python-multipart>=0.0.33",
+  "mcp>=1.12,<2",
+  "cryptography>=44",
 ]
 
 [dependency-groups]
