@@ -47,6 +47,7 @@ class ApprovalNotice:
     tool_name: str
     preview: str
     expires_at: datetime
+    risk_level: str = "write"
 
 
 class ApprovalBroker:
@@ -191,6 +192,7 @@ class ApprovalService:
                     tool_name=spec.display_name or spec.key,
                     preview=preview_text,
                     expires_at=expires_at,
+                    risk_level=spec.risk,
                 )
             )
             deadline = monotonic() + self.settings.approval_timeout_seconds

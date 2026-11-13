@@ -15,10 +15,12 @@ from app.channels.handler import InboundHandler, window_skip_reason
 from app.channels.ilink import ILinkClient
 from app.channels.records import AccountRecord, WorkspaceGate
 from app.channels.repository import ChannelStore
+from app.channels.wechat_text import progress_label
 from app.core.config import Settings
 from app.core.database import Database
 from app.core.errors import ApplicationError
 from app.models.identity import Workspace, WorkspaceMembership
+from app.models.tool_call import ToolCall
 from app.schemas.auth import ResourceScope
 from app.schemas.chat import RunCreate, RunSnapshot
 from app.services.agents import AgentService
@@ -130,6 +132,30 @@ class ChatGateway:
             最新快照。
         """
         return await self.runtime.store.snapshot(run_id)
+
+    async def activity(self, run_id: UUID) -> str:
+        """用最近一条未结束的工具调用说明进度。
+
+        Args:
+            run_id: 问答运行。
+
+        Returns:
+            一句进度。
+        """
+        async with self.runtime.database.session_factory() as session:
+            row = (
+                await session.execute(
+                    select(ToolCall.tool_name, ToolCall.status)
+                    .where(ToolCall.run_id == run_id, ToolCall.status.in_(("running", "awaiting_approval")))
+                    .order_by(ToolCall.created_at.desc())
+                    .limit(1)
+                )
+            ).one_or_none()
+        if row is None:
+            return "仍在处理…"
+        if row.status == "awaiting_approval":
+            return "正在等待确认…"
+        return progress_label(row.tool_name)
 
 
 class AgentGateway:
@@ -325,6 +351,10 @@ class ChannelRuntime:
         if page.cursor and page.cursor != account.updates_cursor:
             await self.repo.save_cursor(account.id, page.cursor)
             account.updates_cursor = page.cursor
+        try:
+            await self.handler.remind_if_due(account)
+        except Exception:
+            logger.warning("wechat_reminder_failed", extra={"account_id": str(account.id)})
 
     async def on_run_finished(self, run_id: UUID) -> None:
         """把不是微信当场触发的运行结果推回微信。
@@ -377,12 +407,20 @@ class ChannelRuntime:
         except ApplicationError:
             logger.warning("wechat_approval_code_failed", extra={"approval_id": str(notice.approval_id)})
             return
-        text = (
-            "需要你确认一次写操作。\n"
-            f"工具：{notice.tool_name}\n"
-            f"内容：{notice.preview}\n"
-            f"回复「同意 {code}」或「拒绝 {code} 原因」。"
-        )
+        if notice.risk_level in {"delete", "external"}:
+            page = self.settings.public_app_base_url.rstrip("/") + "/chat"
+            text = (
+                f"需要在网页确认：{notice.tool_name}\n"
+                f"内容：{notice.preview}\n"
+                f"删除和外发不在微信里决定。打开 {page}"
+            )
+        else:
+            text = (
+                "需要你确认一次写操作。\n"
+                f"工具：{notice.tool_name}\n"
+                f"内容：{notice.preview}\n"
+                f"回复「同意 {code}」或「拒绝 {code} 原因」。只有这一项时也可以只回复「同意」或「拒绝」。"
+            )
         # 不把 run_id 写进出站去重，避免和这条运行的最终回复互相挡住。
         await self.handler.send_text(account, peer.peer_id, peer.context_token, text, run_id=None)
 

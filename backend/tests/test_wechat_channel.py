@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
@@ -42,6 +43,7 @@ class MemoryStore:
         self.codes: dict[tuple[UUID, str], ApprovalTicket] = {}
         self.workspaces: list[UUID] = []
         self.deliveries: dict[UUID, object] = {}
+        self.skipped: list[tuple[UUID, datetime, str, str]] = []
 
     async def create_bind_session(
         self, user_id: UUID, workspace_id: UUID, qrcode: str, image: str, baseurl: str
@@ -127,6 +129,7 @@ class MemoryStore:
             None if current is None else current.conversation_id,
             context_token or ("" if current is None else current.context_token),
             at,
+            None if current is None else current.reminder_for_inbound_at,
         )
         self.peers[(account_id, workspace_id, peer_id)] = link
         return link
@@ -147,6 +150,7 @@ class MemoryStore:
             conversation_id,
             "" if current is None else current.context_token,
             None if current is None else current.last_inbound_at,
+            None if current is None else current.reminder_for_inbound_at,
         )
         self.peers[(account_id, workspace_id, peer_id)] = link
         return link
@@ -167,8 +171,10 @@ class MemoryStore:
         self, account_id: UUID, peer_id: str, status: str, reason: str | None, run_id: UUID | None, excerpt: str
     ) -> None:
         """记录出站。"""
-        del account_id, peer_id
+        del peer_id
         self.outbounds.append((status, reason, run_id, excerpt))
+        if status == "skipped":
+            self.skipped.append((account_id, datetime.now(UTC), reason or "", excerpt))
 
     async def outbound_exists(self, run_id: UUID) -> bool:
         """是否已经为该运行出站。"""
@@ -177,6 +183,33 @@ class MemoryStore:
     async def find_approval_code(self, account_id: UUID, code: str) -> ApprovalTicket | None:
         """查找确认码。"""
         return self.codes.get((account_id, code))
+
+    async def list_pending_codes(self, account_id: UUID) -> list[ApprovalTicket]:
+        """列出仍待处理的确认码。"""
+        return [ticket for (owner, _code), ticket in self.codes.items() if owner == account_id]
+
+    async def clear_welcome(self, account_id: UUID) -> None:
+        """欢迎语只发一次。"""
+        if account_id in self.accounts:
+            self.accounts[account_id].welcome_pending = False
+
+    async def mark_reminder(self, account_id: UUID, workspace_id: UUID, peer_id: str, inbound_at: datetime) -> None:
+        """标记本窗口已提醒。"""
+        current = self.peers[(account_id, workspace_id, peer_id)]
+        self.peers[(account_id, workspace_id, peer_id)] = PeerLink(
+            current.account_id,
+            current.workspace_id,
+            current.peer_id,
+            current.conversation_id,
+            current.context_token,
+            current.last_inbound_at,
+            inbound_at,
+        )
+
+    async def list_skipped(self, account_id: UUID, limit: int = 10) -> list[tuple[datetime, str, str]]:
+        """最近未推送的记录。"""
+        rows = [(created, reason, excerpt) for owner, created, reason, excerpt in self.skipped if owner == account_id]
+        return rows[:limit]
 
     async def consume_approval_code(self, account_id: UUID, code: str) -> None:
         """用掉确认码。"""
@@ -291,6 +324,11 @@ class FakeChat:
     async def snapshot(self, run_id: UUID) -> RunSnapshot:
         """回复任务一读到快照就是完成。"""
         return _snapshot(run_id, "completed", "模型回复")
+
+    async def activity(self, run_id: UUID) -> str:
+        """默认没有进行中的工具。"""
+        del run_id
+        return ""
 
 
 class FakeAgents:
@@ -783,3 +821,125 @@ async def test_messages_without_id_each_create_a_run() -> None:
     await handler.handle(account, _message("第二条", ""))
     await handler.drain()
     assert chat.runs == 2
+
+
+@pytest.mark.asyncio
+async def test_welcome_help_and_window_reminder() -> None:
+    """第一次发消息先看到说明；窗口只提醒一次。"""
+    store = MemoryStore(ChannelCrypto(_settings()))
+    ilink = FakeILink()
+    handler, chat = _handler(store, ilink)
+    account = _account()
+    account.welcome_pending = True
+    store.accounts[account.id] = account
+    await handler.handle(account, _message("你好", "hi"))
+    await handler.drain()
+    assert ilink.sent[0].startswith("已绑定微信")
+    assert chat.runs == 1
+    assert account.welcome_pending is False
+    await handler.handle(account, _message("/help", "help"))
+    assert ilink.sent[-1].startswith("已绑定微信")
+    inbound = datetime.now(UTC) - timedelta(hours=23)
+    store.peers[(account.id, account.workspace_id, "wx-user")] = PeerLink(
+        account.id, account.workspace_id, "wx-user", uuid4(), "ctx", inbound
+    )
+    await handler.remind_if_due(account)
+    await handler.remind_if_due(account)
+    assert ilink.sent.count("回复任意内容可继续接收推送") == 1
+
+
+@pytest.mark.asyncio
+async def test_bare_approval_one_many_and_web_only() -> None:
+    """一项写操作可以只回复同意；多项要确认码；删除只能在网页处理。"""
+    store = MemoryStore(ChannelCrypto(_settings()))
+    ilink = FakeILink()
+    approvals = FakeApprovals()
+    handler, _chat = _handler(store, ilink, approvals=approvals)
+    account = _account()
+    store.codes[(account.id, "AB23")] = ApprovalTicket(
+        "AB23", account.id, uuid4(), uuid4(), account.workspace_id, "write", "创建定时任务"
+    )
+    store.codes[(account.id, "CD34")] = ApprovalTicket(
+        "CD34", account.id, uuid4(), uuid4(), account.workspace_id, "write", "另一项"
+    )
+    await handler.handle(account, _message("1", "a2"))
+    assert approvals.calls == []
+    assert any("多项" in item for item in ilink.sent)
+    store.codes.pop((account.id, "CD34"))
+    await handler.handle(account, _message("同意", "a1"))
+    assert approvals.calls == [("approve", None)]
+    store.codes.clear()
+    store.codes[(account.id, "EF56")] = ApprovalTicket(
+        "EF56", account.id, uuid4(), uuid4(), account.workspace_id, "delete", "删除文档"
+    )
+    await handler.handle(account, _message("同意", "a3"))
+    assert len(approvals.calls) == 1
+    assert any("只能在网页确认" in item for item in ilink.sent)
+
+
+@pytest.mark.asyncio
+async def test_long_answer_is_plain_text_with_link_and_progress() -> None:
+    """长回答去掉 Markdown，并在超过阈值后发进度。"""
+    settings = _settings(
+        channel_progress_after_seconds=0.01,
+        channel_progress_interval_seconds=0.05,
+        channel_reply_preview_characters=80,
+    )
+    store = MemoryStore(ChannelCrypto(settings))
+    ilink = FakeILink()
+    chat = FakeChat()
+    calls = {"n": 0}
+
+    async def snapshot(run_id: UUID) -> RunSnapshot:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            await asyncio.sleep(0.02)
+            return _snapshot(run_id, "running", "")
+        body = "# 标题\n\n**重点**\n\n" + ("甲" * 200)
+        return _snapshot(run_id, "completed", body)
+
+    async def activity(run_id: UUID) -> str:
+        del run_id
+        return "正在查知识库…"
+
+    chat.snapshot = snapshot  # type: ignore[method-assign]
+    chat.activity = activity  # type: ignore[method-assign]
+    handler = InboundHandler(
+        settings,
+        store,  # type: ignore[arg-type]
+        ilink,  # type: ignore[arg-type]
+        chat,
+        FakeAgents(),
+        FakeMembers(found=True, allowed=True),
+        FakeApprovals(),
+    )
+    await handler.handle(_account(), _message("总结一下", "long"))
+    await handler.drain()
+    assert "正在查知识库…" in ilink.sent
+    final = ilink.sent[-1]
+    assert "# 标题" not in final
+    assert "**" not in final
+    assert "完整回答见：" in final
+    assert "/chat/" in final
+
+
+@pytest.mark.asyncio
+async def test_binding_list_shows_window_and_skipped_push() -> None:
+    """网页能看到窗口何时关闭，以及没推送出去的原因。"""
+    settings = _settings()
+    crypto = ChannelCrypto(settings)
+    store = MemoryStore(crypto)
+    service = ChannelService(store, FakeILink(), crypto, settings)  # type: ignore[arg-type]
+    scope = ResourceScope(uuid4(), uuid4())
+    account = _account(scope.user_id)
+    store.accounts[account.id] = account
+    inbound = datetime.now(UTC) - timedelta(hours=1)
+    store.peers[(account.id, account.workspace_id, "wx-user")] = PeerLink(
+        account.id, account.workspace_id, "wx-user", None, "ctx", inbound
+    )
+    await store.log_outbound(account.id, "wx-user", "skipped", "outside_window", None, "晨报正文")
+    listed = await service.list_accounts(scope)
+    assert listed[0].window_open is True
+    assert listed[0].window_note.startswith("推送可用至")
+    assert listed[0].skipped_pushes[0].reason == "outside_window"
+    assert listed[0].skipped_pushes[0].excerpt == "晨报正文"

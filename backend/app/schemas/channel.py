@@ -17,6 +17,14 @@ class BindSessionView(BaseModel):
     message: str = ""
 
 
+class SkippedPushView(BaseModel):
+    """一条没有推送到微信的出站记录。"""
+
+    created_at: datetime
+    reason: str
+    excerpt: str
+
+
 class ChannelAccountView(BaseModel):
     """已绑定的微信账号。"""
 
@@ -27,3 +35,7 @@ class ChannelAccountView(BaseModel):
     ilink_user_id: str = Field(default="")
     paused_until: datetime | None = None
     created_at: datetime
+    window_open: bool = False
+    window_until: datetime | None = None
+    window_note: str = "推送已暂停"
+    skipped_pushes: list[SkippedPushView] = Field(default_factory=list)

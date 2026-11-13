@@ -22,6 +22,20 @@ from app.services.approvals import ApprovalNotice
 logger = logging.getLogger(__name__)
 
 
+def _approval_risk(risk: str) -> str:
+    """只接受审批表允许的风险等级。
+
+    Args:
+        risk: 工具声明的风险。
+
+    Returns:
+        write、delete 或 external。
+    """
+    if risk in {"write", "delete", "external"}:
+        return risk
+    return "write"
+
+
 class ChannelStore:
     """读写渠道表，并把 bot_token 解密后放进内存记录。"""
 
@@ -416,6 +430,8 @@ class ChannelStore:
                             run_id=notice.run_id,
                             workspace_id=notice.workspace_id,
                             expires_at=notice.expires_at,
+                            risk_level=_approval_risk(notice.risk_level),
+                            tool_name=(notice.tool_name or "")[:64],
                         )
                     )
                 return code
@@ -444,7 +460,28 @@ class ChannelStore:
             )
             if row is None:
                 return None
-            return ApprovalTicket(row.code, row.account_id, row.approval_id, row.run_id, row.workspace_id)
+            return self._ticket(row)
+
+    async def list_pending_codes(self, account_id: UUID) -> list[ApprovalTicket]:
+        """列出这个微信账号仍可处理的确认码。
+
+        Args:
+            account_id: 渠道账号。
+
+        Returns:
+            未过期的待处理确认码。
+        """
+        async with self.factory() as session:
+            rows = await session.scalars(
+                select(ChannelApprovalCode)
+                .where(
+                    ChannelApprovalCode.account_id == account_id,
+                    ChannelApprovalCode.status == "pending",
+                    ChannelApprovalCode.expires_at > datetime.now(UTC),
+                )
+                .order_by(ChannelApprovalCode.created_at, ChannelApprovalCode.code)
+            )
+            return [self._ticket(row) for row in rows]
 
     async def consume_approval_code(self, account_id: UUID, code: str) -> None:
         """决策完成后标记短码已使用。
@@ -459,6 +496,62 @@ class ChannelStore:
                 .where(ChannelApprovalCode.code == code, ChannelApprovalCode.account_id == account_id)
                 .values(status="used")
             )
+
+    async def clear_welcome(self, account_id: UUID) -> None:
+        """欢迎语发出后不再重复发送。
+
+        Args:
+            account_id: 渠道账号。
+        """
+        async with self.factory.begin() as session:
+            await session.execute(
+                update(ChannelAccount)
+                .where(ChannelAccount.id == account_id)
+                .values(welcome_pending=False, updated_at=datetime.now(UTC))
+            )
+
+    async def mark_reminder(self, account_id: UUID, workspace_id: UUID, peer_id: str, inbound_at: datetime) -> None:
+        """记下这条入站对应的窗口已经提醒过，避免同一窗口重复提醒。
+
+        Args:
+            account_id: 渠道账号。
+            workspace_id: 对端所在空间。
+            peer_id: 微信用户。
+            inbound_at: 打开当前窗口的入站时间。
+        """
+        async with self.factory.begin() as session:
+            await session.execute(
+                update(ChannelPeer)
+                .where(
+                    ChannelPeer.account_id == account_id,
+                    ChannelPeer.workspace_id == workspace_id,
+                    ChannelPeer.peer_id == peer_id,
+                )
+                .values(reminder_for_inbound_at=inbound_at, updated_at=datetime.now(UTC))
+            )
+
+    async def list_skipped(self, account_id: UUID, limit: int = 10) -> list[tuple[datetime, str, str]]:
+        """读取最近没能推送出去的出站记录，供网页展示。
+
+        Args:
+            account_id: 渠道账号。
+            limit: 最多几条。
+
+        Returns:
+            时间、原因和摘录。
+        """
+        async with self.factory() as session:
+            rows = await session.execute(
+                select(ChannelMessage.created_at, ChannelMessage.skip_reason, ChannelMessage.body_excerpt)
+                .where(
+                    ChannelMessage.account_id == account_id,
+                    ChannelMessage.direction == "outbound",
+                    ChannelMessage.status == "skipped",
+                )
+                .order_by(ChannelMessage.created_at.desc())
+                .limit(limit)
+            )
+            return [(created, reason or "", excerpt) for created, reason, excerpt in rows]
 
     async def create_bind_session(
         self, user_id: UUID, workspace_id: UUID, qrcode: str, image: str, baseurl: str
@@ -567,6 +660,7 @@ class ChannelStore:
                 baseurl=baseurl[:300],
                 bot_token_ciphertext=ciphertext,
                 status="active",
+                welcome_pending=True,
             )
             session.add(account)
             await session.flush()
@@ -707,6 +801,7 @@ class ChannelStore:
             status=row.status,
             paused_until=row.paused_until,
             created_at=row.created_at,
+            welcome_pending=row.welcome_pending,
             token=token,
         )
 
@@ -727,6 +822,27 @@ class ChannelStore:
             conversation_id=row.conversation_id,
             context_token=row.context_token,
             last_inbound_at=row.last_inbound_at,
+            reminder_for_inbound_at=row.reminder_for_inbound_at,
+        )
+
+    @staticmethod
+    def _ticket(row: ChannelApprovalCode) -> ApprovalTicket:
+        """转换确认码。
+
+        Args:
+            row: 数据库行。
+
+        Returns:
+            审批票据。
+        """
+        return ApprovalTicket(
+            row.code,
+            row.account_id,
+            row.approval_id,
+            row.run_id,
+            row.workspace_id,
+            row.risk_level,
+            row.tool_name,
         )
 
     @staticmethod

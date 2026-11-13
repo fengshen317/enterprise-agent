@@ -3,7 +3,19 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -35,6 +47,7 @@ class ChannelAccount(Base):
     bot_token_ciphertext: Mapped[str] = mapped_column(Text, default="", server_default="")
     updates_cursor: Mapped[str] = mapped_column(Text, default="", server_default="")
     status: Mapped[str] = mapped_column(String(16), default="active", server_default="active")
+    welcome_pending: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     paused_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -78,6 +91,7 @@ class ChannelPeer(Base):
     conversation_id: Mapped[UUID | None] = mapped_column(ForeignKey("conversations.id", ondelete="SET NULL"))
     context_token: Mapped[str] = mapped_column(Text, default="", server_default="")
     last_inbound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reminder_for_inbound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -111,6 +125,7 @@ class ChannelApprovalCode(Base):
     __tablename__ = "channel_approval_codes"
     __table_args__ = (
         CheckConstraint("status IN ('pending', 'used')", name="status"),
+        CheckConstraint("risk_level IN ('write', 'delete', 'external')", name="risk_level"),
         Index("ix_channel_approval_codes_account_id", "account_id"),
     )
     code: Mapped[str] = mapped_column(String(8), primary_key=True)
@@ -119,5 +134,7 @@ class ChannelApprovalCode(Base):
     run_id: Mapped[UUID] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"))
     workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"))
     status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    risk_level: Mapped[str] = mapped_column(String(16), default="write", server_default="write")
+    tool_name: Mapped[str] = mapped_column(String(64), default="", server_default="")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

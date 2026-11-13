@@ -22,6 +22,7 @@ class AccountRecord:
     status: str
     paused_until: datetime | None
     created_at: datetime
+    welcome_pending: bool = False
     token: str = field(repr=False, default="")
 
 
@@ -35,6 +36,7 @@ class PeerLink:
     conversation_id: UUID | None
     context_token: str
     last_inbound_at: datetime | None
+    reminder_for_inbound_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,8 @@ class ApprovalTicket:
     approval_id: UUID
     run_id: UUID
     workspace_id: UUID
+    risk_level: str = "write"
+    tool_name: str = ""
 
 
 @dataclass(frozen=True)

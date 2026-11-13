@@ -18,6 +18,10 @@ const account = {
   ilink_user_id: 'wx-user',
   paused_until: null,
   created_at: '2026-11-13T00:00:00Z',
+  window_open: false,
+  window_until: null,
+  window_note: '推送已暂停',
+  skipped_pushes: [{ created_at: '2026-11-13T00:00:00Z', reason: 'outside_window', excerpt: '晨报正文' }],
 }
 
 describe('微信绑定页', () => {
@@ -60,6 +64,8 @@ describe('微信绑定页', () => {
     const wrapper = mount(WeChatChannelView)
     await flushPromises()
     expect(wrapper.text()).toContain('微信用户 wx-user')
+    expect(wrapper.text()).toContain('推送已暂停')
+    expect(wrapper.text()).toContain('未推送（已超过 24 小时）：晨报正文')
     await wrapper.get('.wechat__account button').trigger('click')
     await flushPromises()
     expect(unbindWeChat).toHaveBeenCalledWith('account-1')

@@ -9,6 +9,12 @@ export interface WeChatBindSession {
   message: string
 }
 
+export interface SkippedPush {
+  created_at: string
+  reason: string
+  excerpt: string
+}
+
 export interface WeChatAccount {
   id: string
   workspace_id: string
@@ -17,6 +23,10 @@ export interface WeChatAccount {
   ilink_user_id: string
   paused_until: string | null
   created_at: string
+  window_open: boolean
+  window_until: string | null
+  window_note: string
+  skipped_pushes: SkippedPush[]
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -50,6 +60,10 @@ function parseAccount(value: unknown): WeChatAccount {
     || typeof value.ilink_user_id !== 'string'
     || (value.paused_until !== null && typeof value.paused_until !== 'string')
     || typeof value.created_at !== 'string'
+    || typeof value.window_open !== 'boolean'
+    || (value.window_until !== null && typeof value.window_until !== 'string')
+    || typeof value.window_note !== 'string'
+    || !Array.isArray(value.skipped_pushes)
   ) return invalid()
   return value as unknown as WeChatAccount
 }

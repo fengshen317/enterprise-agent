@@ -42,7 +42,7 @@ def session(app: FastAPI) -> AsyncMock:
         可控制查询结果的会话替身。
     """
     mock = AsyncMock(spec=AsyncSession)
-    mock.scalar.return_value = "16"
+    mock.scalar.return_value = "17"
 
     async def override() -> AsyncIterator[AsyncSession]:
         """提供隔离会话。

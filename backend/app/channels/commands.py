@@ -10,8 +10,10 @@ from typing import Literal
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 _APPROVE = re.compile(r"^同意\s+([A-Za-z0-9]{4})$")
 _REJECT = re.compile(r"^拒绝\s+([A-Za-z0-9]{4})(?:\s+(.{1,200}))?$")
+_BARE_APPROVE = re.compile(r"^(?:同意|1)$")
+_BARE_REJECT = re.compile(r"^(?:拒绝|2)(?:\s+(.{1,200}))?$")
 _CODE = re.compile(r"^[A-HJ-NP-Z2-9]{4}$")
-CommandKind = Literal["chat", "new", "workspace", "agent", "approve", "reject"]
+CommandKind = Literal["chat", "new", "workspace", "agent", "help", "approve", "reject"]
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,8 @@ def parse_inbound(text: str) -> InboundCommand:
     stripped = text.strip()
     if stripped == "/new":
         return InboundCommand("new")
+    if stripped == "/help":
+        return InboundCommand("help")
     if stripped.startswith("/ws ") or stripped.startswith("/ws\t"):
         return InboundCommand("workspace", argument=stripped[3:].strip())
     if stripped == "/agent":
@@ -62,6 +66,11 @@ def parse_inbound(text: str) -> InboundCommand:
         if _CODE.fullmatch(code):
             comment = (rejected.group(2) or "").strip()
             return InboundCommand("reject", code=code, comment=comment)
+    if _BARE_APPROVE.fullmatch(stripped):
+        return InboundCommand("approve")
+    bare_reject = _BARE_REJECT.fullmatch(stripped)
+    if bare_reject is not None:
+        return InboundCommand("reject", comment=(bare_reject.group(1) or "").strip())
     return InboundCommand("chat")
 
 

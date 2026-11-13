@@ -32,6 +32,13 @@ function showError(value: unknown): void {
   error.value = value instanceof Error ? value.message : '操作失败，请重试'
 }
 
+function reasonText(reason: string): string {
+  if (reason === 'outside_window') return '已超过 24 小时'
+  if (reason === 'no_context_token') return '还没有会话'
+  if (reason === 'no_inbound') return '还没有收到消息'
+  return reason || '未发送'
+}
+
 function imageUrl(content: string): string {
   if (content.startsWith('https://') || content.startsWith('http://') || content.startsWith('data:')) return content
   return ''
@@ -134,6 +141,7 @@ onUnmounted(stopPolling)
         <div>
           <strong>{{ statusText[item.status] ?? item.status }}</strong>
           <span>微信用户 {{ item.ilink_user_id || '未知' }}</span>
+          <span>{{ item.window_note }}</span>
         </div>
         <button
           type="button"
@@ -142,6 +150,17 @@ onUnmounted(stopPolling)
         >
           解除绑定
         </button>
+        <ul
+          v-if="item.skipped_pushes.length"
+          class="wechat__skipped"
+        >
+          <li
+            v-for="push in item.skipped_pushes"
+            :key="push.created_at + push.excerpt"
+          >
+            未推送（{{ reasonText(push.reason) }}）：{{ push.excerpt }}
+          </li>
+        </ul>
       </li>
     </ul>
     <button
@@ -192,6 +211,8 @@ onUnmounted(stopPolling)
 .wechat__list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
 .wechat__account { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 12px; border: 1px solid $line; border-radius: 8px; background: #fff; }
 .wechat__account span { display: block; color: $muted; font-size: 13px; }
+.wechat__account { flex-wrap: wrap; }
+.wechat__skipped { width: 100%; margin: 8px 0 0; padding-left: 18px; color: $muted; font-size: 13px; }
 .wechat__bind, .wechat__account button { border: 0; background: $green; color: #fff; border-radius: 6px; padding: 8px 14px; }
 .wechat__qr { display: grid; gap: 8px; padding: 16px; border: 1px dashed $line; border-radius: 8px; background: $paper; }
 .wechat__qr img { width: 220px; height: 220px; object-fit: contain; background: #fff; }

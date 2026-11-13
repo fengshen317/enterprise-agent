@@ -88,6 +88,11 @@ class Settings(BaseSettings):
     channel_enabled: bool = True
     channel_token_key: SecretStr = SecretStr("")
     channel_reply_window_hours: int = Field(default=24, ge=1, le=168)
+    channel_window_reminder_hours: int = Field(default=2, ge=0, le=23)
+    channel_progress_after_seconds: float = Field(default=10, ge=0, le=120)
+    channel_progress_interval_seconds: float = Field(default=20, ge=0.01, le=120)
+    channel_reply_preview_characters: int = Field(default=500, ge=80, le=1800)
+    public_app_base_url: str = Field(default="http://127.0.0.1:8686", min_length=1, max_length=300)
     ilink_base_url: str = Field(default="https://ilinkai.weixin.qq.com", min_length=1, max_length=300)
     ilink_channel_version: str = Field(default="3.0.0/enterprise-agent-0.1.0", min_length=5, max_length=128)
     ilink_bot_agent: str = Field(default="EnterpriseAgent/0.1.0", min_length=1, max_length=256)

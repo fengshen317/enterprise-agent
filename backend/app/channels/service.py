@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from app.channels.crypto import ChannelCrypto
 from app.channels.ilink import ILinkClient, safe_https_base
-from app.channels.records import AccountRecord
+from app.channels.records import AccountRecord, PeerLink
 from app.channels.repository import ChannelStore
 from app.core.config import Settings
 from app.core.errors import ApplicationError
 from app.schemas.auth import ResourceScope
-from app.schemas.channel import BindSessionView, ChannelAccountView
+from app.schemas.channel import BindSessionView, ChannelAccountView, SkippedPushView
 
 
 class ChannelService:
@@ -123,7 +125,12 @@ class ChannelService:
             未解绑的账号，不含 token。
         """
         self._require_channel()
-        return [_view(item) for item in await self.repo.list_user_accounts(scope.user_id)]
+        views: list[ChannelAccountView] = []
+        for item in await self.repo.list_user_accounts(scope.user_id):
+            peer = await self.repo.latest_peer(item.id)
+            skipped = await self.repo.list_skipped(item.id)
+            views.append(_view(item, peer, skipped, self.settings))
+        return views
 
     async def unbind(self, scope: ResourceScope, account_id: UUID) -> None:
         """解绑自己的微信账号。
@@ -205,15 +212,32 @@ class ChannelService:
             raise ApplicationError("CHANNEL_NOT_CONFIGURED", "微信渠道未配置密钥", 503)
 
 
-def _view(account: AccountRecord) -> ChannelAccountView:
-    """把账号记录转成不含 token 的接口视图。
+def _view(
+    account: AccountRecord,
+    peer: PeerLink | None,
+    skipped: list[tuple[datetime, str, str]],
+    settings: Settings,
+) -> ChannelAccountView:
+    """把账号记录转成不含 token 的接口视图，并带上推送窗口。
 
     Args:
         account: 渠道账号。
+        peer: 最近入站的对端。
+        skipped: 最近未推送的记录。
+        settings: 用来计算窗口和展示时区。
 
     Returns:
         公开视图。
     """
+    until = _window_until(peer, settings.channel_reply_window_hours)
+    open_now = until is not None and until > datetime.now(UTC)
+    if until is None:
+        note = "推送已暂停，还没有收到微信消息"
+    elif open_now:
+        local = until.astimezone(ZoneInfo(settings.schedule_timezone))
+        note = f"推送可用至 {local.strftime('%Y-%m-%d %H:%M')}"
+    else:
+        note = "推送已暂停"
     return ChannelAccountView(
         id=account.id,
         workspace_id=account.workspace_id,
@@ -222,7 +246,31 @@ def _view(account: AccountRecord) -> ChannelAccountView:
         ilink_user_id=account.ilink_user_id,
         paused_until=account.paused_until,
         created_at=account.created_at,
+        window_open=open_now,
+        window_until=until,
+        window_note=note,
+        skipped_pushes=[
+            SkippedPushView(created_at=created, reason=reason, excerpt=excerpt) for created, reason, excerpt in skipped
+        ],
     )
+
+
+def _window_until(peer: PeerLink | None, hours: int) -> datetime | None:
+    """计算窗口关闭时间。
+
+    Args:
+        peer: 最近入站。
+        hours: 窗口小时数。
+
+    Returns:
+        关闭时间；还没有入站时为 None。
+    """
+    if peer is None or peer.last_inbound_at is None:
+        return None
+    inbound = peer.last_inbound_at
+    if inbound.tzinfo is None:
+        inbound = inbound.replace(tzinfo=UTC)
+    return inbound + timedelta(hours=hours)
 
 
 def _as_origin(host: str) -> str:
