@@ -7,7 +7,7 @@ from fastapi import APIRouter, Query, Request, Response
 
 from app.api.auth import ScopeDependency
 from app.schemas.chat import RunSnapshot
-from app.schemas.schedule import ScheduleInput, ScheduleView
+from app.schemas.schedule import ScheduleInput, ScheduleView, ScheduleWeChatPushInput
 from app.services.schedule_runtime import ScheduleRuntime
 
 router = APIRouter(prefix="/api/schedules", tags=["定时问答"])
@@ -98,6 +98,27 @@ async def remove(schedule_id: UUID, request: Request, scope: ScopeDependency) ->
     """
     await runtime(request).store.delete(scope, schedule_id)
     return Response(status_code=204)
+
+
+@router.post("/{schedule_id}/wechat-push", response_model=ScheduleView)
+async def set_wechat_push(
+    schedule_id: UUID,
+    body: ScheduleWeChatPushInput,
+    request: Request,
+    scope: ScopeDependency,
+) -> ScheduleView:
+    """切换逐任务微信推送，不重算下一次 Cron 时间。
+
+    Args:
+        schedule_id: 定时任务标识。
+        body: 目标推送状态。
+        request: 当前请求。
+        scope: 已验证用户和空间。
+
+    Returns:
+        更新后的定时任务。
+    """
+    return await runtime(request).store.set_wechat_push(scope, schedule_id, body.push_to_wechat)
 
 
 @router.post("/{schedule_id}/run", response_model=RunSnapshot, status_code=202)

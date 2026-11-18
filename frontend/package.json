@@ -18,12 +18,14 @@
     "dompurify": "^3.4.17",
     "marked": "^18.2.0",
     "pinia": "^4.1.0",
+    "qrcode": "^1.5.4",
     "vue": "^3.5.0",
     "vue-router": "^4.5.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
     "@types/node": "^24.0.0",
+    "@types/qrcode": "^1.5.6",
     "@vitejs/plugin-vue": "^6.0.0",
     "@vue/test-utils": "^2.4.6",
     "eslint": "^9.0.0",

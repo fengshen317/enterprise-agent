@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     tools_enabled: bool = True
     tool_timeout_seconds: float = Field(default=5, gt=0, le=30)
     tool_max_calls_per_run: int = Field(default=4, ge=1, le=10)
+    connector_monitor_enabled: bool = True
+    connector_monitor_interval_seconds: float = Field(default=60, ge=1, le=3600)
+    connector_check_timeout_seconds: float = Field(default=15, gt=0, le=60)
     task_scheduler_enabled: bool = True
     task_retry_attempts: int = Field(default=3, ge=1, le=5)
     task_retry_base_seconds: float = Field(default=2, gt=0, le=60)

@@ -6,6 +6,8 @@ from fastapi import APIRouter, Request, Response
 
 from app.api.admin import _require_admin
 from app.api.auth import ScopeDependency
+from app.connectors.registry import ConnectorRegistry
+from app.core.errors import ApplicationError
 from app.schemas.connectors import (
     ConnectorConfigInput,
     ConnectorDetail,
@@ -51,9 +53,7 @@ async def list_connectors(request: Request, response: Response, scope: ScopeDepe
 
 
 @router.get("/connectors-builtin", response_model=list[dict[str, Any]])
-async def list_builtin_connectors(
-    request: Request, response: Response, scope: ScopeDependency
-) -> list[dict[str, Any]]:
+async def list_builtin_connectors(request: Request, response: Response, scope: ScopeDependency) -> list[dict[str, Any]]:
     """列出内置连接器模板（含已安装状态）。
 
     Args:
@@ -173,3 +173,26 @@ async def authenticate(key: str, request: Request, scope: ScopeDependency) -> di
     """
     await _require_admin(request, scope)
     return await service(request).authenticate(key)
+
+
+@router.get("/admin/connectors/{key}/auth/status")
+async def authentication_status(
+    key: str, request: Request, response: Response, scope: ScopeDependency
+) -> dict[str, object]:
+    """读取管理员发起的授权进度。
+
+    Args:
+        key: 连接器标识。
+        request: 应用请求。
+        response: 禁止缓存授权 URL。
+        scope: 可信身份。
+
+    Returns:
+        授权进度与可操作提示。
+    """
+    await _require_admin(request, scope)
+    response.headers["Cache-Control"] = "no-store"
+    registry: ConnectorRegistry = request.app.state.connector_registry
+    if registry.descriptor(key) is None:
+        raise ApplicationError("CONNECTOR_NOT_FOUND", "连接器不存在", 404)
+    return registry.authorization_status(key)

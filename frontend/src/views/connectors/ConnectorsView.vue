@@ -1,9 +1,14 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
+import { useConnectorsStore } from '../../stores/connectors'
 import {
   listBuiltinConnectors,
-  listConnectors,
+  connectorHealthLabel,
+  connectorActionLabel,
+  connectorTime,
+  testConnector,
   installConnector,
   setConnectorEnabled,
   type BuiltinConnector,
@@ -12,7 +17,10 @@ import {
 import ConnectorConfigDialog from './ConnectorConfigDialog.vue'
 
 const auth = useAuthStore()
-const connectors = ref<ConnectorView[]>([])
+const store = useConnectorsStore()
+const route = useRoute()
+const router = useRouter()
+const connectors = computed(() => store.connectors)
 const builtins = ref<BuiltinConnector[]>([])
 const loading = ref(false)
 const error = ref('')
@@ -22,12 +30,6 @@ const showConfig = ref(false)
 
 const isAdmin = () => auth.activeWorkspace?.role === 'admin' && auth.activeWorkspace.status === 'active'
 
-const statusLabels: Record<string, string> = {
-  connected: '已连接',
-  degraded: '降级',
-  error: '错误',
-  disabled: '未启用',
-}
 const kindLabels: Record<string, string> = { cli: 'CLI', mcp: 'MCP', api: 'API' }
 
 function showError(value: unknown): void {
@@ -38,11 +40,10 @@ async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    const [installed, builtinList] = await Promise.all([
-      listConnectors(),
+    const [, builtinList] = await Promise.all([
+      store.refresh(true),
       listBuiltinConnectors().catch(() => [] as BuiltinConnector[]),
     ])
-    connectors.value = installed
     builtins.value = builtinList
   } catch (value) {
     showError(value)
@@ -76,7 +77,21 @@ function openConfig(key: string): void {
 function onConfigClosed(): void {
   showConfig.value = false
   selectedKey.value = ''
+  if (route.query.connector) void router.replace({ query: { ...route.query, connector: undefined } })
   void load()
+}
+
+async function act(connector: ConnectorView): Promise<void> {
+  if (!isAdmin() || busy.value) return
+  if (connector.auth_action === 'authorize' || connector.auth_action === 'configure') {
+    openConfig(connector.key)
+    return
+  }
+  busy.value = connector.key
+  try {
+    await testConnector(connector.key)
+    await store.refresh(true)
+  } catch (value) { showError(value) } finally { busy.value = '' }
 }
 
 async function toggleEnabled(connector: ConnectorView): Promise<void> {
@@ -96,7 +111,14 @@ function statusClass(status: string): string {
   return `connectors__status--${status}`
 }
 
-onMounted(load)
+watch(() => route.query.connector, key => {
+  if (typeof key === 'string' && key) openConfig(key)
+}, { immediate: true })
+onMounted(() => {
+  store.acquire()
+  void listBuiltinConnectors().then(value => { builtins.value = value }).catch(showError)
+})
+onUnmounted(store.release)
 </script>
 
 <template>
@@ -110,20 +132,20 @@ onMounted(load)
     </header>
 
     <p
-      v-if="error"
+      v-if="error || store.error"
       class="connectors__error"
     >
-      {{ error }}
+      {{ error || store.error }}
     </p>
     <p
-      v-if="loading"
+      v-if="loading || store.loading"
       class="connectors__loading"
     >
       加载中…
     </p>
 
     <div
-      v-if="!loading && connectors.length"
+      v-if="connectors.length"
       class="connectors__grid"
     >
       <article
@@ -142,7 +164,7 @@ onMounted(load)
           </div>
           <div class="connectors__card-actions">
             <span :class="['connectors__status', statusClass(connector.status)]">
-              {{ statusLabels[connector.status] ?? connector.status }}
+              {{ connectorHealthLabel(connector) }}
             </span>
             <label
               class="connectors__toggle"
@@ -161,6 +183,12 @@ onMounted(load)
         <p class="connectors__card-desc">
           {{ connector.description }}
         </p>
+        <p class="connectors__tool-count">
+          最近检查 {{ connectorTime(connector.last_checked_at) }}
+        </p>
+        <p class="connectors__tool-count">
+          最近成功 {{ connectorTime(connector.last_success_at) }}
+        </p>
         <div class="connectors__card-footer">
           <span class="connectors__tool-count">{{ connector.tool_count }} 个工具</span>
           <span
@@ -168,11 +196,25 @@ onMounted(load)
             class="connectors__card-error"
           >{{ connector.last_error }}</span>
         </div>
+        <button
+          v-if="isAdmin() && connector.enabled"
+          class="connectors__install-btn"
+          :disabled="busy === connector.key"
+          @click.stop="act(connector)"
+        >
+          {{ connectorActionLabel(connector) }}
+        </button>
+        <p
+          v-else-if="connector.enabled && connector.auth_action"
+          class="connectors__tool-count"
+        >
+          请联系管理员处理
+        </p>
       </article>
     </div>
 
     <div
-      v-else-if="!loading"
+      v-else-if="!loading && !store.loading"
       class="connectors__empty"
     >
       <p>暂无已安装连接器。可从下方目录安装。</p>
@@ -238,6 +280,7 @@ onMounted(load)
 
     <ConnectorConfigDialog
       v-if="showConfig && selectedKey"
+      :key="selectedKey"
       :connector-key="selectedKey"
       @close="onConfigClosed"
     />

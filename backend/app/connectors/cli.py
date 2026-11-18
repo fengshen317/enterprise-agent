@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import shutil
 import subprocess
 from collections.abc import Mapping
@@ -19,6 +20,7 @@ from app.connectors.base import (
     ConnectorStatusInfo,
     ConnectorToolDef,
     ToolPolicyOverride,
+    health_failure,
 )
 
 if TYPE_CHECKING:
@@ -128,9 +130,7 @@ class CliRunner:
             return stdout, stderr, proc.returncode
 
         try:
-            stdout, stderr, exit_code = await asyncio.get_event_loop().run_in_executor(
-                None, _run_sync
-            )
+            stdout, stderr, exit_code = await asyncio.get_event_loop().run_in_executor(None, _run_sync)
         except subprocess.TimeoutExpired:
             raise ConnectorError("timeout", f"CLI 执行超时 ({timeout_seconds}s)") from None
         except (OSError, ValueError) as exc:
@@ -167,6 +167,8 @@ class CliRunner:
             分类后的错误码。
         """
         lower = stderr.lower()
+        if any(text in lower for text in ("no such host", "network error", "connection refused", "connection reset")):
+            return "network_error"
         if "user config is empty" in lower:
             return "not_logged_in"
         if "permission" in lower or "forbidden" in lower:
@@ -197,12 +199,10 @@ class CliConnector:
         Returns:
             基础配置字段。
         """
-        return (
-            ConfigField(key="cli_path", label="CLI 路径", field_type="text", required=True),
-        )
+        return (ConfigField(key="cli_path", label="CLI 路径", field_type="text", required=True),)
 
     async def connect(self) -> ConnectorStatusInfo:
-        """健康检查：尝试执行版本命令。
+        """检查 CLI 可运行性及腾讯会议账号认证状态。
 
         Returns:
             连接状态。
@@ -210,9 +210,37 @@ class CliConnector:
         cli_path = str(self._config.get("cli_path", "tmeet"))
         try:
             await self._runner.run([cli_path, "--version"], timeout_seconds=5)
-            return ConnectorStatusInfo(status="connected")
+            if self.key == "tmeet":
+                await self.check_authentication()
+            return ConnectorStatusInfo(
+                status="connected", auth_status="authorized" if self.key == "tmeet" else "not_required"
+            )
         except ConnectorError as exc:
-            return ConnectorStatusInfo(status="error", message=exc.message)
+            return health_failure(exc.code)
+
+    async def check_health(self) -> ConnectorStatusInfo:
+        """复用无持久连接的 CLI 检查。
+
+        Returns:
+            版本和认证检查结果。
+        """
+        return await self.connect()
+
+    async def check_authentication(self) -> None:
+        """检查 tmeet 文本状态；未登录时退出码仍为零，不能只检查进程退出码。
+
+        Raises:
+            ConnectorError: 未登录、状态无法识别或命令失败。
+        """
+        cli_path = str(self._config.get("cli_path", "tmeet"))
+        result = await self._runner.run([cli_path, "auth", "status"], timeout_seconds=5)
+        if self._runner._classify_error(0, result.stdout + result.stderr) == "network_error":
+            raise ConnectorError("network_error", "腾讯会议认证服务连接失败，请检查网络后重试")
+        lines = [line.strip().lower() for line in result.stdout.splitlines()]
+        if any(line.startswith("not logged in") for line in lines):
+            raise ConnectorError("not_logged_in", "腾讯会议未登录，请完成账号授权后重试")
+        if "logged in" not in lines:
+            raise ConnectorError("invalid_output", "无法识别腾讯会议登录状态，请重新测试连接")
 
     async def list_tools(self) -> list[ConnectorToolDef]:
         """从配置读取声明式工具定义。
@@ -238,9 +266,7 @@ class CliConnector:
             )
         return defs
 
-    def tool_specs(
-        self, defs: list[ConnectorToolDef], policy: Mapping[str, ToolPolicyOverride]
-    ) -> list[ToolSpec]:
+    def tool_specs(self, defs: list[ConnectorToolDef], policy: Mapping[str, ToolPolicyOverride]) -> list[ToolSpec]:
         """映射工具定义为 ToolSpec。
 
         Args:
@@ -320,6 +346,10 @@ class CliConnector:
         Returns:
             CLI 输出。
         """
+        if self.key == "tmeet" and name == "auth_status":
+            await self.check_authentication()
+            # tmeet auth status 即使指定 JSON 也输出文本；只向模型提供认证状态。
+            return {"logged_in": True}
         cli_path = str(self._config.get("cli_path", "tmeet"))
         # 从配置的 tools 列表中找对应命令模板
         raw_tools = self._config.get("tools", [])
@@ -328,10 +358,39 @@ class CliConnector:
                 if isinstance(item, dict) and item.get("name") == name:
                     command = item.get("command", [])
                     if isinstance(command, list):
-                        args = [cli_path] + [str(a).format(**arguments) for a in command]
+                        args = [cli_path] + self._command_arguments(command, arguments, item.get("input_schema", {}))
                         timeout = float(str(self._config.get("timeout_seconds", "30")))
                         return await self._runner.run_json(args, timeout)
         raise ConnectorError("command_failed", f"工具 {name} 未定义命令")
+
+    @staticmethod
+    def _command_arguments(command: list[object], arguments: dict[str, object], schema: object) -> list[str]:
+        """省略未提供的可选选项，保留 CLI 的默认查询范围。
+
+        Args:
+            command: 命令模板，每个参数占独立元素。
+            arguments: 已经通过工具模型校验的参数。
+            schema: 用于区分可选参数与必填参数的输入声明。
+
+        Returns:
+            不经过 shell 的参数列表。
+        """
+        properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
+        required = schema.get("required", []) if isinstance(schema, dict) else []
+        optional = set(properties) - set(required) if isinstance(properties, dict) else set()
+        result: list[str] = []
+        index = 0
+        while index < len(command):
+            token = str(command[index])
+            if token.startswith("--") and index + 1 < len(command):
+                placeholder = re.fullmatch(r"\{(\w+)\}", str(command[index + 1]))
+                if placeholder and placeholder[1] in optional and arguments.get(placeholder[1]) is None:
+                    # 省略整组 --option {value}，避免把 None 变成实际搜索词或时间。
+                    index += 2
+                    continue
+            result.append(token.format(**arguments))
+            index += 1
+        return result
 
     async def aclose(self) -> None:
         """释放资源。"""

@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
+import httpx
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -14,6 +16,7 @@ if TYPE_CHECKING:
 
 ConnectorKind = Literal["cli", "mcp", "api"]
 ConnectorStatus = Literal["disabled", "connected", "degraded", "error"]
+ConnectorAuthStatus = Literal["unknown", "authorized", "required", "not_required"]
 RiskLevelName = Literal["read", "write", "delete", "external"]
 ApprovalModeName = Literal["never", "always"]
 ConfigFieldType = Literal["text", "secret", "number", "boolean", "select", "json"]
@@ -50,6 +53,8 @@ class ConnectorStatusInfo:
     status: ConnectorStatus
     message: str = ""
     checked_at: datetime | None = None
+    auth_status: ConnectorAuthStatus = "unknown"
+    error_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -73,6 +78,61 @@ class ConnectorError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+def health_failure(code: str) -> ConnectorStatusInfo:
+    """将外部失败映射为固定公开状态，避免错误正文包含凭证。
+
+    Args:
+        code: 连接器识别的错误分类。
+
+    Returns:
+        可保存和公开的健康结果。
+    """
+    if code in {"not_logged_in", "auth_failed", "missing_api_key"}:
+        return ConnectorStatusInfo(
+            status="error",
+            auth_status="required",
+            error_code=code,
+            message="需要完成账号授权" if code != "missing_api_key" else "需要配置 API Key",
+        )
+    messages = {
+        "network_error": "网络连接异常，请检查网络后重新检查",
+        "timeout": "检查超时，当前状态待确认",
+        "permission_denied": "账号缺少访问权限，请检查授权范围",
+        "invalid_output": "连接器返回格式异常，请检查版本和配置",
+        "not_configured": "连接器配置不完整，请补充配置",
+        "command_failed": "连接器命令失败，请检查安装和配置",
+    }
+    return ConnectorStatusInfo(
+        status="degraded",
+        auth_status="unknown",
+        error_code=code if code in messages else "check_failed",
+        message=messages.get(code, "检查失败，当前状态待确认"),
+    )
+
+
+def health_exception(exc: BaseException) -> ConnectorStatusInfo:
+    """识别传输异常的认证与网络分类。
+
+    Args:
+        exc: 连接器或 SDK 抛出的异常。
+
+    Returns:
+        固定公开状态。
+    """
+    if isinstance(exc, ConnectorError):
+        return health_failure(exc.code)
+    if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+        return health_failure("timeout")
+    if isinstance(exc, httpx.HTTPStatusError):
+        return health_failure(
+            {401: "auth_failed", 403: "permission_denied"}.get(exc.response.status_code, "network_error")
+        )
+    if isinstance(exc, BaseExceptionGroup):
+        results = [health_exception(child) for child in exc.exceptions]
+        return next((info for info in results if info.auth_status == "required"), results[0])
+    return health_failure("network_error")
 
 
 @runtime_checkable
@@ -106,9 +166,15 @@ class Connector(Protocol):
         """
         ...
 
-    def tool_specs(
-        self, defs: list[ConnectorToolDef], policy: Mapping[str, ToolPolicyOverride]
-    ) -> list[ToolSpec]:
+    async def check_health(self) -> ConnectorStatusInfo:
+        """检查当前实例的连接与认证状态。
+
+        Returns:
+            不包含凭证的健康结果。
+        """
+        ...
+
+    def tool_specs(self, defs: list[ConnectorToolDef], policy: Mapping[str, ToolPolicyOverride]) -> list[ToolSpec]:
         """把工具定义映射为 ToolSpec。
 
         Args:

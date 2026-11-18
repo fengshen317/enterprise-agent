@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from sqlalchemy import select, update
 
 from app.agents.provider import DeepSeekProvider
+from app.connectors.base import ConnectorError
 from app.core.errors import ApplicationError
 from app.models.identity import Workspace, WorkspaceMembership
 from app.models.tool_call import ToolCall
@@ -320,3 +321,52 @@ async def test_failure_is_safe_and_restart_settles_audits(
     assert rows[1]["error_code"] == "PROCESS_RESTARTED"
     with pytest.raises(ApplicationError):
         await executor.invoke(TOOL_NAME, {})
+
+
+@pytest.mark.parametrize(
+    ("connector_code", "expected_code"),
+    [
+        ("not_logged_in", "CONNECTOR_NOT_LOGGED_IN"),
+        ("permission_denied", "CONNECTOR_PERMISSION_DENIED"),
+        ("timeout", "TOOL_TIMEOUT"),
+        ("invalid_output", "CONNECTOR_INVALID_OUTPUT"),
+        ("command_failed", "CONNECTOR_COMMAND_FAILED"),
+        ("untrusted-code", "TOOL_EXECUTION_FAILED"),
+    ],
+)
+async def test_connector_failure_keeps_safe_category_in_result_and_audit(
+    chat: tuple[FastAPI, httpx.AsyncClient, ControlledProvider],
+    monkeypatch: pytest.MonkeyPatch,
+    connector_code: str,
+    expected_code: str,
+) -> None:
+    """模型得到可处理的错误分类，原始 stderr 和账号信息不进入模型或审计。
+
+    Args:
+        chat: 已登录测试应用。
+        monkeypatch: 注入连接器异常。
+        connector_code: 底层分类。
+        expected_code: 公开错误码。
+    """
+    app, client, _ = chat
+    executor = await executor_for(app, client)
+
+    async def broken(arguments: RunStatsArgs) -> None:
+        """模拟包含敏感内容的 CLI 错误。
+
+        Args:
+            arguments: 合法参数。
+        """
+        raise ConnectorError(connector_code, "private-access-token")
+
+    monkeypatch.setattr(executor, "_stats", broken)
+    raw = await executor.invoke(TOOL_NAME, {})
+    result = json.loads(raw)
+    assert result["error_code"] == expected_code
+    assert "private" not in raw
+    if connector_code == "not_logged_in":
+        assert "账号授权" in result["error_message"]
+    rows = (await client.get(f"/api/runs/{executor.run_id}/tool-calls")).json()
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["error_code"] == expected_code
+    assert "private" not in json.dumps(rows)

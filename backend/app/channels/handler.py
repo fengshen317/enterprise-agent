@@ -277,13 +277,23 @@ class InboundHandler:
         else:
             await self._chat(account, message, text)
 
-    async def push_proactive(self, account: AccountRecord, text: str, *, run_id: UUID | None) -> None:
+    async def push_proactive(
+        self,
+        account: AccountRecord,
+        text: str,
+        *,
+        run_id: UUID | None,
+        workspace_id: UUID | None = None,
+        conversation_id: UUID | None = None,
+    ) -> None:
         """在 24 小时窗口内主动推送。窗口外只记原因，网页里的回答保留。
 
         Args:
             account: 接收账号。
             text: 已带上来源前缀的正文。
             run_id: 关联运行。为空时不去重。
+            workspace_id: 推送来源空间；与 conversation_id 同时提供时切换后续入站。
+            conversation_id: 推送来源对话。
         """
         if run_id is not None and await self.repo.outbound_exists(run_id):
             return
@@ -299,7 +309,11 @@ class InboundHandler:
                 text[:500],
             )
             return
-        await self.send_text(account, peer.peer_id, peer.context_token, text, run_id=run_id)
+        sent = await self.send_text(account, peer.peer_id, peer.context_token, text, run_id=run_id)
+        if sent and workspace_id is not None and conversation_id is not None:
+            # 只有手机实际收到消息后才切换上下文，避免失败推送劫持后续微信问答。
+            await self.repo.activate_conversation(account.id, workspace_id, peer.peer_id, conversation_id)
+            account.workspace_id = workspace_id
 
     async def reply(self, account: AccountRecord, message: ILinkMessage, text: str) -> bool:
         """回复刚刚收到的消息，优先用这条消息自己的 context_token。

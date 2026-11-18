@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.health import SCHEMA_VERSION
 from app.core.config import Settings
 from app.core.database import get_session
 from app.main import create_app
@@ -42,7 +43,7 @@ def session(app: FastAPI) -> AsyncMock:
         可控制查询结果的会话替身。
     """
     mock = AsyncMock(spec=AsyncSession)
-    mock.scalar.return_value = "17"
+    mock.scalar.return_value = SCHEMA_VERSION
 
     async def override() -> AsyncIterator[AsyncSession]:
         """提供隔离会话。

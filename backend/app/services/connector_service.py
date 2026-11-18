@@ -15,6 +15,7 @@ from app.models.config import IntegrationConfig
 from app.models.connector import Connector as ConnectorRow
 from app.schemas.connectors import (
     ConnectorDetail,
+    ConnectorHealthView,
     ConnectorTestResult,
     ConnectorToolView,
     ConnectorView,
@@ -58,6 +59,7 @@ class ConnectorService:
                 status=d.status,
                 tool_count=d.tool_count,
                 last_error=d.last_error,
+                **ConnectorHealthView.model_validate(d, from_attributes=True).model_dump(),
             )
             for d in descriptors
         ]
@@ -119,9 +121,7 @@ class ConnectorService:
 
         # 读取配置值（密钥掩码）
         async with self._factory() as session:
-            row = (
-                await session.execute(select(ConnectorRow).where(ConnectorRow.key == key))
-            ).scalar_one_or_none()
+            row = (await session.execute(select(ConnectorRow).where(ConnectorRow.key == key))).scalar_one_or_none()
             if row is not None:
                 raw_config = row.config if isinstance(row.config, dict) else {}
                 for field in config_fields:
@@ -143,14 +143,13 @@ class ConnectorService:
             enabled=desc.enabled,
             status=desc.status,
             last_error=desc.last_error,
+            **ConnectorHealthView.model_validate(desc, from_attributes=True).model_dump(),
             config_fields=config_fields,
             config_values=config_values,
             tools=tools,
         )
 
-    async def update_config(
-        self, key: str, config: dict[str, Any], secrets: dict[str, str]
-    ) -> ConnectorDetail:
+    async def update_config(self, key: str, config: dict[str, Any], secrets: dict[str, str]) -> ConnectorDetail:
         """更新连接器配置（非密钥 + 密钥），并触发热更新。
 
         Args:
@@ -169,9 +168,7 @@ class ConnectorService:
             raise ApplicationError("CONNECTOR_NOT_FOUND", "连接器不存在", 404)
 
         async with self._factory.begin() as session:
-            row = (
-                await session.execute(select(ConnectorRow).where(ConnectorRow.key == key))
-            ).scalar_one_or_none()
+            row = (await session.execute(select(ConnectorRow).where(ConnectorRow.key == key))).scalar_one_or_none()
             if row is None:
                 raise ApplicationError("CONNECTOR_NOT_FOUND", "连接器不存在", 404)
 
@@ -206,9 +203,7 @@ class ConnectorService:
             更新后的连接器详情。
         """
         async with self._factory.begin() as session:
-            row = (
-                await session.execute(select(ConnectorRow).where(ConnectorRow.key == key))
-            ).scalar_one_or_none()
+            row = (await session.execute(select(ConnectorRow).where(ConnectorRow.key == key))).scalar_one_or_none()
             if row is None:
                 raise ApplicationError("CONNECTOR_NOT_FOUND", "连接器不存在", 404)
             row.enabled = enabled
@@ -226,7 +221,7 @@ class ConnectorService:
         Returns:
             测试结果。
         """
-        await self._registry.refresh(key)
+        await self._registry.check_health(key)
         desc = self._registry.descriptor(key)
         if desc is None:
             raise ApplicationError("CONNECTOR_NOT_FOUND", "连接器不存在", 404)
@@ -234,6 +229,7 @@ class ConnectorService:
             status=desc.status,
             message=desc.last_error if desc.last_error else ("连接正常" if desc.status == "connected" else "连接失败"),
             tool_count=desc.tool_count,
+            **ConnectorHealthView.model_validate(desc, from_attributes=True).model_dump(),
         )
 
     async def authenticate(self, key: str) -> dict[str, Any]:
@@ -252,35 +248,13 @@ class ConnectorService:
             ApplicationError: 连接器不存在或不支持认证。
         """
         from app.connectors.base import ConnectorError
-        from app.connectors.cli import CliConnector
 
-        connector = self._registry.resolve(key)
-        if connector is None:
+        if self._registry.descriptor(key) is None:
             raise ApplicationError("CONNECTOR_NOT_FOUND", "连接器不存在", 404)
-
-        if isinstance(connector, CliConnector):
-            cli_path = str(connector._config.get("cli_path", "tmeet"))
-            from app.connectors.cli import CliRunner
-
-            runner = CliRunner()
-            # 先检查是否已登录
-            try:
-                status_result = await runner.run([cli_path, "auth", "status"], timeout_seconds=5)
-                status_text = status_result.stdout.strip()
-                if "Logged in" in status_text:
-                    return {"auth_url": "", "output": f"已登录：{status_text[:200]}", "already_logged_in": True}
-            except ConnectorError:
-                pass  # 未登录或其他错误，继续尝试登录
-
-            try:
-                result = await runner.run([cli_path, "auth", "login", "--no-browser"], timeout_seconds=15)
-                output = result.stdout + result.stderr
-                auth_url = _extract_url(output)
-                return {"auth_url": auth_url, "output": output[:500], "already_logged_in": False}
-            except ConnectorError as exc:
-                return {"auth_url": "", "output": exc.message[:200], "already_logged_in": False}
-        else:
-            return {"auth_url": "", "output": "API 连接器请在配置中填写 API Key"}
+        try:
+            return await self._registry.authorize(key)
+        except ConnectorError as exc:
+            raise ApplicationError("CONNECTOR_AUTH_UNAVAILABLE", exc.message, 409) from exc
 
     async def list_builtins(self) -> list[dict[str, Any]]:
         """列出内置连接器模板（含已安装状态）。
@@ -325,9 +299,7 @@ class ConnectorService:
             raise ApplicationError("CONNECTOR_NOT_FOUND", "内置连接器不存在", 404)
 
         async with self._factory.begin() as session:
-            existing = (
-                await session.execute(select(ConnectorRow).where(ConnectorRow.key == key))
-            ).scalar_one_or_none()
+            existing = (await session.execute(select(ConnectorRow).where(ConnectorRow.key == key))).scalar_one_or_none()
             if existing is not None:
                 raise ApplicationError("CONNECTOR_ALREADY_INSTALLED", "连接器已安装", 409)
             row = ConnectorRow(
@@ -358,18 +330,3 @@ def _mask(value: str) -> str:
     if len(value) <= 6:
         return "***"
     return value[:3] + "***" + value[-3:]
-
-
-def _extract_url(text: str) -> str:
-    """从文本中提取 HTTP(S) URL。
-
-    Args:
-        text: 包含 URL 的文本。
-
-    Returns:
-        第一个找到的 URL，找不到返回空字符串。
-    """
-    import re
-
-    match = re.search(r"https?://\S+", text)
-    return match.group(0) if match else ""

@@ -367,6 +367,9 @@ class ChannelRuntime:
         delivery = await self.repo.run_delivery(run_id)
         if delivery is None or delivery.status not in {"completed", "failed"}:
             return
+        scheduled = delivery.idempotency_key.startswith(("schedule_", "manual_"))
+        if scheduled and (delivery.schedule_id is None or not delivery.push_to_wechat):
+            return
         account = await self.repo.account_for_user(delivery.user_id)
         if account is None:
             return
@@ -376,8 +379,14 @@ class ChannelRuntime:
             body = delivery.content.strip()
         else:
             body = "这次回答没有生成正文，请在网页查看。"
-        label = "【定时问答】" if delivery.idempotency_key.startswith(("schedule_", "manual_")) else "【工作台】"
-        await self.handler.push_proactive(account, f"{label}\n{body}", run_id=run_id)
+        label = f"【定时问答 · {delivery.schedule_name}】" if scheduled else "【工作台】"
+        await self.handler.push_proactive(
+            account,
+            f"{label}\n{body}",
+            run_id=run_id,
+            workspace_id=delivery.workspace_id if scheduled else None,
+            conversation_id=delivery.conversation_id if scheduled else None,
+        )
 
     async def on_approval(self, notice: ApprovalNotice) -> None:
         """把写操作审批发到绑定微信。窗口外只记录原因。

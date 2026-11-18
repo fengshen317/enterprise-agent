@@ -53,6 +53,8 @@ class ScheduledTask(Base):
     cron_expression: Mapped[str] = mapped_column(String(100))
     timezone: Mapped[str] = mapped_column(String(64))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    # 主动外发必须由用户逐任务开启，避免新增渠道后旧任务突然产生通知。
+    push_to_wechat: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_run_id: Mapped[UUID | None] = mapped_column(ForeignKey("runs.id", ondelete="SET NULL"))

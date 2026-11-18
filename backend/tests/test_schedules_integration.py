@@ -123,6 +123,7 @@ def schedule_body(conversation_id: str, **changes: object) -> dict[str, object]:
         "cron_expression": "0 9 * * *",
         "timezone": "Asia/Shanghai",
         "enabled": True,
+        "push_to_wechat": False,
     }
     body.update(changes)
     return body
@@ -163,14 +164,27 @@ async def test_schedule_crud_and_input_validation(schedules: tuple[FastAPI, Asyn
     assert item["timezone"] == "Asia/Shanghai"
     assert item["next_run_at"] is not None
     assert item["enabled"] is True
+    assert item["push_to_wechat"] is False
 
     listed = await client.get("/api/schedules")
     assert listed.status_code == 200
     assert [row["id"] for row in listed.json()] == [item["id"]]
 
-    disabled = await client.post(f"/api/schedules/{item['id']}", json=schedule_body(conversation_id, enabled=False))
+    push_enabled = await client.post(
+        f"/api/schedules/{item['id']}/wechat-push",
+        json={"push_to_wechat": True},
+    )
+    assert push_enabled.status_code == 200, push_enabled.text
+    assert push_enabled.json()["push_to_wechat"] is True
+    assert push_enabled.json()["next_run_at"] == item["next_run_at"]
+
+    disabled = await client.post(
+        f"/api/schedules/{item['id']}",
+        json=schedule_body(conversation_id, enabled=False, push_to_wechat=True),
+    )
     assert disabled.status_code == 200, disabled.text
     assert disabled.json()["next_run_at"] is None
+    assert disabled.json()["push_to_wechat"] is True
 
     invalid_cron = await client.post(
         f"/api/schedules/{item['id']}", json=schedule_body(conversation_id, cron_expression="0 9 * *")
@@ -193,7 +207,10 @@ async def test_run_now_appends_to_fixed_conversation(schedules: tuple[FastAPI, A
     """手动触发也在固定对话中新增成对消息，不创建新对话。"""
     app, client = schedules
     conversation_id = await new_conversation(client)
-    created = await client.post("/api/schedules", json=schedule_body(conversation_id))
+    created = await client.post(
+        "/api/schedules",
+        json=schedule_body(conversation_id, push_to_wechat=True),
+    )
     schedule_id = created.json()["id"]
 
     first = await client.post(f"/api/schedules/{schedule_id}/run")
@@ -202,6 +219,12 @@ async def test_run_now_appends_to_fixed_conversation(schedules: tuple[FastAPI, A
     assert first_snapshot["run"]["status"] == "completed"
     assert first_snapshot["run"]["conversation_id"] == conversation_id
     assert first_snapshot["message"]["content"] == "定时回答。"
+    delivery = await app.state.channel_service.repo.run_delivery(UUID(first.json()["run"]["id"]))
+    assert delivery is not None
+    assert delivery.conversation_id == UUID(conversation_id)
+    assert delivery.schedule_id == UUID(schedule_id)
+    assert delivery.schedule_name == "每日晨报"
+    assert delivery.push_to_wechat is True
 
     second = await client.post(f"/api/schedules/{schedule_id}/run")
     assert second.status_code == 202, second.text

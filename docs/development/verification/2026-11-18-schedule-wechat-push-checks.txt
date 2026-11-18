@@ -1,0 +1,29 @@
+定时任务微信推送与会话续接检查（2026-11-18）
+
+实现范围：
+- scheduled_tasks.push_to_wechat，迁移 0019，已有与新增任务默认 false。
+- 列表专用微信推送开关接口，不重算 next_run_at。
+- 只有开启的定时任务结果主动推送；发送成功后微信回复续接固定对话。
+- 内置助手可列出本人任务，并经逐次审批真实启停任务。
+
+数据库：
+- uv run alembic upgrade head：通过。
+- uv run alembic current：0019 (head)。
+- uv run alembic check：No new upgrade operations detected。
+
+后端：
+- uv run ruff check .：通过。
+- uv run mypy app/：通过，107 个应用源文件。
+- uv run pytest --no-cov -q tests/test_schedules_integration.py tests/test_approvals_integration.py tests/test_wechat_channel.py -x：27 项通过。
+- 关键链路单独验证：审批后真实停用、运行投递读取任务开关、成功推送续接原对话，3 项通过。
+- 全量 uv run pytest：397 项通过；5 项失败中，新增目录断言已修正并单独复测通过。其余 4 项为当前连接器分支已记录的 SDK 工具清单基线失败；本功能相关测试均通过。
+
+前端：
+- npm run lint：通过。
+- npm run typecheck：通过。
+- npm run test：32 个测试文件、132 项通过。
+- npm run build：通过。
+
+边界：
+- 未调用真实付费模型。
+- 未向真实微信发送测试消息；iLink 发送、24 小时窗口和上下文切换使用现有测试替身验证。

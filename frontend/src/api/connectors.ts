@@ -1,9 +1,21 @@
 import { ApiError, requestJson } from './client'
 
+// 健康检查允许后端执行至 60 秒，授权启动还需等待授权地址生成。
+const CONNECTOR_TEST_TIMEOUT_MS = 65_000
+const CONNECTOR_AUTH_TIMEOUT_MS = 90_000
+
 export type ConnectorKind = 'cli' | 'mcp' | 'api'
 export type ConnectorStatus = 'disabled' | 'connected' | 'degraded' | 'error'
 
-export interface ConnectorView {
+export interface ConnectorHealth {
+  auth_status: 'unknown' | 'authorized' | 'required' | 'not_required'
+  last_error_code: string | null
+  last_checked_at: string | null
+  last_success_at: string | null
+  auth_action: 'authorize' | 'configure' | 'retry' | null
+}
+
+export interface ConnectorView extends ConnectorHealth {
   key: string
   kind: ConnectorKind
   name: string
@@ -33,7 +45,7 @@ export interface ConfigField {
   is_secret: boolean
 }
 
-export interface ConnectorDetail {
+export interface ConnectorDetail extends ConnectorHealth {
   key: string
   kind: ConnectorKind
   name: string
@@ -48,7 +60,7 @@ export interface ConnectorDetail {
   tools: ConnectorToolView[]
 }
 
-export interface ConnectorTestResult {
+export interface ConnectorTestResult extends ConnectorHealth {
   status: ConnectorStatus
   message: string
   tool_count: number
@@ -106,7 +118,7 @@ export async function setConnectorEnabled(key: string, enabled: boolean): Promis
 export async function testConnector(key: string): Promise<ConnectorTestResult> {
   const body = await requestJson('/api/admin/connectors/' + encodeURIComponent(key) + '/test', {
     method: 'POST',
-  })
+  }, CONNECTOR_TEST_TIMEOUT_MS)
   if (!record(body) || typeof body.status !== 'string') return invalid()
   return body as unknown as ConnectorTestResult
 }
@@ -143,12 +155,41 @@ export interface AuthResult {
   auth_url: string
   output: string
   already_logged_in: boolean
+  state: 'starting' | 'awaiting_user' | 'completed' | 'expired' | 'failed'
+  expires_at: string | null
 }
 
 export async function authenticateConnector(key: string): Promise<AuthResult> {
   const body = await requestJson('/api/admin/connectors/' + encodeURIComponent(key) + '/auth', {
     method: 'POST',
-  })
+  }, CONNECTOR_AUTH_TIMEOUT_MS)
   if (!record(body)) return invalid()
   return body as unknown as AuthResult
+}
+
+export async function getConnectorAuthStatus(key: string): Promise<AuthResult> {
+  const body = await requestJson('/api/admin/connectors/' + encodeURIComponent(key) + '/auth/status')
+  if (!record(body)) return invalid()
+  return body as unknown as AuthResult
+}
+
+export function connectorHealthLabel(connector: ConnectorHealth & { enabled: boolean; status: ConnectorStatus }): string {
+  if (!connector.enabled) return '未启用'
+  if (connector.auth_action === 'configure') return '需要配置'
+  if (connector.auth_action === 'authorize' || connector.auth_status === 'required') return '需要授权'
+  if (connector.last_error_code === 'timeout' || connector.last_error_code === 'check_failed'
+    || (connector.auth_status === 'unknown' && !connector.last_error_code)) return '待确认'
+  if (connector.status === 'error' || connector.status === 'degraded') return '连接异常'
+  if (!connector.last_checked_at || connector.auth_status === 'unknown') return '待确认'
+  return connector.status === 'connected' ? '健康' : '待确认'
+}
+
+export function connectorActionLabel(connector: ConnectorHealth): string {
+  if (connector.auth_action === 'authorize') return '去授权'
+  if (connector.auth_action === 'configure') return '配置'
+  return '重新检查'
+}
+
+export function connectorTime(value: string | null): string {
+  return value ? new Date(value).toLocaleString('zh-CN') : '尚无记录'
 }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createSchedule, deleteSchedule, listSchedules, runScheduleNow, updateSchedule, type Schedule } from './schedules'
+import { createSchedule, deleteSchedule, listSchedules, runScheduleNow, updateSchedule, updateScheduleWeChatPush, type Schedule } from './schedules'
 
 const schedule: Schedule = {
   id: 's1',
@@ -10,6 +10,7 @@ const schedule: Schedule = {
   cron_expression: '0 9 * * *',
   timezone: 'Asia/Shanghai',
   enabled: true,
+  push_to_wechat: false,
   next_run_at: '2026-11-12T01:00:00Z',
   last_run_at: null,
   last_run_id: null,
@@ -28,7 +29,7 @@ describe('定时任务接口', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(schedule), { status: 201 }))
     vi.stubGlobal('fetch', fetcher)
     expect(await listSchedules()).toEqual([schedule])
-    const input = { name: '晨报', prompt: '总结', conversation_id: 'c1', cron_expression: '0 9 * * *', timezone: 'Asia/Shanghai', enabled: true }
+    const input = { name: '晨报', prompt: '总结', conversation_id: 'c1', cron_expression: '0 9 * * *', timezone: 'Asia/Shanghai', enabled: true, push_to_wechat: false }
     expect(await createSchedule(input)).toEqual(schedule)
     expect(JSON.parse(fetcher.mock.calls[1]?.[1]?.body as string)).toEqual(input)
   })
@@ -37,18 +38,28 @@ describe('定时任务接口', () => {
     const snapshot = { run: { id: 'r1', conversation_id: 'c1', status: 'pending', model: 'test', error_code: null, error_message: null }, message: { id: 'm1', conversation_id: 'c1', run_id: 'r1', sequence: 2, role: 'assistant', content: '', status: 'streaming' } }
     const fetcher = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ ...schedule, enabled: false }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...schedule, push_to_wechat: true }), { status: 200 }))
       .mockResolvedValueOnce(new Response(null, { status: 204 }))
       .mockResolvedValueOnce(new Response(JSON.stringify(snapshot), { status: 202 }))
     vi.stubGlobal('fetch', fetcher)
-    const input = { name: '晨报', prompt: '总结', conversation_id: 'c1', cron_expression: '0 9 * * *', timezone: 'Asia/Shanghai', enabled: false }
+    const input = { name: '晨报', prompt: '总结', conversation_id: 'c1', cron_expression: '0 9 * * *', timezone: 'Asia/Shanghai', enabled: false, push_to_wechat: true }
     expect((await updateSchedule('s1', input)).enabled).toBe(false)
+    expect((await updateScheduleWeChatPush('s1', true)).push_to_wechat).toBe(true)
     await deleteSchedule('s1')
     expect(await runScheduleNow('s1')).toEqual(snapshot)
-    expect(fetcher.mock.calls.map(call => String(call[0]))).toEqual(['/api/schedules/s1', '/api/schedules/s1/delete', '/api/schedules/s1/run'])
+    expect(fetcher.mock.calls.map(call => String(call[0]))).toEqual(['/api/schedules/s1', '/api/schedules/s1/wechat-push', '/api/schedules/s1/delete', '/api/schedules/s1/run'])
+    expect(JSON.parse(fetcher.mock.calls[1]?.[1]?.body as string)).toEqual({ push_to_wechat: true })
   })
 
   it('非法响应不会被当作成功', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify([{ ...schedule, enabled: 'yes' }]), { status: 200 })))
+    await expect(listSchedules()).rejects.toThrow('格式不正确')
+  })
+
+  it('缺少微信推送开关的旧响应不会被静默接受', async () => {
+    const legacy: Partial<Schedule> = { ...schedule }
+    delete legacy.push_to_wechat
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify([legacy]), { status: 200 })))
     await expect(listSchedules()).rejects.toThrow('格式不正确')
   })
 })

@@ -64,6 +64,7 @@ class ScheduleStore:
             cron_expression=schedule.cron_expression,
             timezone=schedule.timezone,
             enabled=schedule.enabled,
+            push_to_wechat=schedule.push_to_wechat,
             next_run_at=schedule.next_run_at,
             last_run_at=schedule.last_run_at,
             last_run_id=schedule.last_run_id,
@@ -131,6 +132,7 @@ class ScheduleStore:
                 cron_expression=expression,
                 timezone=timezone,
                 enabled=body.enabled,
+                push_to_wechat=body.push_to_wechat,
                 next_run_at=next_run_at,
             )
             session.add(schedule)
@@ -234,10 +236,78 @@ class ScheduleStore:
             row.cron_expression = expression
             row.timezone = timezone
             row.enabled = body.enabled
+            row.push_to_wechat = body.push_to_wechat
             row.next_run_at = next_run_at
             row.updated_at = datetime.now(UTC)
             await session.flush()
             return self._view(row, conversation.title)
+
+    async def set_enabled(self, scope: ResourceScope, schedule_id: UUID, enabled: bool) -> ScheduleView:
+        """只修改任务启停状态，供经过审批的对话工具调用。
+
+        Args:
+            scope: 可信用户和空间。
+            schedule_id: 定时任务标识。
+            enabled: 是否启用。
+
+        Returns:
+            更新后的定时任务。
+
+        Raises:
+            ApplicationError: 任务不存在或固定对话不可用。
+        """
+        async with self.factory.begin() as session:
+            await require_membership(session, scope, write=True)
+            row = await session.scalar(
+                select(ScheduledTask)
+                .where(
+                    ScheduledTask.id == schedule_id,
+                    ScheduledTask.workspace_id == scope.workspace_id,
+                    ScheduledTask.owner_user_id == scope.user_id,
+                )
+                .with_for_update()
+            )
+            if row is None:
+                raise ApplicationError("SCHEDULE_NOT_FOUND", "定时任务不存在", 404)
+            conversation = await self._conversation(session, scope, row.conversation_id)
+            row.enabled = enabled
+            row.next_run_at = next_occurrence(row.cron_expression, row.timezone) if enabled else None
+            row.updated_at = datetime.now(UTC)
+            await session.flush()
+            return self._view(row, conversation.title)
+
+    async def set_wechat_push(self, scope: ResourceScope, schedule_id: UUID, enabled: bool) -> ScheduleView:
+        """只修改微信推送开关，保持 Cron 状态和下一次触发时间不变。
+
+        Args:
+            scope: 可信用户和空间。
+            schedule_id: 定时任务标识。
+            enabled: 是否推送到微信。
+
+        Returns:
+            更新后的定时任务。
+
+        Raises:
+            ApplicationError: 任务不存在。
+        """
+        async with self.factory.begin() as session:
+            await require_membership(session, scope, write=True)
+            row = await session.scalar(
+                select(ScheduledTask)
+                .where(
+                    ScheduledTask.id == schedule_id,
+                    ScheduledTask.workspace_id == scope.workspace_id,
+                    ScheduledTask.owner_user_id == scope.user_id,
+                )
+                .with_for_update()
+            )
+            if row is None:
+                raise ApplicationError("SCHEDULE_NOT_FOUND", "定时任务不存在", 404)
+            title = await session.scalar(select(Conversation.title).where(Conversation.id == row.conversation_id))
+            row.push_to_wechat = enabled
+            row.updated_at = datetime.now(UTC)
+            await session.flush()
+            return self._view(row, title or "")
 
     async def delete(self, scope: ResourceScope, schedule_id: UUID) -> None:
         """删除本人当前空间的定时任务，不影响已产生的对话和运行。

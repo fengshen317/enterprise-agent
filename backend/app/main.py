@@ -107,6 +107,7 @@ def create_app(
         except Exception:
             logger.warning("connector_registry_load_failed")
         app.state.connector_registry = connector_registry
+        connector_registry.start()
         approval_service = ApprovalService(database.session_factory, config)
         app.state.agent_service = AgentService(database.session_factory, config, registry)
         app.state.skill_service = SkillService(database.session_factory, config, registry)

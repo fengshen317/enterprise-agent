@@ -2,6 +2,7 @@
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { computed, ref } from 'vue'
 import { useAuthStore } from './stores/auth'
+import ConnectorNotice from './components/ConnectorNotice.vue'
 const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
@@ -110,6 +111,7 @@ async function changeWorkspace(event: Event): Promise<void> {
       <header class="workspace__header">
         <span>工作空间 / {{ sectionTitle }}</span><span class="workspace__stage">对话 · 规划 · 协作</span>
       </header>
+      <ConnectorNotice />
       <RouterView :key="(auth.session?.user.id ?? '') + auth.selectedWorkspaceId" />
     </main>
   </div>

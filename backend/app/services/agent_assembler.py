@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.capabilities.builtins.scheduled import SET_SCHEDULE_ENABLED_TOOL
 from app.capabilities.registry import ToolRegistry
 from app.capabilities.spec import AgentAssembly, SkillSnapshot, ToolSpec
 from app.core.errors import ApplicationError
@@ -56,8 +57,12 @@ class AgentAssembler:
         Returns:
             运行能力快照。
         """
-        # 内置助手保持最小权限：写工具必须由用户创建/选择 Agent 后显式绑定。
-        tools = tuple(item for item in self.registry.catalog() if item.risk == "read")
+        # 内置助手保持最小权限；唯一例外是本人定时任务启停，仍必须逐次审批。
+        tools = tuple(
+            item
+            for item in self.registry.catalog()
+            if item.risk == "read" or item.key == SET_SCHEDULE_ENABLED_TOOL
+        )
         digest = hashlib.sha256(instructions.encode("utf-8")).hexdigest()
         snapshot = self._snapshot(
             agent_id=None,

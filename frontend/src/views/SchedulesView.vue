@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import CronBuilder from '../components/CronBuilder.vue'
 import { createConversation, listConversations, type Conversation } from '../api/chat'
-import { createSchedule, deleteSchedule, listSchedules, runScheduleNow, updateSchedule, type Schedule, type ScheduleInput } from '../api/schedules'
+import { createSchedule, deleteSchedule, listSchedules, runScheduleNow, updateSchedule, updateScheduleWeChatPush, type Schedule, type ScheduleInput } from '../api/schedules'
 
 const items = ref<Schedule[]>([])
 const conversations = ref<Conversation[]>([])
@@ -22,7 +22,7 @@ let revision = 0
 const activeConversations = computed(() => conversations.value.filter(item => item.status === 'active'))
 
 function blankForm(): ScheduleInput {
-  return { name: '', prompt: '', conversation_id: '', cron_expression: '0 9 * * *', timezone: 'Asia/Shanghai', enabled: true }
+  return { name: '', prompt: '', conversation_id: '', cron_expression: '0 9 * * *', timezone: 'Asia/Shanghai', enabled: true, push_to_wechat: false }
 }
 
 function resetForm(): void {
@@ -44,6 +44,7 @@ function startEdit(item: Schedule): void {
     cron_expression: item.cron_expression,
     timezone: item.timezone,
     enabled: item.enabled,
+    push_to_wechat: item.push_to_wechat,
   }
   editingId.value = item.id
   showForm.value = true
@@ -114,9 +115,22 @@ async function toggle(item: Schedule): Promise<void> {
       cron_expression: item.cron_expression,
       timezone: item.timezone,
       enabled: !item.enabled,
+      push_to_wechat: item.push_to_wechat,
     })
     if (!alive) return
     notice.value = item.enabled ? '定时任务已停用。' : '定时任务已启用。'
+    await load()
+  } catch (value) { if (alive) handleError(value) }
+  finally { rowBusy.value = '' }
+}
+
+async function toggleWeChatPush(item: Schedule): Promise<void> {
+  if (rowBusy.value) return
+  rowBusy.value = item.id; error.value = ''; notice.value = ''
+  try {
+    await updateScheduleWeChatPush(item.id, !item.push_to_wechat)
+    if (!alive) return
+    notice.value = item.push_to_wechat ? '已关闭微信推送。' : '已开启微信推送。'
     await load()
   } catch (value) { if (alive) handleError(value) }
   finally { rowBusy.value = '' }
@@ -274,6 +288,15 @@ onBeforeUnmount(() => { alive = false; revision++ })
         type="checkbox"
         :disabled="saving"
       />创建后立即启用</label>
+      <label class="schedules__check"><input
+        v-model="form.push_to_wechat"
+        name="schedulePushToWeChat"
+        type="checkbox"
+        :disabled="saving"
+      />推送结果到微信</label>
+      <p class="schedules__hint">
+        微信推送默认关闭。开启前请先在“微信”页面完成绑定；推送成功后，微信后续回复会继续写入这条固定对话。
+      </p>
       <div class="schedules__actions">
         <button
           class="schedules__primary"
@@ -326,6 +349,10 @@ onBeforeUnmount(() => { alive = false; revision++ })
                   class="schedules__state"
                   :class="{ 'schedules__state--on': item.enabled }"
                 >{{ item.enabled ? '已启用' : '已停用' }}</span>
+                <span
+                  class="schedules__state"
+                  :class="{ 'schedules__state--wechat': item.push_to_wechat }"
+                >{{ item.push_to_wechat ? '微信推送已开启' : '微信推送已关闭' }}</span>
               </td>
               <td>
                 <RouterLink :to="'/chat/' + item.conversation_id">
@@ -354,6 +381,12 @@ onBeforeUnmount(() => { alive = false; revision++ })
                   @click="startEdit(item)"
                 >
                   编辑
+                </button><button
+                  type="button"
+                  :disabled="!!rowBusy"
+                  @click="toggleWeChatPush(item)"
+                >
+                  {{ item.push_to_wechat ? '关闭微信推送' : '推送到微信' }}
                 </button><button
                   type="button"
                   :disabled="!!rowBusy"
@@ -411,7 +444,7 @@ onBeforeUnmount(() => { alive = false; revision++ })
   &__toolbar { display: flex; align-items: center; justify-content: space-between; padding: 20px; span { font-size: 14px; strong { color: $muted; margin-left: 6px; } } button { border: 1px solid $line; background: $paper; border-radius: 5px; padding: 8px 12px; color: $green; font-size: 12px; } }
   &__table-wrap { overflow-x: auto; }
   &__table { width: 100%; border-collapse: collapse; text-align: left; th { background: $paper; color: $muted; font-size: 11px; font-weight: 400; padding: 13px 20px; white-space: nowrap; } td { padding: 17px 20px; border-bottom: 1px solid $line; font-size: 12px; white-space: nowrap; vertical-align: top; } strong { font-weight: 500; } small { display: block; color: $muted; margin-top: 7px; max-width: 280px; white-space: normal; line-height: 1.7; } code { color: $green; } }
-  &__state { display: inline-block; margin-top: 8px; padding: 3px 7px; border-radius: 4px; background: #eef0eb; color: $muted; font-size: 10px; &--on { background: #e6f2e9; color: #16745a; } }
+  &__state { display: inline-block; margin: 8px 6px 0 0; padding: 3px 7px; border-radius: 4px; background: #eef0eb; color: $muted; font-size: 10px; &--on, &--wechat { background: #e6f2e9; color: #16745a; } }
   &__row-actions { display: flex; flex-wrap: wrap; gap: 6px; button { border: 1px solid $line; background: $paper; border-radius: 5px; padding: 6px 9px; color: $green; font-size: 11px; } }
   &__error, &__notice { padding: 12px 16px; border-radius: 5px; font-size: 12px; line-height: 1.8; margin-bottom: 18px; }
   &__error { background: #faeee6; color: #934b40; }

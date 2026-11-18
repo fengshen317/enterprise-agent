@@ -6,7 +6,17 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class ConnectorView(BaseModel):
+class ConnectorHealthView(BaseModel):
+    """供列表、详情和手动检查复用的健康信息。"""
+
+    auth_status: str = "unknown"
+    auth_action: str | None = None
+    last_error_code: str | None = None
+    last_checked_at: datetime | None = None
+    last_success_at: datetime | None = None
+
+
+class ConnectorView(ConnectorHealthView):
     """连接器列表项。"""
 
     key: str
@@ -30,7 +40,7 @@ class ConnectorToolView(BaseModel):
     approval: str = "always"
 
 
-class ConnectorDetail(BaseModel):
+class ConnectorDetail(ConnectorHealthView):
     """连接器详情（含工具列表和配置项声明）。"""
 
     key: str
@@ -41,7 +51,6 @@ class ConnectorDetail(BaseModel):
     enabled: bool
     status: str
     last_error: str | None = None
-    last_checked_at: datetime | None = None
     config_fields: list[dict[str, Any]] = Field(default_factory=list)
     config_values: dict[str, str] = Field(default_factory=dict)
     tools: list[ConnectorToolView] = Field(default_factory=list)
@@ -68,7 +77,7 @@ class ConnectorEnabledInput(BaseModel):
     enabled: bool
 
 
-class ConnectorTestResult(BaseModel):
+class ConnectorTestResult(ConnectorHealthView):
     """连接器测试连接结果。"""
 
     status: str

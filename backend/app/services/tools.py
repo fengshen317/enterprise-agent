@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.capabilities.registry import ToolRegistry, build_default_registry
 from app.capabilities.spec import AgentAssembly, ToolContext, ToolSpec
+from app.connectors.base import ConnectorError
 from app.core.config import Settings
 from app.core.errors import ApplicationError
 from app.models.conversation import Conversation, Run
@@ -31,6 +32,16 @@ if TYPE_CHECKING:
     from app.services.schedule_store import ScheduleStore
 
 ACCESS_CODES = ("ACCESS_REVOKED", "WORKSPACE_ACCESS_DENIED", "WORKSPACE_ARCHIVED")
+CONNECTOR_ERRORS = {
+    "not_logged_in": ("CONNECTOR_NOT_LOGGED_IN", "连接器账号未登录，请在连接器页面完成账号授权后重试"),
+    "permission_denied": ("CONNECTOR_PERMISSION_DENIED", "连接器账号没有访问权限，请检查账号授权范围"),
+    "timeout": ("TOOL_TIMEOUT", "连接器请求超时，请稍后重试"),
+    "invalid_output": ("CONNECTOR_INVALID_OUTPUT", "连接器返回格式异常，请检查连接器版本和配置"),
+    "command_failed": ("CONNECTOR_COMMAND_FAILED", "连接器命令执行失败，请检查连接器状态和配置"),
+    "auth_failed": ("CONNECTOR_NOT_LOGGED_IN", "连接器认证已失效，请在连接器页面完成授权或更新凭证"),
+    "network_error": ("CONNECTOR_NETWORK_ERROR", "连接器网络异常，请检查网络后重试"),
+    "missing_api_key": ("CONNECTOR_NOT_LOGGED_IN", "连接器缺少 API Key，请在连接器页面配置凭证"),
+}
 
 
 class ToolExecutor:
@@ -322,7 +333,11 @@ class ToolExecutor:
         except Exception as exc:
             if approval_approved and self.approval_service is not None:
                 await self.approval_service.mark_failed(identifier)
-            if isinstance(exc, ValidationError):
+            error_message: str | None = None
+            if isinstance(exc, ConnectorError):
+                # 仅公开白名单分类和固定提示，CLI stderr 可能含账号信息或凭证。
+                code, error_message = CONNECTOR_ERRORS.get(exc.code, ("TOOL_EXECUTION_FAILED", None))
+            elif isinstance(exc, ValidationError):
                 code = "TOOL_INVALID_ARGUMENTS"
             elif isinstance(exc, TimeoutError):
                 code = "TOOL_TIMEOUT"
@@ -342,10 +357,15 @@ class ToolExecutor:
             )
             if code in ACCESS_CODES:
                 raise ApplicationError("ACCESS_REVOKED", "工具执行权限已失效", 403) from exc
-            return json.dumps(
-                {"ok": False, "audit_id": str(identifier), "risk": spec.risk, "error_code": code},
-                ensure_ascii=False,
-            )
+            failure: dict[str, object] = {
+                "ok": False,
+                "audit_id": str(identifier),
+                "risk": spec.risk,
+                "error_code": code,
+            }
+            if error_message is not None:
+                failure["error_message"] = error_message
+            return json.dumps(failure, ensure_ascii=False)
 
 
 async def list_tool_calls(

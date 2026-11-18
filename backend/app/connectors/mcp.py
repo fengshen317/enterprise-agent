@@ -9,9 +9,12 @@ from typing import TYPE_CHECKING, Any
 from app.capabilities.spec import ToolSpec
 from app.connectors.base import (
     ConfigField,
+    ConnectorError,
     ConnectorStatusInfo,
     ConnectorToolDef,
     ToolPolicyOverride,
+    health_exception,
+    health_failure,
 )
 
 if TYPE_CHECKING:
@@ -63,7 +66,7 @@ class McpConnector:
             await self._ensure_session()
             return ConnectorStatusInfo(status="connected")
         except Exception as exc:
-            return ConnectorStatusInfo(status="error", message=str(exc)[:200])
+            return health_exception(exc)
 
     async def list_tools(self) -> list[ConnectorToolDef]:
         """通过 MCP list_tools 发现工具。
@@ -90,9 +93,21 @@ class McpConnector:
             logger.warning("mcp_list_tools_failed", extra={"key": self.key, "error": str(exc)[:100]})
             return []
 
-    def tool_specs(
-        self, defs: list[ConnectorToolDef], policy: Mapping[str, ToolPolicyOverride]
-    ) -> list[ToolSpec]:
+    async def check_health(self) -> ConnectorStatusInfo:
+        """通过现有 MCP 会话 ping，避免监控任务重建会话。
+
+        Returns:
+            会话存活状态，认证仍需实际调用或 HTTP 认证失败确认。
+        """
+        if self._session is None:
+            return health_failure("network_error")
+        try:
+            await self._session.send_ping()
+        except Exception as exc:
+            return health_exception(exc)
+        return ConnectorStatusInfo(status="connected", auth_status="unknown")
+
+    def tool_specs(self, defs: list[ConnectorToolDef], policy: Mapping[str, ToolPolicyOverride]) -> list[ToolSpec]:
         """映射 MCP 工具定义为 ToolSpec。
 
         Args:
@@ -171,8 +186,12 @@ class McpConnector:
         Returns:
             MCP 调用结果。
         """
-        await self._ensure_session()
-        result = await self._session.call_tool(name, arguments)
+        try:
+            await self._ensure_session()
+            result = await self._session.call_tool(name, arguments)
+        except Exception as exc:
+            info = health_exception(exc)
+            raise ConnectorError(info.error_code or "network_error", info.message) from None
         # structuredContent 优先，退化 text
         if hasattr(result, "structuredContent") and result.structuredContent:
             return result.structuredContent

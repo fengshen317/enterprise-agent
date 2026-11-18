@@ -134,9 +134,9 @@ class ScheduleRuntime:
                 RunCreate(content=claimed.prompt, idempotency_key=key),
                 scope,
             )
+            await self.store.record_started(claimed.schedule_id, snapshot.run.id, datetime.now(UTC))
             if snapshot.run.status == "pending":
                 self.chat_runtime.schedule(snapshot.run.id, f"schedule-{claimed.schedule_id.hex[:8]}")
-            await self.store.record_started(claimed.schedule_id, snapshot.run.id, datetime.now(UTC))
             logger.info(
                 "schedule_run_started",
                 extra={"schedule_id": str(claimed.schedule_id), "run_id": str(snapshot.run.id)},
@@ -177,9 +177,9 @@ class ScheduleRuntime:
             RunCreate(content=view.prompt, idempotency_key=key),
             scope,
         )
+        await self.store.record_started(schedule_id, snapshot.run.id, datetime.now(UTC))
         if snapshot.run.status == "pending":
             self.chat_runtime.schedule(snapshot.run.id, f"manual-{schedule_id.hex[:8]}")
-        await self.store.record_started(schedule_id, snapshot.run.id, datetime.now(UTC))
         return snapshot
 
     async def close(self) -> None:

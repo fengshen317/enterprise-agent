@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import httpx
+from pydantic import SecretStr
 
 from app.capabilities.spec import ToolSpec
 from app.connectors.base import (
@@ -21,6 +22,7 @@ from app.connectors.base import (
     ConnectorStatusInfo,
     ConnectorToolDef,
     ToolPolicyOverride,
+    health_failure,
 )
 
 if TYPE_CHECKING:
@@ -95,6 +97,7 @@ class ApiConnector:
         return (
             ConfigField(key="base_url", label="API 地址", field_type="text", required=True),
             ConfigField(key="api_key", label="API Key", field_type="secret", is_secret=True),
+            ConfigField(key="health_path", label="只读健康检查路径（GET，可选）", field_type="text"),
         )
 
     async def connect(self) -> ConnectorStatusInfo:
@@ -105,12 +108,14 @@ class ApiConnector:
         """
         base_url = str(self._config.get("base_url", "")).rstrip("/")
         if not base_url:
-            return ConnectorStatusInfo(status="error", message="未配置 base_url")
+            return ConnectorStatusInfo(status="error", message="需要配置 API 地址", error_code="not_configured")
         try:
             self._client = httpx.AsyncClient(base_url=base_url, timeout=15)
             return ConnectorStatusInfo(status="connected")
-        except Exception as exc:
-            return ConnectorStatusInfo(status="error", message=str(exc)[:200])
+        except Exception:
+            return ConnectorStatusInfo(
+                status="error", message="API 地址配置无效，请检查配置", error_code="not_configured"
+            )
 
     async def list_tools(self) -> list[ConnectorToolDef]:
         """从配置读取声明式工具定义。
@@ -140,9 +145,43 @@ class ApiConnector:
             defs.append(tool_def.to_connector_def())
         return defs
 
-    def tool_specs(
-        self, defs: list[ConnectorToolDef], policy: Mapping[str, ToolPolicyOverride]
-    ) -> list[ToolSpec]:
+    async def check_health(self) -> ConnectorStatusInfo:
+        """检查密钥配置及可选的只读健康接口。
+
+        Returns:
+            已验证状态或缺少验证接口的待确认状态。
+        """
+        if not self._config.get("base_url"):
+            return health_failure("not_configured")
+        key = self._get_secret("api_key")
+        requires_key = self.key == "tavily_search" or bool(
+            self._config.get("auth_header") or self._config.get("body_mapping") or self._config.get("requires_api_key")
+        )
+        if requires_key and not key:
+            return health_failure("missing_api_key")
+        path = self._config.get("health_path")
+        if not isinstance(path, str) or not path.startswith("/") or path.startswith("//"):
+            return ConnectorStatusInfo(status="degraded", message="尚未配置只读健康检查接口，等待实际调用验证")
+        headers = {}
+        if key:
+            headers[str(self._config.get("auth_header", "Authorization"))] = (
+                str(self._config.get("auth_prefix", "Bearer ")) + key
+            )
+        try:
+            # 独立短连接避免定时检查替换正在执行工具的 HTTP 客户端。
+            async with httpx.AsyncClient(base_url=str(self._config["base_url"]), timeout=10) as client:
+                response = await client.get(path, headers=headers)
+                response.raise_for_status()
+        except httpx.TimeoutException:
+            return health_failure("timeout")
+        except httpx.HTTPStatusError as exc:
+            code = "auth_failed" if exc.response.status_code == 401 else "permission_denied"
+            return health_failure(code if exc.response.status_code in {401, 403} else "network_error")
+        except httpx.HTTPError:
+            return health_failure("network_error")
+        return ConnectorStatusInfo(status="connected", auth_status="authorized" if key else "not_required")
+
+    def tool_specs(self, defs: list[ConnectorToolDef], policy: Mapping[str, ToolPolicyOverride]) -> list[ToolSpec]:
         """映射工具定义为 ToolSpec。
 
         Args:
@@ -267,7 +306,10 @@ class ApiConnector:
         except httpx.TimeoutException:
             raise ConnectorError("timeout", f"API 调用超时: {path}") from None
         except httpx.HTTPStatusError as exc:
-            raise ConnectorError("command_failed", f"API 返回 {exc.response.status_code}") from None
+            code = {401: "auth_failed", 403: "permission_denied"}.get(exc.response.status_code, "command_failed")
+            raise ConnectorError(code, f"API 返回 {exc.response.status_code}") from None
+        except httpx.RequestError:
+            raise ConnectorError("network_error", "API 调用失败，请检查网络") from None
         except Exception as exc:
             raise ConnectorError("command_failed", f"API 调用失败: {exc}") from None
 
@@ -313,10 +355,17 @@ class ApiConnector:
             密钥值，未配置返回空字符串。
         """
         # 从 settings 读取（ConfigService 可热更新）
+        secrets = self._config.get("_secrets", {})
+        if isinstance(secrets, dict) and field_name in secrets:
+            return str(secrets[field_name]).strip()
         settings_key = f"{self.key}_{field_name}"
+        if self.key == "tavily_search":
+            settings_key = f"tavily_{field_name}"
         value = getattr(self._settings, settings_key, None)
         if value is not None:
-            return str(value).strip()
+            configured = value.get_secret_value().strip() if isinstance(value, SecretStr) else str(value).strip()
+            if configured:
+                return configured
         # 从 config 读取（非密钥场景）
         return str(self._config.get(field_name, "")).strip()
 

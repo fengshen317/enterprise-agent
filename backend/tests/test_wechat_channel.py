@@ -157,8 +157,15 @@ class MemoryStore:
 
     async def set_workspace(self, account_id: UUID, workspace_id: UUID) -> None:
         """记录空间切换。"""
-        del account_id
+        self.accounts[account_id].workspace_id = workspace_id
         self.workspaces.append(workspace_id)
+
+    async def activate_conversation(
+        self, account_id: UUID, workspace_id: UUID, peer_id: str, conversation_id: UUID
+    ) -> None:
+        """推送成功后把微信后续回复切到来源对话。"""
+        await self.set_workspace(account_id, workspace_id)
+        await self.set_conversation(account_id, workspace_id, peer_id, conversation_id)
 
     async def latest_peer(self, account_id: UUID) -> PeerLink | None:
         """取最近入站。"""
@@ -685,11 +692,46 @@ async def test_schedule_result_and_approval_push_use_the_window() -> None:
     runtime.handler = handler
     stale_run = uuid4()
     fresh_run = uuid4()
+    muted_run = uuid4()
+    conversation_id = uuid4()
     store.deliveries[stale_run] = RunDelivery(
-        stale_run, account.user_id, account.workspace_id, "completed", "晨报正文", None, "schedule_abc"
+        stale_run,
+        account.user_id,
+        account.workspace_id,
+        conversation_id,
+        "completed",
+        "晨报正文",
+        None,
+        "schedule_abc",
+        uuid4(),
+        "每日晨报",
+        True,
     )
     store.deliveries[fresh_run] = RunDelivery(
-        fresh_run, account.user_id, account.workspace_id, "completed", "晨报正文", None, "schedule_abc"
+        fresh_run,
+        account.user_id,
+        account.workspace_id,
+        conversation_id,
+        "completed",
+        "晨报正文",
+        None,
+        "schedule_abc",
+        uuid4(),
+        "每日晨报",
+        True,
+    )
+    store.deliveries[muted_run] = RunDelivery(
+        muted_run,
+        account.user_id,
+        account.workspace_id,
+        conversation_id,
+        "completed",
+        "不应推送",
+        None,
+        "schedule_abc",
+        uuid4(),
+        "静默任务",
+        False,
     )
     store.peers[(account.id, account.workspace_id, "wx-user")] = PeerLink(
         account.id, account.workspace_id, "wx-user", uuid4(), "ctx", datetime.now(UTC) - timedelta(hours=30)
@@ -701,10 +743,14 @@ async def test_schedule_result_and_approval_push_use_the_window() -> None:
         account.id, account.workspace_id, "wx-user", uuid4(), "ctx", datetime.now(UTC) - timedelta(minutes=5)
     )
     await runtime.on_run_finished(fresh_run)
-    assert ilink.sent == ["【定时问答】\n晨报正文"]
+    assert ilink.sent == ["【定时问答 · 每日晨报】\n晨报正文"]
+    linked = store.peers[(account.id, account.workspace_id, "wx-user")]
+    assert linked.conversation_id == conversation_id
+    await runtime.on_run_finished(muted_run)
+    assert ilink.sent == ["【定时问答 · 每日晨报】\n晨报正文"]
     handler.direct_runs.add(fresh_run)
     await runtime.on_run_finished(fresh_run)
-    assert ilink.sent == ["【定时问答】\n晨报正文"]
+    assert ilink.sent == ["【定时问答 · 每日晨报】\n晨报正文"]
     store.peers[(account.id, account.workspace_id, "wx-user")] = PeerLink(
         account.id, account.workspace_id, "wx-user", uuid4(), "ctx", datetime.now(UTC) - timedelta(hours=30)
     )

@@ -1,16 +1,25 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useAuthStore } from '../../stores/auth'
+import { useConnectorsStore } from '../../stores/connectors'
 import {
   getConnector,
   updateConnectorConfig,
   testConnector,
   authenticateConnector,
+  getConnectorAuthStatus,
+  connectorHealthLabel,
+  connectorTime,
+  type AuthResult,
   type ConnectorDetail,
   type ConnectorTestResult,
 } from '../../api/connectors'
 
 const props = defineProps<{ connectorKey: string }>()
 const emit = defineEmits<{ close: [] }>()
+const auth = useAuthStore()
+const store = useConnectorsStore()
+const isAdmin = computed(() => auth.activeWorkspace?.role === 'admin' && auth.activeWorkspace.status === 'active')
 
 const detail = ref<ConnectorDetail | null>(null)
 const loading = ref(false)
@@ -19,37 +28,57 @@ const testing = ref(false)
 const authenticating = ref(false)
 const error = ref('')
 const testResult = ref<ConnectorTestResult | null>(null)
-const authResult = ref<{ auth_url: string; output: string; already_logged_in: boolean } | null>(null)
+const authResult = ref<AuthResult | null>(null)
 
 const configDraft = ref<Record<string, string>>({})
-const secretsDraft = ref<Record<string, string>>({})
+const AUTH_POLL_MS = 2000
+const AUTH_TIMEOUT_MS = 5 * 60 * 1000
+let generation = 0
+let stopped = false
+let pollTimer: ReturnType<typeof setTimeout> | undefined
+let expiresAt = 0
+const trustedAuthUrl = computed(() => {
+  try {
+    const url = new URL(authResult.value?.auth_url ?? '')
+    return url.protocol === 'https:' ? url.href : ''
+  } catch { return '' }
+})
+const authHost = computed(() => trustedAuthUrl.value ? new URL(trustedAuthUrl.value).hostname : '')
+const authLabels: Record<AuthResult['state'], string> = {
+  starting: '正在准备授权', awaiting_user: '等待浏览器授权', completed: '授权已完成',
+  expired: '授权已过期，请重新发起', failed: '授权失败，请重试',
+}
+function current(version: number): boolean { return !stopped && version === generation }
 
 function showError(value: unknown): void {
   error.value = value instanceof Error ? value.message : '操作失败，请重试'
 }
 
 async function load(): Promise<void> {
+  const version = generation
   loading.value = true
   error.value = ''
   try {
-    detail.value = await getConnector(props.connectorKey)
+    const result = await getConnector(props.connectorKey)
+    if (!current(version)) return
+    detail.value = result
     configDraft.value = { ...detail.value.config_values }
     // 密钥字段初始化为空（留空表示不修改）
     for (const f of detail.value.config_fields) {
       if (f.is_secret) {
         configDraft.value[f.key] = ''
-        secretsDraft.value[f.key] = ''
       }
     }
   } catch (value) {
-    showError(value)
+    if (current(version)) showError(value)
   } finally {
-    loading.value = false
+    if (current(version)) loading.value = false
   }
 }
 
 async function save(): Promise<void> {
-  if (saving.value || !detail.value) return
+  if (saving.value || !detail.value || !isAdmin.value) return
+  const version = generation
   saving.value = true
   error.value = ''
   testResult.value = null
@@ -64,56 +93,120 @@ async function save(): Promise<void> {
         nonSecret[f.key] = val
       }
     }
-    detail.value = await updateConnectorConfig(props.connectorKey, nonSecret, secrets)
+    const result = await updateConnectorConfig(props.connectorKey, nonSecret, secrets)
+    if (!current(version)) return
+    detail.value = result
     configDraft.value = { ...detail.value.config_values }
     for (const f of detail.value.config_fields) {
       if (f.is_secret) configDraft.value[f.key] = ''
     }
+    await store.refresh(true)
   } catch (value) {
-    showError(value)
+    if (current(version)) showError(value)
   } finally {
-    saving.value = false
+    if (current(version)) saving.value = false
   }
 }
 
 async function test(): Promise<void> {
-  if (testing.value) return
+  if (testing.value || !isAdmin.value) return
+  const version = generation
   testing.value = true
   error.value = ''
   try {
-    testResult.value = await testConnector(props.connectorKey)
-    if (testResult.value.status === 'connected') {
-      detail.value = await getConnector(props.connectorKey)
-    }
+    const result = await testConnector(props.connectorKey)
+    if (!current(version)) return
+    testResult.value = result
+    const [updated] = await Promise.all([getConnector(props.connectorKey), store.refresh(true)])
+    if (!current(version)) return
+    detail.value = updated
   } catch (value) {
-    showError(value)
+    if (current(version)) showError(value)
   } finally {
-    testing.value = false
+    if (current(version)) testing.value = false
+  }
+}
+
+async function acceptAuth(result: AuthResult, version: number): Promise<void> {
+  if (!current(version)) return
+  error.value = ''
+  authResult.value = result
+  if (result.state === 'completed') {
+    authenticating.value = false
+    await test()
+    return
+  }
+  if (result.state === 'expired' || result.state === 'failed') {
+    authenticating.value = false
+    return
+  }
+  if (Date.now() >= expiresAt) {
+    authResult.value = { ...result, state: 'expired' }
+    authenticating.value = false
+    return
+  }
+  // 完成本次请求后才安排下一次，防止慢请求与旧空间响应交叉。
+  pollTimer = setTimeout(() => { void pollAuth(version) }, Math.min(AUTH_POLL_MS, expiresAt - Date.now()))
+}
+
+async function pollAuth(version: number): Promise<void> {
+  if (!current(version)) return
+  if (Date.now() >= expiresAt && authResult.value) {
+    await acceptAuth({ ...authResult.value, state: 'expired' }, version)
+    return
+  }
+  try {
+    await acceptAuth(await getConnectorAuthStatus(props.connectorKey), version)
+  } catch (value) {
+    if (!current(version)) return
+    showError(value)
+    pollTimer = setTimeout(() => { void pollAuth(version) }, Math.max(0, Math.min(AUTH_POLL_MS, expiresAt - Date.now())))
   }
 }
 
 async function authenticate(): Promise<void> {
-  if (authenticating.value) return
+  if (authenticating.value || !isAdmin.value) return
+  clearTimeout(pollTimer)
+  const version = generation
   authenticating.value = true
   error.value = ''
   authResult.value = null
   try {
-    authResult.value = await authenticateConnector(props.connectorKey)
-    if (authResult.value.auth_url) {
-      window.open(authResult.value.auth_url, '_blank')
-    }
+    const result = await authenticateConnector(props.connectorKey)
+    if (!current(version)) return
+    const serverExpiry = Date.parse(result.expires_at ?? '')
+    expiresAt = Number.isFinite(serverExpiry) ? serverExpiry : Date.now() + AUTH_TIMEOUT_MS
+    await acceptAuth(result, version)
   } catch (value) {
-    showError(value)
-  } finally {
-    authenticating.value = false
+    if (current(version)) { showError(value); authenticating.value = false }
   }
 }
 
+function stop(): void {
+  generation++
+  clearTimeout(pollTimer)
+  authResult.value = null
+  authenticating.value = false
+}
+
 function close(): void {
+  stopped = true
+  stop()
   emit('close')
 }
 
+watch(() => [store.scope, props.connectorKey], () => {
+  stop()
+  detail.value = null
+  testResult.value = null
+  configDraft.value = {}
+  error.value = ''
+  saving.value = false
+  testing.value = false
+  if (store.scope) void load()
+}, { flush: 'sync' })
 onMounted(load)
+onUnmounted(() => { stopped = true; stop() })
 </script>
 
 <template>
@@ -144,12 +237,20 @@ onMounted(load)
         <div class="connector-dialog__status">
           <span>{{ detail.kind.toUpperCase() }}</span>
           <span>工具数：{{ detail.tools.length }}</span>
+          <span>{{ connectorHealthLabel(detail) }}</span>
           <span
             v-if="detail.last_error"
             class="connector-dialog__status-error"
           >
             {{ detail.last_error }}
           </span>
+        </div>
+        <div class="connector-dialog__section">
+          <p>最近检查 {{ connectorTime(detail.last_checked_at) }}</p>
+          <p>最近成功 {{ connectorTime(detail.last_success_at) }}</p>
+          <p v-if="!isAdmin">
+            请联系管理员配置或授权连接器
+          </p>
         </div>
 
         <!-- 配置表单 -->
@@ -174,6 +275,7 @@ onMounted(load)
               class="connector-dialog__input"
               :placeholder="configDraft[field.key] || '输入新的密钥'"
               autocomplete="new-password"
+              :disabled="!isAdmin"
             />
             <input
               v-else-if="field.field_type === 'number'"
@@ -181,6 +283,7 @@ onMounted(load)
               type="number"
               class="connector-dialog__input"
               :placeholder="field.placeholder"
+              :disabled="!isAdmin"
             />
             <input
               v-else
@@ -188,6 +291,7 @@ onMounted(load)
               type="text"
               class="connector-dialog__input"
               :placeholder="field.placeholder || field.default"
+              :disabled="!isAdmin"
             />
           </div>
         </section>
@@ -236,18 +340,23 @@ onMounted(load)
           v-if="authResult"
           class="connector-dialog__auth-result"
         >
+          <p>{{ authLabels[authResult.state] }}</p>
+          <p v-if="authResult.expires_at">
+            授权截止 {{ connectorTime(authResult.expires_at) }}
+          </p>
           <p
             v-if="authResult.already_logged_in"
             class="connector-dialog__auth-ok"
           >
             ✓ {{ authResult.output }}
           </p>
-          <p v-else-if="authResult.auth_url">
+          <p v-else-if="trustedAuthUrl && authenticating">
             请在浏览器中完成授权：
             <a
-              :href="authResult.auth_url"
+              :href="trustedAuthUrl"
               target="_blank"
-            >打开授权页面</a>
+              rel="noopener noreferrer"
+            >打开授权页面（{{ authHost }}）</a>
           </p>
           <p
             v-else
@@ -258,27 +367,31 @@ onMounted(load)
         </div>
 
         <!-- 操作按钮 -->
-        <footer class="connector-dialog__footer">
+        <footer
+          v-if="isAdmin"
+          class="connector-dialog__footer"
+        >
           <button
+            v-if="detail.enabled && (detail.auth_action === 'authorize' || authResult)"
             class="connector-dialog__btn connector-dialog__btn--secondary"
-            :disabled="authenticating"
+            :disabled="authenticating || testing || saving"
             @click="authenticate"
           >
-            {{ authenticating ? '授权中…' : '账号授权' }}
+            {{ authenticating ? '授权中…' : '去授权' }}
           </button>
           <button
             class="connector-dialog__btn connector-dialog__btn--secondary"
-            :disabled="testing"
+            :disabled="testing || authenticating || saving || !detail.enabled"
             @click="test"
           >
-            {{ testing ? '测试中…' : '测试连接' }}
+            {{ testing ? '检查中…' : '重新检查' }}
           </button>
           <button
             class="connector-dialog__btn connector-dialog__btn--primary"
-            :disabled="saving"
+            :disabled="saving || authenticating || testing"
             @click="save"
           >
-            {{ saving ? '保存中…' : '保存' }}
+            {{ saving ? '保存中…' : '保存配置' }}
           </button>
         </footer>
       </template>

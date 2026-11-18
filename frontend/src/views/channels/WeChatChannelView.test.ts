@@ -1,7 +1,19 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { listWeChatAccounts, pollWeChatBind, startWeChatBind, unbindWeChat } from '../../api/channels'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  listWeChatAccounts,
+  pollWeChatBind,
+  startWeChatBind,
+  unbindWeChat,
+  type WeChatBindSession,
+} from '../../api/channels'
 import WeChatChannelView from './WeChatChannelView.vue'
+
+const qrcodeMocks = vi.hoisted(() => ({
+  toDataURL: vi.fn<(text: string, options?: object) => Promise<string>>(),
+}))
+
+vi.mock('qrcode', () => qrcodeMocks)
 
 vi.mock('../../api/channels', () => ({
   listWeChatAccounts: vi.fn(),
@@ -30,14 +42,21 @@ describe('微信绑定页', () => {
     vi.mocked(pollWeChatBind).mockReset()
     vi.mocked(startWeChatBind).mockReset()
     vi.mocked(unbindWeChat).mockReset()
+    qrcodeMocks.toDataURL.mockReset()
+    qrcodeMocks.toDataURL.mockResolvedValue('data:image/png;base64,generated-qr')
   })
 
-  it('开始绑定后展示二维码', async () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('开始绑定后把微信登录链接编码为二维码', async () => {
+    const loginUrl = 'https://liteapp.weixin.qq.com/q/test?qrcode=session-1'
     vi.mocked(listWeChatAccounts).mockResolvedValue([])
     vi.mocked(startWeChatBind).mockResolvedValue({
       session_id: 'session-1',
       status: 'pending',
-      qrcode_img_content: 'https://example.test/qr.png',
+      qrcode_img_content: loginUrl,
       account_id: null,
       ilink_user_id: '',
       message: '等待扫码',
@@ -45,7 +64,7 @@ describe('微信绑定页', () => {
     vi.mocked(pollWeChatBind).mockResolvedValue({
       session_id: 'session-1',
       status: 'wait',
-      qrcode_img_content: 'https://example.test/qr.png',
+      qrcode_img_content: loginUrl,
       account_id: null,
       ilink_user_id: '',
       message: '等待扫码',
@@ -54,8 +73,48 @@ describe('微信绑定页', () => {
     await flushPromises()
     await wrapper.get('button.wechat__bind').trigger('click')
     await flushPromises()
-    expect(wrapper.get('img').attributes('src')).toBe('https://example.test/qr.png')
+    expect(qrcodeMocks.toDataURL).toHaveBeenCalledWith(loginUrl, expect.objectContaining({ width: 220 }))
+    expect(wrapper.get('img').attributes('src')).toBe('data:image/png;base64,generated-qr')
+    expect(wrapper.get('a').attributes('href')).toBe(loginUrl)
     expect(wrapper.text()).toContain('等待扫码')
+    wrapper.unmount()
+  })
+
+  it('上一次轮询完成后才安排下一次', async () => {
+    vi.useFakeTimers()
+    let resolvePoll: ((value: WeChatBindSession) => void) | undefined
+    const pendingPoll = new Promise<WeChatBindSession>((resolve) => { resolvePoll = resolve })
+    const bindSession: WeChatBindSession = {
+      session_id: 'session-1',
+      status: 'wait',
+      qrcode_img_content: 'https://liteapp.weixin.qq.com/q/test',
+      account_id: null,
+      ilink_user_id: '',
+      message: '等待扫码',
+    }
+    vi.mocked(listWeChatAccounts).mockResolvedValue([])
+    vi.mocked(startWeChatBind).mockResolvedValue({ ...bindSession, status: 'pending' })
+    vi.mocked(pollWeChatBind)
+      .mockResolvedValueOnce(bindSession)
+      .mockReturnValueOnce(pendingPoll)
+      .mockResolvedValue(bindSession)
+    const wrapper = mount(WeChatChannelView)
+    await flushPromises()
+    await wrapper.get('button.wechat__bind').trigger('click')
+    await flushPromises()
+
+    expect(pollWeChatBind).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(pollWeChatBind).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(pollWeChatBind).toHaveBeenCalledTimes(2)
+
+    resolvePoll?.(bindSession)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(1999)
+    expect(pollWeChatBind).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(pollWeChatBind).toHaveBeenCalledTimes(3)
     wrapper.unmount()
   })
 

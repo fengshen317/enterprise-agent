@@ -10,6 +10,7 @@ export interface Schedule {
   cron_expression: string
   timezone: string
   enabled: boolean
+  push_to_wechat: boolean
   next_run_at: string | null
   last_run_at: string | null
   last_run_id: string | null
@@ -26,6 +27,7 @@ export interface ScheduleInput {
   cron_expression: string
   timezone: string
   enabled: boolean
+  push_to_wechat: boolean
 }
 
 function record(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null }
@@ -33,7 +35,7 @@ function nullableString(value: unknown): value is string | null { return value =
 function invalid(): never { throw new ApiError('定时任务接口返回格式不正确', 502) }
 
 function parseSchedule(value: unknown): Schedule {
-  if (!record(value) || typeof value.id !== 'string' || typeof value.conversation_id !== 'string' || typeof value.conversation_title !== 'string' || typeof value.name !== 'string' || typeof value.prompt !== 'string' || typeof value.cron_expression !== 'string' || typeof value.timezone !== 'string' || typeof value.enabled !== 'boolean' || !nullableString(value.next_run_at) || !nullableString(value.last_run_at) || !nullableString(value.last_run_id) || !nullableString(value.last_status) || !nullableString(value.last_error_code) || typeof value.created_at !== 'string' || typeof value.updated_at !== 'string') return invalid()
+  if (!record(value) || typeof value.id !== 'string' || typeof value.conversation_id !== 'string' || typeof value.conversation_title !== 'string' || typeof value.name !== 'string' || typeof value.prompt !== 'string' || typeof value.cron_expression !== 'string' || typeof value.timezone !== 'string' || typeof value.enabled !== 'boolean' || typeof value.push_to_wechat !== 'boolean' || !nullableString(value.next_run_at) || !nullableString(value.last_run_at) || !nullableString(value.last_run_id) || !nullableString(value.last_status) || !nullableString(value.last_error_code) || typeof value.created_at !== 'string' || typeof value.updated_at !== 'string') return invalid()
   return value as unknown as Schedule
 }
 
@@ -49,6 +51,13 @@ export async function createSchedule(input: ScheduleInput): Promise<Schedule> {
 
 export async function updateSchedule(id: string, input: ScheduleInput): Promise<Schedule> {
   return parseSchedule(await requestJson('/api/schedules/' + encodeURIComponent(id), { method: 'POST', body: JSON.stringify(input) }))
+}
+
+export async function updateScheduleWeChatPush(id: string, enabled: boolean): Promise<Schedule> {
+  return parseSchedule(await requestJson('/api/schedules/' + encodeURIComponent(id) + '/wechat-push', {
+    method: 'POST',
+    body: JSON.stringify({ push_to_wechat: enabled }),
+  }))
 }
 
 export async function deleteSchedule(id: string): Promise<void> {

@@ -1,0 +1,23 @@
+import { beforeEach, expect, it, vi } from 'vitest'
+import { requestJson } from './client'
+import { authenticateConnector, getConnectorAuthStatus, testConnector } from './connectors'
+
+vi.mock('./client', async original => ({
+  ...await original<typeof import('./client')>(), requestJson: vi.fn(),
+}))
+
+beforeEach(() => { vi.mocked(requestJson).mockReset() })
+
+it('连接检查保留后端最大执行时间和传输余量', async () => {
+  vi.mocked(requestJson).mockResolvedValue({ status: 'connected' })
+  await testConnector('cli/name')
+  expect(requestJson).toHaveBeenCalledWith('/api/admin/connectors/cli%2Fname/test', { method: 'POST' }, 65_000)
+})
+
+it('授权启动允许健康检查和地址生成完成，状态查询采用默认超时', async () => {
+  vi.mocked(requestJson).mockResolvedValue({ state: 'awaiting_user' })
+  await authenticateConnector('cli/name')
+  expect(requestJson).toHaveBeenCalledWith('/api/admin/connectors/cli%2Fname/auth', { method: 'POST' }, 90_000)
+  await getConnectorAuthStatus('cli/name')
+  expect(requestJson).toHaveBeenLastCalledWith('/api/admin/connectors/cli%2Fname/auth/status')
+})

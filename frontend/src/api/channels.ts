@@ -1,5 +1,8 @@
 import { ApiError, requestJson } from './client'
 
+const WECHAT_BIND_TIMEOUT_MS = 20000
+const WECHAT_POLL_TIMEOUT_MS = 15000
+
 export interface WeChatBindSession {
   session_id: string
   status: string
@@ -69,12 +72,14 @@ function parseAccount(value: unknown): WeChatAccount {
 }
 
 export async function startWeChatBind(): Promise<WeChatBindSession> {
-  return parseBind(await requestJson('/api/channels/wechat/bind', { method: 'POST' }))
+  // iLink 取码请求最长等待 15 秒，前端必须留出服务端处理余量。
+  return parseBind(await requestJson('/api/channels/wechat/bind', { method: 'POST' }, WECHAT_BIND_TIMEOUT_MS))
 }
 
 export async function pollWeChatBind(sessionId: string, verifyCode = ''): Promise<WeChatBindSession> {
   const query = verifyCode ? `?verify_code=${encodeURIComponent(verifyCode)}` : ''
-  return parseBind(await requestJson(`/api/channels/wechat/bind/${sessionId}${query}`, {}, 8000))
+  // 后端连接 iLink 时可以等待 10 秒，避免浏览器先行超时而误报服务不可用。
+  return parseBind(await requestJson(`/api/channels/wechat/bind/${sessionId}${query}`, {}, WECHAT_POLL_TIMEOUT_MS))
 }
 
 export async function listWeChatAccounts(): Promise<WeChatAccount[]> {

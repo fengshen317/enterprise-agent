@@ -15,6 +15,7 @@ class ScheduleInput(BaseModel):
     cron_expression: str = Field(min_length=1, max_length=100)
     timezone: str | None = Field(default=None, max_length=64)
     enabled: bool = True
+    push_to_wechat: bool = False
 
     @field_validator("name", "cron_expression")
     @classmethod
@@ -78,6 +79,7 @@ class ScheduleView(BaseModel):
     cron_expression: str
     timezone: str
     enabled: bool
+    push_to_wechat: bool
     next_run_at: datetime | None
     last_run_at: datetime | None
     last_run_id: UUID | None
@@ -85,6 +87,12 @@ class ScheduleView(BaseModel):
     last_error_code: str | None
     created_at: datetime
     updated_at: datetime
+
+
+class ScheduleWeChatPushInput(BaseModel):
+    """只修改微信推送开关，不触碰 Cron 的下一次触发时间。"""
+
+    push_to_wechat: bool
 
 
 class CreateScheduledTaskArgs(BaseModel):
@@ -96,3 +104,36 @@ class CreateScheduledTaskArgs(BaseModel):
     cron_expression: str = Field(min_length=1, max_length=100)
     timezone: str | None = Field(default=None, max_length=64)
     enabled: bool = True
+    push_to_wechat: bool = False
+
+
+class ListScheduledTasksArgs(BaseModel):
+    """列出当前空间定时任务不需要模型提供参数。"""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class SetScheduledTaskEnabledArgs(BaseModel):
+    """启用或停用一条属于当前用户的定时任务。"""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    schedule_id: UUID
+    enabled: bool
+
+    @field_validator("schedule_id", mode="before")
+    @classmethod
+    def parse_schedule_id(cls, value: object) -> object:
+        """工具协议中的 UUID 来自 JSON 字符串，先显式转换再做严格校验。
+
+        Args:
+            value: 模型提交的原始标识。
+
+        Returns:
+            UUID 对象或原值，由 Pydantic 继续报告非法格式。
+        """
+        if isinstance(value, str):
+            try:
+                return UUID(value)
+            except ValueError:
+                return value
+        return value

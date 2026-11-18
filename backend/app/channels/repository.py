@@ -17,6 +17,7 @@ from app.channels.records import AccountRecord, ApprovalTicket, BindSessionRecor
 from app.core.errors import ApplicationError
 from app.models.channel import ChannelAccount, ChannelApprovalCode, ChannelBindSession, ChannelMessage, ChannelPeer
 from app.models.conversation import Conversation, Message, Run
+from app.models.schedule import ScheduledTask
 from app.services.approvals import ApprovalNotice
 
 logger = logging.getLogger(__name__)
@@ -299,6 +300,29 @@ class ChannelStore:
             await session.flush()
             return self._peer(row)
 
+    async def activate_conversation(
+        self, account_id: UUID, workspace_id: UUID, peer_id: str, conversation_id: UUID
+    ) -> None:
+        """把微信后续入站原子切到主动推送的来源对话。
+
+        Args:
+            account_id: 渠道账号。
+            workspace_id: 来源对话所属空间。
+            peer_id: 微信用户。
+            conversation_id: 来源对话。
+        """
+        async with self.factory.begin() as session:
+            account = await session.scalar(
+                select(ChannelAccount).where(ChannelAccount.id == account_id).with_for_update()
+            )
+            if account is None or account.status == "unbound":
+                return
+            row = await self._lock_peer(session, account_id, workspace_id, peer_id)
+            account.workspace_id = workspace_id
+            account.updated_at = datetime.now(UTC)
+            row.conversation_id = conversation_id
+            row.updated_at = datetime.now(UTC)
+
     async def latest_peer(self, account_id: UUID) -> PeerLink | None:
         """取最近一次入站的对端，用来判断主动推送窗口。
 
@@ -384,12 +408,17 @@ class ChannelStore:
                         Run.status,
                         Run.error_message,
                         Run.idempotency_key,
+                        Run.conversation_id,
                         Message.content,
                         Conversation.created_by_user_id,
                         Conversation.workspace_id,
+                        ScheduledTask.id.label("schedule_id"),
+                        ScheduledTask.name.label("schedule_name"),
+                        ScheduledTask.push_to_wechat,
                     )
                     .join(Message, Message.run_id == Run.id)
                     .join(Conversation, Conversation.id == Run.conversation_id)
+                    .outerjoin(ScheduledTask, ScheduledTask.last_run_id == Run.id)
                     .where(Run.id == run_id, Message.role == "assistant")
                 )
             ).one_or_none()
@@ -399,10 +428,14 @@ class ChannelStore:
             run_id=run_id,
             user_id=row.created_by_user_id,
             workspace_id=row.workspace_id,
+            conversation_id=row.conversation_id,
             status=row.status,
             content=row.content or "",
             error_message=row.error_message,
             idempotency_key=row.idempotency_key,
+            schedule_id=row.schedule_id,
+            schedule_name=row.schedule_name or "",
+            push_to_wechat=bool(row.push_to_wechat),
         )
 
     async def issue_approval_code(self, account_id: UUID, notice: ApprovalNotice) -> str:

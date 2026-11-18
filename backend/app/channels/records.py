@@ -59,10 +59,14 @@ class RunDelivery:
     run_id: UUID
     user_id: UUID
     workspace_id: UUID
+    conversation_id: UUID
     status: str
     content: str
     error_message: str | None
     idempotency_key: str
+    schedule_id: UUID | None = None
+    schedule_name: str = ""
+    push_to_wechat: bool = False
 
 
 @dataclass

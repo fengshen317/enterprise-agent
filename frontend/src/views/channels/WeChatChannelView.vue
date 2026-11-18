@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { toDataURL } from 'qrcode'
 import { onMounted, onUnmounted, ref } from 'vue'
 import {
   listWeChatAccounts,
@@ -11,11 +12,18 @@ import {
 
 const accounts = ref<WeChatAccount[]>([])
 const session = ref<WeChatBindSession | null>(null)
+const qrImageUrl = ref('')
+const qrRenderError = ref('')
 const verifyCode = ref('')
 const error = ref('')
 const loading = ref(false)
 const busy = ref(false)
 let timer = 0
+let pollRun = 0
+let qrRenderRun = 0
+
+const POLL_INTERVAL_MS = 2000
+const QR_WIDTH_PX = 220
 
 const statusText: Record<string, string> = {
   active: '已连接',
@@ -39,8 +47,8 @@ function reasonText(reason: string): string {
   return reason || '未发送'
 }
 
-function imageUrl(content: string): string {
-  if (content.startsWith('https://') || content.startsWith('http://') || content.startsWith('data:')) return content
+function externalQrUrl(content: string): string {
+  if (content.startsWith('https://') || content.startsWith('http://')) return content
   return ''
 }
 
@@ -57,23 +65,61 @@ async function load(): Promise<void> {
 }
 
 function stopPolling(): void {
-  if (timer) window.clearInterval(timer)
+  if (timer) window.clearTimeout(timer)
   timer = 0
+  // 让已在飞行的旧请求失效，避免重新绑定后被旧响应覆盖。
+  pollRun += 1
 }
 
-async function refreshBind(): Promise<void> {
-  if (!session.value || session.value.status === 'confirmed') return
+async function updateSession(next: WeChatBindSession): Promise<void> {
+  const previousContent = session.value?.qrcode_img_content ?? ''
+  session.value = next
+  if (next.qrcode_img_content === previousContent) return
+
+  const renderRun = ++qrRenderRun
+  qrImageUrl.value = ''
+  qrRenderError.value = ''
+  if (!next.qrcode_img_content) return
+
   try {
-    const next = await pollWeChatBind(session.value.session_id, verifyCode.value.trim())
-    session.value = next
+    const image = await toDataURL(next.qrcode_img_content, {
+      errorCorrectionLevel: 'M',
+      margin: 1,
+      width: QR_WIDTH_PX,
+    })
+    if (renderRun === qrRenderRun) qrImageUrl.value = image
+  } catch {
+    if (renderRun === qrRenderRun) qrRenderError.value = '二维码生成失败，请使用备用链接'
+  }
+}
+
+async function refreshBind(run: number): Promise<void> {
+  const current = session.value
+  if (run !== pollRun || !current || current.status === 'confirmed') return
+  try {
+    const next = await pollWeChatBind(current.session_id, verifyCode.value.trim())
+    if (run !== pollRun) return
+    error.value = ''
+    await updateSession(next)
     if (next.status === 'confirmed') {
       stopPolling()
       verifyCode.value = ''
       await load()
     }
   } catch (value) {
-    showError(value)
+    if (run === pollRun) showError(value)
+  } finally {
+    // 上一次请求结束后再计时，避免慢请求叠加压垮后端。
+    if (run === pollRun && session.value?.status !== 'confirmed') {
+      timer = window.setTimeout(() => void refreshBind(run), POLL_INTERVAL_MS)
+    }
   }
+}
+
+function startPolling(): void {
+  stopPolling()
+  const run = pollRun
+  void refreshBind(run)
 }
 
 async function beginBind(): Promise<void> {
@@ -82,14 +128,17 @@ async function beginBind(): Promise<void> {
   error.value = ''
   stopPolling()
   try {
-    session.value = await startWeChatBind()
-    await refreshBind()
-    if (session.value?.status !== 'confirmed') timer = window.setInterval(() => void refreshBind(), 2000)
+    await updateSession(await startWeChatBind())
+    startPolling()
   } catch (value) {
     showError(value)
   } finally {
     busy.value = false
   }
+}
+
+function submitVerifyCode(): void {
+  startPolling()
 }
 
 async function unbind(accountId: string): Promise<void> {
@@ -177,20 +226,34 @@ onUnmounted(stopPolling)
     >
       <p>{{ session.message || statusText[session.status] || '等待扫码' }}</p>
       <img
-        v-if="imageUrl(session.qrcode_img_content)"
-        :src="imageUrl(session.qrcode_img_content)"
+        v-if="qrImageUrl"
+        :src="qrImageUrl"
         alt="微信绑定二维码"
       />
-      <p v-else>
-        {{ session.qrcode_img_content }}
+      <p v-else-if="session.qrcode_img_content && !qrRenderError">
+        正在生成二维码…
       </p>
+      <p
+        v-if="qrRenderError"
+        class="wechat__qr-error"
+      >
+        {{ qrRenderError }}
+      </p>
+      <a
+        v-if="externalQrUrl(session.qrcode_img_content)"
+        :href="externalQrUrl(session.qrcode_img_content)"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        二维码无法扫描时，在浏览器打开
+      </a>
       <label v-if="session.status.includes('need_verifycode')">
         手机上的数字
         <input
           v-model="verifyCode"
           inputmode="numeric"
           maxlength="8"
-          @change="refreshBind"
+          @change="submitVerifyCode"
         />
       </label>
     </div>
@@ -216,5 +279,7 @@ onUnmounted(stopPolling)
 .wechat__bind, .wechat__account button { border: 0; background: $green; color: #fff; border-radius: 6px; padding: 8px 14px; }
 .wechat__qr { display: grid; gap: 8px; padding: 16px; border: 1px dashed $line; border-radius: 8px; background: $paper; }
 .wechat__qr img { width: 220px; height: 220px; object-fit: contain; background: #fff; }
+.wechat__qr a { color: $green; width: fit-content; }
+.wechat__qr-error { color: #9d2c2c; margin: 0; }
 .wechat__help { display: grid; gap: 6px; font-size: 13px; }
 </style>

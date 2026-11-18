@@ -8,7 +8,7 @@
 - 每个对话选择 Agent；生成中不能切换；切换只影响后续运行。
 - 能力绑定：内置工具、已发布技能版本、知识库范围。
 - 技能：Markdown/SOP 创建、草稿版本、发布、版本历史、归档；常驻与按需加载。
-- 工具目录：`get_my_run_stats`、`search_knowledge_base`、`list_knowledge_bases`、`create_scheduled_task`；空间管理员可启停。
+- 工具目录包含运行统计、知识库、定时任务查询/创建/启停及已配置连接器工具；空间管理员可按策略启停。
 - 运行快照：`runs.agent_snapshot` 固定 Agent 版本、工具版本、技能版本和知识库范围。
 - 写操作审批：`approvals` + `approval_events`；只允许 Run owner 决策；超时、取消、重启均收敛。
 - 前端：`/agents`、`/agents/:agentId`、`/capabilities`、`/capabilities/skills/:skillId`；ChatView 增加 Agent 选择、能力抽屉、全局审批卡；工具记录支持审批/拒绝/过期状态。
@@ -63,6 +63,8 @@
 | `search_knowledge_base` | read | never | RAGFlow+5s | 3 | 知识库检索 |
 | `list_knowledge_bases` | read | never | 5s | 2 | 知识库目录 |
 | `create_scheduled_task` | write | always | 5s | 1 | 创建定时任务，固定当前对话 |
+| `list_scheduled_tasks` | read | never | 按配置 | 2 | 列出本人当前空间任务并标出当前对话任务 |
+| `set_scheduled_task_enabled` | write | always | 按配置 | 1 | 真实启用或停用本人任务 |
 | `update_plan` / `delegate_tasks` | system | never | 2s / Run 超时 | 12 / 6 | 仅主 Agent |
 | `load_skill` | system | never | 2s | 3 | 按需加载已绑定技能 |
 
@@ -129,9 +131,10 @@ GET      /api/runs/{id}/trace
 ## 十、手工验收步骤
 
 1. 升级数据库：`cd backend && uv run alembic upgrade head`，重启后端和前端。
-2. 打开 `/capabilities`：确认工具目录包含 4 个业务工具；创建并发布一个技能。
+2. 打开 `/capabilities`：确认工具目录包含定时任务查询、创建和启停工具；创建并发布一个技能。
 3. 打开 `/agents`：新建私有 Agent，绑定只读工具和技能，保存。
 4. 打开 `/chat`：新建对话选择该 Agent，发送问题；点“能力”查看工具/技能/知识库范围。
 5. 让 Agent 创建定时任务（需绑定 `create_scheduled_task`）：输入“请创建一个每天 9 点执行的定时任务，总结本周运行情况”。在输入框上方批准或拒绝；批准后到 `/schedules` 确认任务存在。
-6. 生成中尝试切换 Agent，应提示不能切换；刷新页面后执行轨迹和审批链仍可读。
-7. 重启后端：如果存在 pending 审批，确认审批过期、Run 失败码 `PROCESS_RESTARTED`，且没有产生定时任务。
+6. 内置助手输入“列出我的定时任务”，确认会调用 `list_scheduled_tasks`；再输入“停掉这个任务”，应出现 `set_scheduled_task_enabled` 审批，批准后 `/schedules` 中任务真实停用。
+7. 生成中尝试切换 Agent，应提示不能切换；刷新页面后执行轨迹和审批链仍可读。
+8. 重启后端：如果存在 pending 审批，确认审批过期、Run 失败码 `PROCESS_RESTARTED`，且没有产生定时任务。

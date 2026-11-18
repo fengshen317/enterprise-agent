@@ -10,12 +10,13 @@ from fastapi import FastAPI
 from sqlalchemy import select
 
 from app.capabilities.builtins.run_stats import run_stats_spec
-from app.capabilities.builtins.scheduled import scheduled_spec
+from app.capabilities.builtins.scheduled import scheduled_specs
 from app.capabilities.registry import ToolRegistry
 from app.capabilities.spec import AgentAssembly
 from app.models.approval import Approval
 from app.models.tool_call import ToolCall
 from app.schemas.chat import RunCreate
+from app.services.agent_assembler import AgentAssembler
 from app.services.approvals import ApprovalService
 from app.services.tools import ToolExecutor
 from tests.test_chat_integration import ControlledProvider, new_conversation
@@ -51,7 +52,8 @@ async def write_executor(app: FastAPI, client: httpx.AsyncClient) -> ToolExecuto
     await runtime.store.begin_run(snapshot.run.id)
     registry = ToolRegistry()
     registry.register(run_stats_spec(runtime.settings))
-    registry.register(scheduled_spec(runtime.settings))
+    for spec in scheduled_specs(runtime.settings):
+        registry.register(spec)
     assembly = AgentAssembly(
         agent_id=None,
         name="写工具测试助手",
@@ -137,6 +139,47 @@ async def test_approve_executes_and_reject_has_no_side_effect(
     assert "APPROVAL_REJECTED" in outcome
     schedules = (await client.get("/api/schedules")).json()
     assert all(item["name"] != "拒绝任务" for item in schedules)
+
+
+async def test_approved_schedule_control_changes_real_state(
+    chat: tuple[FastAPI, httpx.AsyncClient, ControlledProvider],
+) -> None:
+    """内置助手可先查询任务，再经逐次审批真实停用，而不是只回复成功。"""
+    app, client, _ = chat
+    conversation_id = await new_conversation(client)
+    created = await client.post(
+        "/api/schedules",
+        json={**TASK, "conversation_id": conversation_id, "enabled": True, "push_to_wechat": False},
+    )
+    assert created.status_code == 201, created.text
+    schedule_id = created.json()["id"]
+
+    executor = await write_executor(app, client)
+    default_tools = AgentAssembler(
+        executor.factory,
+        executor.registry,
+        executor.settings,
+    ).default_assembly().tool_keys
+    assert "list_scheduled_tasks" in default_tools
+    assert "set_scheduled_task_enabled" in default_tools
+    assert "create_scheduled_task" not in default_tools
+    listed = await executor.invoke("list_scheduled_tasks", {})
+    assert schedule_id in listed
+    task = asyncio.create_task(
+        executor.invoke("set_scheduled_task_enabled", {"schedule_id": schedule_id, "enabled": False})
+    )
+    await asyncio.sleep(0.05)
+    assert not task.done(), await task
+    approval = await wait_approval(client, executor.run_id)
+    assert approval["args_preview"]["summary"] == "停用定时任务"
+    decided = await client.post(
+        f"/api/runs/{executor.run_id}/approvals/{approval['id']}/decide",
+        json={"decision": "approve"},
+    )
+    assert decided.status_code == 200, decided.text
+    assert '"enabled": false' in await asyncio.wait_for(task, 5)
+    rows = (await client.get("/api/schedules")).json()
+    assert next(item for item in rows if item["id"] == schedule_id)["enabled"] is False
 
 
 async def test_approval_owner_scope_and_timeout(

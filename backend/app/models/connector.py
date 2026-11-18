@@ -19,6 +19,7 @@ class Connector(Base):
     __table_args__ = (
         CheckConstraint("kind IN ('cli', 'mcp', 'api')", name="kind"),
         CheckConstraint("status IN ('disabled', 'connected', 'degraded', 'error')", name="status"),
+        CheckConstraint("auth_status IN ('unknown', 'authorized', 'required', 'not_required')", name="auth_status"),
         CheckConstraint("length(trim(name)) > 0", name="name_nonempty"),
         UniqueConstraint("key", name="uq_connectors_key"),
         Index("ix_connectors_enabled", "enabled"),
@@ -38,6 +39,9 @@ class Connector(Base):
     status: Mapped[str] = mapped_column(String(20), default="disabled", server_default="disabled")
     last_error: Mapped[str | None] = mapped_column(Text)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    auth_status: Mapped[str] = mapped_column(String(20), default="unknown", server_default="unknown")
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

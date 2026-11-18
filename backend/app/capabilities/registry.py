@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from app.capabilities.builtins.knowledge import knowledge_specs
 from app.capabilities.builtins.run_stats import run_stats_spec
-from app.capabilities.builtins.scheduled import scheduled_spec
+from app.capabilities.builtins.scheduled import scheduled_specs
 from app.capabilities.builtins.web_search import web_search_spec
 from app.capabilities.spec import ToolSpec
 
@@ -106,7 +106,8 @@ def build_default_registry(
         for spec in knowledge_specs(settings):
             registry.register(spec)
     if schedule_store is not None and settings.schedule_enabled:
-        registry.register(scheduled_spec(settings))
+        for spec in scheduled_specs(settings):
+            registry.register(spec)
     if settings.tavily_api_key.get_secret_value().strip():
         registry.register(web_search_spec(settings))
     return registry
