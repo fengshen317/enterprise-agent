@@ -3,6 +3,8 @@ import { ApiError, requestJson } from './client'
 // 健康检查允许后端执行至 60 秒，授权启动还需等待授权地址生成。
 const CONNECTOR_TEST_TIMEOUT_MS = 65_000
 const CONNECTOR_AUTH_TIMEOUT_MS = 90_000
+const CONNECTOR_QR_POLL_TIMEOUT_MS = 12_000
+const HOLDINGS_SYNC_TIMEOUT_MS = 30_000
 
 export type ConnectorKind = 'cli' | 'mcp' | 'api'
 export type ConnectorStatus = 'disabled' | 'connected' | 'degraded' | 'error'
@@ -58,6 +60,29 @@ export interface ConnectorDetail extends ConnectorHealth {
   config_fields: ConfigField[]
   config_values: Record<string, string>
   tools: ConnectorToolView[]
+  can_view_holdings?: boolean
+}
+
+export interface YangJiBaoHolding {
+  code: string
+  name: string
+  holding_amount: number | null
+  estimated_change_percent: number | null
+  latest_nav_change_percent: number | null
+  quote_time: string | null
+  nav_date: string | null
+  share?: number | null
+  cost_amount?: number | null
+  cost_nav?: number | null
+  estimated_amount?: number | null
+  latest_nav_amount?: number | null
+  estimated_today_profit_amount?: number | null
+}
+
+export interface YangJiBaoPortfolio {
+  synced_at: string
+  fund_count: number
+  funds: YangJiBaoHolding[]
 }
 
 export interface ConnectorTestResult extends ConnectorHealth {
@@ -95,6 +120,28 @@ export async function listConnectors(): Promise<ConnectorView[]> {
 
 export async function getConnector(key: string): Promise<ConnectorDetail> {
   return parseDetail(await requestJson('/api/connectors/' + encodeURIComponent(key)))
+}
+
+export async function getYangJiBaoHoldings(): Promise<YangJiBaoPortfolio> {
+  const body = await requestJson('/api/connectors/yangjibao/holdings', { cache: 'no-store' }, HOLDINGS_SYNC_TIMEOUT_MS)
+  if (!record(body) || typeof body.synced_at !== 'string' || typeof body.fund_count !== 'number'
+    || !Array.isArray(body.funds)) return invalid()
+  for (const item of body.funds) {
+    if (!record(item) || typeof item.code !== 'string' || typeof item.name !== 'string') return invalid()
+    for (const value of [item.holding_amount, item.estimated_change_percent, item.latest_nav_change_percent]) {
+      if (value !== null && (typeof value !== 'number' || !Number.isFinite(value))) return invalid()
+    }
+    for (const value of [
+      item.share, item.cost_amount, item.cost_nav, item.estimated_amount,
+      item.latest_nav_amount, item.estimated_today_profit_amount,
+    ]) {
+      if (value != null && (typeof value !== 'number' || !Number.isFinite(value))) return invalid()
+    }
+    for (const value of [item.quote_time, item.nav_date]) {
+      if (value !== null && typeof value !== 'string') return invalid()
+    }
+  }
+  return body as unknown as YangJiBaoPortfolio
 }
 
 export async function updateConnectorConfig(
@@ -153,6 +200,7 @@ export async function installConnector(key: string): Promise<ConnectorDetail> {
 
 export interface AuthResult {
   auth_url: string
+  qr_content?: string
   output: string
   already_logged_in: boolean
   state: 'starting' | 'awaiting_user' | 'completed' | 'expired' | 'failed'
@@ -168,7 +216,10 @@ export async function authenticateConnector(key: string): Promise<AuthResult> {
 }
 
 export async function getConnectorAuthStatus(key: string): Promise<AuthResult> {
-  const body = await requestJson('/api/admin/connectors/' + encodeURIComponent(key) + '/auth/status')
+  const path = '/api/admin/connectors/' + encodeURIComponent(key) + '/auth/status'
+  const body = key === 'yangjibao'
+    ? await requestJson(path, { method: 'POST' }, CONNECTOR_QR_POLL_TIMEOUT_MS)
+    : await requestJson(path)
   if (!record(body)) return invalid()
   return body as unknown as AuthResult
 }
@@ -184,8 +235,8 @@ export function connectorHealthLabel(connector: ConnectorHealth & { enabled: boo
   return connector.status === 'connected' ? '健康' : '待确认'
 }
 
-export function connectorActionLabel(connector: ConnectorHealth): string {
-  if (connector.auth_action === 'authorize') return '去授权'
+export function connectorActionLabel(connector: ConnectorHealth & { key?: string }): string {
+  if (connector.auth_action === 'authorize') return connector.key === 'yangjibao' ? '扫码连接' : '去授权'
   if (connector.auth_action === 'configure') return '配置'
   return '重新检查'
 }

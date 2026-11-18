@@ -37,6 +37,36 @@ async def test_api_client_creation_does_not_verify_credentials() -> None:
     assert connector._get_secret("api_key") == "test-key"
 
 
+@pytest.mark.parametrize(("health_path", "expected_path"), [("", "/usage"), ("/custom", "/custom")])
+async def test_official_tavily_uses_readonly_usage_path(
+    monkeypatch: pytest.MonkeyPatch, health_path: str, expected_path: str
+) -> None:
+    """官方地址默认验证密钥，并保留已指定的健康检查路径。"""
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        """检查验证请求不执行搜索。"""
+        assert request.method == "GET" and request.url.path == expected_path
+        assert request.headers["Authorization"] == "Bearer test-key"
+        return httpx.Response(200, json={})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(
+        "app.connectors.api.httpx.AsyncClient",
+        lambda **kwargs: original(**kwargs, transport=httpx.MockTransport(transport)),
+    )
+    connector = ApiConnector(
+        key="tavily_search",
+        config={
+            "base_url": "https://api.tavily.com/",
+            "health_path": health_path,
+            "_secrets": {"api_key": "test-key"},
+        },
+        settings=Settings(_env_file=None),
+    )
+    status = await connector.check_health()
+    assert status.status == "connected" and status.auth_status == "authorized"
+
+
 @pytest.mark.parametrize("status_code, expected", [(200, "authorized"), (401, "required"), (503, "unknown")])
 async def test_readonly_api_check_classifies_response(
     monkeypatch: pytest.MonkeyPatch,

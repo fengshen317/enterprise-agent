@@ -19,6 +19,7 @@ dependencies = [
   "python-multipart>=0.0.33",
   "mcp>=1.12,<2",
   "cryptography>=44",
+  "akshare>=1.20.65,<1.21",
 ]
 
 [dependency-groups]

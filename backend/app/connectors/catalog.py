@@ -297,7 +297,25 @@ TAVILY = BuiltinConnector(
 )
 
 
-BUILTIN_CONNECTORS: tuple[BuiltinConnector, ...] = (TMEET, TAVILY)
+FUND_MARKET = BuiltinConnector(
+    key="fund_market",
+    kind="api",
+    name="基金行情",
+    description="通过 AKShare 查询 ETF 盘中行情、场外基金净值与可用的当日估值，无需 API Key。",
+    icon="📈",
+)
+
+
+YANGJIBAO = BuiltinConnector(
+    key="yangjibao",
+    kind="cli",
+    name="养基宝持仓",
+    description="通过微信扫码连接养基宝，读取当前绑定账号的持仓基金列表。",
+    icon="💼",
+)
+
+
+BUILTIN_CONNECTORS: tuple[BuiltinConnector, ...] = (TMEET, TAVILY, FUND_MARKET, YANGJIBAO)
 
 
 def get_builtin(key: str) -> BuiltinConnector | None:

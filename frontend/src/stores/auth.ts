@@ -17,10 +17,12 @@ export const useAuthStore = defineStore('auth', () => {
     setSecurityContext('', '')
   }
   function apply(value: api.Session): void {
-    session.value = value
     const remembered = localStorage.getItem('ea-workspace:' + value.user.id)
-    selectedWorkspaceId.value = value.workspaces.find(item => item.id === remembered)?.id ?? value.workspaces[0]?.id ?? ''
-    setSecurityContext(value.csrf_token, selectedWorkspaceId.value)
+    const workspaceId = value.workspaces.find(item => item.id === remembered)?.id ?? value.workspaces[0]?.id ?? ''
+    // 连接器监听空间变化后会立即发请求，先准备好请求头再更新响应式状态。
+    setSecurityContext(value.csrf_token, workspaceId)
+    session.value = value
+    selectedWorkspaceId.value = workspaceId
     initialized.value = true
   }
   async function restore(): Promise<boolean> {
@@ -53,8 +55,8 @@ export const useAuthStore = defineStore('auth', () => {
   }
   function selectWorkspace(id: string): void {
     if (!session.value?.workspaces.some(item => item.id === id)) throw new Error('不可访问该工作空间')
-    selectedWorkspaceId.value = id
     setSecurityContext(session.value.csrf_token, id)
+    selectedWorkspaceId.value = id
     localStorage.setItem('ea-workspace:' + session.value.user.id, id)
   }
   return { session, selectedWorkspaceId, initialized, authenticated, activeWorkspace, restore, signIn, signOut, selectWorkspace, clear }

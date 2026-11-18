@@ -82,6 +82,11 @@ class ToolSpec:
     source: Literal["builtin", "connector"] = "builtin"
     connector_key: str | None = None
     input_schema_override: dict[str, object] | None = None
+    owner_user_id: UUID | None = None
+
+    def allows_user(self, user_id: UUID | None) -> bool:
+        """私有工具仅允许服务端确认的绑定账号。"""
+        return self.owner_user_id is None or self.owner_user_id == user_id
 
     def __post_init__(self) -> None:
         """拒绝会在执行层产生歧义的能力声明。

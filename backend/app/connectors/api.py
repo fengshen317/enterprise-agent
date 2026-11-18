@@ -97,7 +97,12 @@ class ApiConnector:
         return (
             ConfigField(key="base_url", label="API 地址", field_type="text", required=True),
             ConfigField(key="api_key", label="API Key", field_type="secret", is_secret=True),
-            ConfigField(key="health_path", label="只读健康检查路径（GET，可选）", field_type="text"),
+            ConfigField(
+                key="health_path",
+                label="只读健康检查路径（GET，可选）",
+                field_type="text",
+                placeholder=self._default_health_path(),
+            ),
         )
 
     async def connect(self) -> ConnectorStatusInfo:
@@ -159,7 +164,7 @@ class ApiConnector:
         )
         if requires_key and not key:
             return health_failure("missing_api_key")
-        path = self._config.get("health_path")
+        path = self._config.get("health_path") or self._default_health_path()
         if not isinstance(path, str) or not path.startswith("/") or path.startswith("//"):
             return ConnectorStatusInfo(status="degraded", message="尚未配置只读健康检查接口，等待实际调用验证")
         headers = {}
@@ -180,6 +185,11 @@ class ApiConnector:
         except httpx.HTTPError:
             return health_failure("network_error")
         return ConnectorStatusInfo(status="connected", auth_status="authorized" if key else "not_required")
+
+    def _default_health_path(self) -> str:
+        """仅为 Tavily 官方地址自动启用无需发起搜索的用量检查。"""
+        base_url = str(self._config.get("base_url", "")).rstrip("/")
+        return "/usage" if self.key == "tavily_search" and base_url == "https://api.tavily.com" else ""
 
     def tool_specs(self, defs: list[ConnectorToolDef], policy: Mapping[str, ToolPolicyOverride]) -> list[ToolSpec]:
         """映射工具定义为 ToolSpec。

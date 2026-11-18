@@ -4,21 +4,26 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.connectors.catalog import BUILTIN_CONNECTORS, get_builtin
+from app.connectors.base import ConnectorError
+from app.connectors.catalog import BUILTIN_CONNECTORS, YANGJIBAO, get_builtin
 from app.connectors.registry import ConnectorRegistry
+from app.connectors.yangjibao import YangJiBaoConnector
 from app.core.errors import ApplicationError
 from app.models.config import IntegrationConfig
 from app.models.connector import Connector as ConnectorRow
+from app.schemas.auth import ResourceScope
 from app.schemas.connectors import (
     ConnectorDetail,
     ConnectorHealthView,
     ConnectorTestResult,
     ConnectorToolView,
     ConnectorView,
+    YangJiBaoPortfolioView,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,7 +58,7 @@ class ConnectorService:
                 key=d.key,
                 kind=d.kind,
                 name=d.name,
-                description=d.description,
+                description=YANGJIBAO.description if d.key == YANGJIBAO.key else d.description,
                 icon=d.icon,
                 enabled=d.enabled,
                 status=d.status,
@@ -64,11 +69,12 @@ class ConnectorService:
             for d in descriptors
         ]
 
-    async def get_detail(self, key: str) -> ConnectorDetail:
+    async def get_detail(self, key: str, *, user_id: UUID | None = None) -> ConnectorDetail:
         """获取连接器详情（含工具和配置值）。
 
         Args:
             key: 连接器标识。
+            user_id: 登录账号，用于提供个人持仓入口。
 
         Returns:
             连接器详情。
@@ -138,7 +144,7 @@ class ConnectorService:
             key=desc.key,
             kind=desc.kind,
             name=desc.name,
-            description=desc.description,
+            description=YANGJIBAO.description if desc.key == YANGJIBAO.key else desc.description,
             icon=desc.icon,
             enabled=desc.enabled,
             status=desc.status,
@@ -147,7 +153,24 @@ class ConnectorService:
             config_fields=config_fields,
             config_values=config_values,
             tools=tools,
+            can_view_holdings=(
+                desc.enabled
+                and user_id is not None
+                and isinstance(connector, YangJiBaoConnector)
+                and connector.owner == user_id
+            ),
         )
+
+    async def get_yangjibao_holdings(self, scope: ResourceScope) -> YangJiBaoPortfolioView:
+        """同步当前绑定账号的私有持仓，保留安全的失败提示。"""
+        connector = self._registry.resolve(YANGJIBAO.key)
+        if not isinstance(connector, YangJiBaoConnector):
+            raise ApplicationError("CONNECTOR_NOT_FOUND", "养基宝持仓连接器未启用", 404)
+        try:
+            return await connector.read_portfolio(scope.user_id)
+        except ConnectorError as exc:
+            status = {"not_logged_in": 409, "not_configured": 409, "timeout": 504}.get(exc.code, 502)
+            raise ApplicationError("YANGJIBAO_HOLDINGS_UNAVAILABLE", exc.message, status) from exc
 
     async def update_config(self, key: str, config: dict[str, Any], secrets: dict[str, str]) -> ConnectorDetail:
         """更新连接器配置（非密钥 + 密钥），并触发热更新。
@@ -166,6 +189,9 @@ class ConnectorService:
         desc = self._registry.descriptor(key)
         if desc is None:
             raise ApplicationError("CONNECTOR_NOT_FOUND", "连接器不存在", 404)
+
+        if key == YANGJIBAO.key:
+            raise ApplicationError("CONNECTOR_AUTH_REQUIRED", "养基宝持仓通过微信扫码配置", 409)
 
         async with self._factory.begin() as session:
             row = (await session.execute(select(ConnectorRow).where(ConnectorRow.key == key))).scalar_one_or_none()
@@ -232,26 +258,25 @@ class ConnectorService:
             **ConnectorHealthView.model_validate(desc, from_attributes=True).model_dump(),
         )
 
-    async def authenticate(self, key: str) -> dict[str, Any]:
-        """触发 CLI 账号认证（OAuth），返回授权信息。
-
-        对 CLI 连接器执行 auth login --no-browser，返回授权 URL。
-        对 API 连接器返回配置提示。
+    async def authenticate(self, key: str, scope: ResourceScope, *, poll: bool = False) -> dict[str, object]:
+        """用当前管理员的可信身份发起或继续连接器授权。
 
         Args:
             key: 连接器标识。
+            scope: 当前工作台用户及空间。
+            poll: 是否查询养基宝扫码进度并提交已确认的绑定。
 
         Returns:
-            认证信息（auth_url / status / message）。
+            已过滤的扫码或授权进度。
 
         Raises:
             ApplicationError: 连接器不存在或不支持认证。
         """
-        from app.connectors.base import ConnectorError
-
         if self._registry.descriptor(key) is None:
             raise ApplicationError("CONNECTOR_NOT_FOUND", "连接器不存在", 404)
         try:
+            if key == YANGJIBAO.key:
+                return await self._registry.authorize_yangjibao(scope, poll=poll)
             return await self._registry.authorize(key)
         except ConnectorError as exc:
             raise ApplicationError("CONNECTOR_AUTH_UNAVAILABLE", exc.message, 409) from exc

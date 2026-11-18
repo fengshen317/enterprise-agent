@@ -15,6 +15,7 @@ from app.schemas.connectors import (
     ConnectorSecretsInput,
     ConnectorTestResult,
     ConnectorView,
+    YangJiBaoPortfolioView,
 )
 from app.services.connector_service import ConnectorService
 
@@ -85,18 +86,29 @@ async def install_builtin(key: str, request: Request, scope: ScopeDependency) ->
 
 
 @router.get("/connectors/{key}", response_model=ConnectorDetail)
-async def get_connector(key: str, request: Request, scope: ScopeDependency) -> ConnectorDetail:
+async def get_connector(key: str, request: Request, response: Response, scope: ScopeDependency) -> ConnectorDetail:
     """读取连接器详情（含工具和配置值）。
 
     Args:
         key: 连接器标识。
         request: 应用请求。
+        response: 禁止缓存包含当前账号权限的详情。
         scope: 可信身份。
 
     Returns:
         连接器详情。
     """
-    return await service(request).get_detail(key)
+    response.headers["Cache-Control"] = "no-store"
+    return await service(request).get_detail(key, user_id=scope.user_id)
+
+
+@router.get("/connectors/yangjibao/holdings", response_model=YangJiBaoPortfolioView)
+async def get_yangjibao_holdings(
+    request: Request, response: Response, scope: ScopeDependency
+) -> YangJiBaoPortfolioView:
+    """获取绑定账号的持仓金额与行情，禁止缓存该响应。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await service(request).get_yangjibao_holdings(scope)
 
 
 class ConnectorUpdateInput(ConnectorConfigInput, ConnectorSecretsInput):
@@ -160,19 +172,40 @@ async def test_connection(key: str, request: Request, scope: ScopeDependency) ->
 
 
 @router.post("/admin/connectors/{key}/auth")
-async def authenticate(key: str, request: Request, scope: ScopeDependency) -> dict[str, Any]:
-    """触发 CLI 账号认证，返回授权 URL（管理员）。
+async def authenticate(key: str, request: Request, response: Response, scope: ScopeDependency) -> dict[str, object]:
+    """发起连接器授权，返回该服务的安全授权入口。
 
     Args:
         key: 连接器标识。
         request: 应用请求。
+        response: 禁止缓存授权入口。
         scope: 可信身份。
 
     Returns:
-        认证信息（auth_url / output）。
+        认证入口和状态。
     """
     await _require_admin(request, scope)
-    return await service(request).authenticate(key)
+    response.headers["Cache-Control"] = "no-store"
+    return await service(request).authenticate(key, scope)
+
+
+@router.post("/admin/connectors/yangjibao/auth/status")
+async def poll_yangjibao_authorization(
+    request: Request, response: Response, scope: ScopeDependency
+) -> dict[str, object]:
+    """轮询养基宝授权，确认后才为当前工作台账号保存凭据。
+
+    Args:
+        request: 应用请求。
+        response: 禁止缓存扫码数据。
+        scope: 当前可信用户和工作空间。
+
+    Returns:
+        可向扫码发起人展示的授权进度。
+    """
+    await _require_admin(request, scope)
+    response.headers["Cache-Control"] = "no-store"
+    return await service(request).authenticate("yangjibao", scope, poll=True)
 
 
 @router.get("/admin/connectors/{key}/auth/status")

@@ -7,6 +7,7 @@ import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
+from uuid import UUID
 
 from pydantic import BaseModel
 from sqlalchemy import select, update
@@ -24,11 +25,16 @@ from app.connectors.base import (
     health_exception,
     health_failure,
 )
+from app.connectors.catalog import FUND_MARKET, YANGJIBAO
+from app.connectors.yangjibao import BINDING_OWNER_KEY, YangJiBaoConnector
+from app.connectors.yangjibao_authorization import YangJiBaoScan
+from app.core.errors import ApplicationError
 
 if TYPE_CHECKING:
     from app.connectors.authorization import CliAuthorization
     from app.core.config import Settings
     from app.models.connector import Connector as ConnectorRow
+    from app.schemas.auth import ResourceScope
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +100,7 @@ class ConnectorDescriptor:
         if not self.enabled:
             return None
         if self.auth_status == "required":
-            return "authorize" if self.key == "tmeet" else "configure"
+            return "authorize" if self.key in {"tmeet", YANGJIBAO.key} else "configure"
         if self.last_error_code in {"not_configured", "permission_denied", "command_failed", "invalid_output"}:
             return "configure"
         return "retry" if self.status != "connected" else None
@@ -126,6 +132,7 @@ class ConnectorRegistry:
         self._checks: dict[str, asyncio.Task[None]] = {}
         self._monitor: asyncio.Task[None] | None = None
         self._authorizations: dict[str, CliAuthorization] = {}
+        self._yangjibao_scan: YangJiBaoScan | None = None
 
     async def load(self) -> None:
         """启动时读 connectors 表，对 enabled 实例连接并发现工具。
@@ -249,6 +256,8 @@ class ConnectorRegistry:
         Args:
             key: 连接器标识。
         """
+        if key == YANGJIBAO.key:
+            self._yangjibao_scan = None
         flow = self._authorizations.pop(key, None)
         if flow is not None:
             from app.connectors.authorization import CliAuthorization
@@ -454,7 +463,9 @@ class ConnectorRegistry:
                     await self._apply_health(connector.key, connector, info)
                 raise
             auth_status: ConnectorAuthStatus = "authorized"
-            if connector.kind == "cli" and connector.key != "tmeet":
+            if connector.key == FUND_MARKET.key or (
+                connector.kind == "cli" and connector.key not in {"tmeet", YANGJIBAO.key}
+            ):
                 auth_status = "not_required"
             async with self._locks.setdefault(connector.key, asyncio.Lock()):
                 await self._apply_health(
@@ -477,6 +488,7 @@ class ConnectorRegistry:
             if isinstance(flow, CliAuthorization):
                 await flow.close()
         self._authorizations.clear()
+        self._yangjibao_scan = None
         for connector in self._instances.values():
             try:
                 await connector.aclose()
@@ -498,6 +510,51 @@ class ConnectorRegistry:
         """
         async with self._auth_locks.setdefault(key, asyncio.Lock()):
             return await self._authorize(key)
+
+    async def authorize_yangjibao(self, scope: ResourceScope, *, poll: bool) -> dict[str, object]:
+        """串行更新扫码会话，避免重复取码和重复写入归属。"""
+        from app.models.connector import Connector as ConnectorRow
+
+        key = YANGJIBAO.key
+        async with self._locks.setdefault(key, asyncio.Lock()):
+            connector = self.resolve(key)
+            if not isinstance(connector, YangJiBaoConnector):
+                raise ConnectorError("not_configured", "请先安装并启用养基宝持仓连接器")
+            if connector.owner is not None and connector.owner != scope.user_id:
+                raise ApplicationError("CONNECTOR_AUTH_FORBIDDEN", "请由已绑定的工作台账号管理养基宝授权", 403)
+            flow = self._yangjibao_scan
+            if flow is not None:
+                flow.expire()
+                if flow.scope != scope:
+                    if flow.state == "awaiting_user":
+                        raise ApplicationError("CONNECTOR_AUTH_FORBIDDEN", "当前扫码会话属于其他账号或工作空间", 403)
+                    flow = None
+            if not poll:
+                if flow is None or flow.state != "awaiting_user":
+                    connector.require_scan_ready()
+                    flow = await YangJiBaoScan.start(scope)
+                    self._yangjibao_scan = flow
+                return flow.snapshot()
+            if flow is None:
+                return self.authorization_status(key)
+            token = await flow.poll()
+            if token is None:
+                return flow.snapshot()
+            async with self._factory.begin() as session:
+                row = await session.scalar(select(ConnectorRow).where(ConnectorRow.key == key).with_for_update())
+                if row is None or not row.enabled:
+                    raise ConnectorError("not_configured", "养基宝持仓连接器已停用")
+                bound_owner = row.config.get(BINDING_OWNER_KEY)
+                configured_owner = self._settings.yangjibao_owner_user_id
+                if configured_owner is None and bound_owner is not None and bound_owner != str(scope.user_id):
+                    raise ApplicationError("CONNECTOR_AUTH_FORBIDDEN", "养基宝已绑定到其他工作台账号", 403)
+                await asyncio.to_thread(connector.save_scan_token, scope.user_id, token)
+                if configured_owner is None:
+                    row.config = {**row.config, BINDING_OWNER_KEY: str(scope.user_id)}
+            await self._refresh(key)
+            desc = self.descriptor(key)
+            flow.finish("completed" if desc is not None and desc.auth_status == "authorized" else "failed")
+            return flow.snapshot()
 
     async def _authorize(self, key: str) -> dict[str, object]:
         """在授权锁内复用流程，避免重复点击创建多个登录进程。
@@ -578,6 +635,11 @@ class ConnectorRegistry:
             连接器实例；kind 未知返回空。
         """
         if row.kind == "api":
+            if row.key == FUND_MARKET.key:
+                from app.connectors.fund_market import FundMarketConnector
+
+                return FundMarketConnector(self._settings)
+
             from app.connectors.api import ApiConnector
             from app.models.config import IntegrationConfig
 
@@ -588,6 +650,10 @@ class ConnectorRegistry:
                 config["_secrets"] = {"api_key": secret.value}
             return cast(Connector, ApiConnector(key=row.key, config=config, settings=self._settings))
         if row.kind == "cli":
+            if row.key == YANGJIBAO.key:
+                bound_owner = row.config.get(BINDING_OWNER_KEY)
+                return YangJiBaoConnector(self._settings, UUID(bound_owner) if isinstance(bound_owner, str) else None)
+
             from app.connectors.cli import CliConnector
 
             return cast(Connector, CliConnector(key=row.key, config=row.config, settings=self._settings))

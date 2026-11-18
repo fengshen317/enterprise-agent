@@ -6,530 +6,390 @@ import { useConnectorsStore } from '../../stores/connectors'
 import {
   listBuiltinConnectors,
   connectorHealthLabel,
-  connectorActionLabel,
-  connectorTime,
-  testConnector,
   installConnector,
   setConnectorEnabled,
   type BuiltinConnector,
+  type ConnectorHealth,
   type ConnectorView,
 } from '../../api/connectors'
 import ConnectorConfigDialog from './ConnectorConfigDialog.vue'
+
+interface ConnectorCard {
+  key: string
+  name: string
+  description: string
+  icon: string
+  installed: boolean
+  connection?: ConnectorView
+}
 
 const auth = useAuthStore()
 const store = useConnectorsStore()
 const route = useRoute()
 const router = useRouter()
-const connectors = computed(() => store.connectors)
 const builtins = ref<BuiltinConnector[]>([])
-const loading = ref(false)
-const error = ref('')
+const search = ref('')
+const catalogLoading = ref(true)
+const catalogError = ref('')
+const operationError = ref('')
 const busy = ref('')
 const selectedKey = ref('')
-const showConfig = ref(false)
+const isAdmin = computed(() => auth.activeWorkspace?.role === 'admin' && auth.activeWorkspace.status === 'active')
+let active = true
 
-const isAdmin = () => auth.activeWorkspace?.role === 'admin' && auth.activeWorkspace.status === 'active'
+const visibleCards = computed(() => {
+  const cards = new Map<string, ConnectorCard>()
+  for (const builtin of builtins.value) cards.set(builtin.key, builtin)
+  for (const connection of store.connectors) {
+    cards.set(connection.key, { ...connection, installed: true, connection })
+  }
+  const query = search.value.trim().toLocaleLowerCase()
+  return [...cards.values()].filter(card =>
+    [card.name, card.description, card.key].some(text => text.toLocaleLowerCase().includes(query)),
+  )
+})
 
-const kindLabels: Record<string, string> = { cli: 'CLI', mcp: 'MCP', api: 'API' }
-
-function showError(value: unknown): void {
-  error.value = value instanceof Error ? value.message : '操作失败，请重试'
+function needsConnection(connector: ConnectorHealth & { enabled: boolean }): boolean {
+  return !connector.enabled || connector.auth_status === 'required'
+    || connector.auth_action === 'authorize' || connector.auth_action === 'configure'
 }
 
-async function load(): Promise<void> {
-  loading.value = true
-  error.value = ''
+function addLabel(card: ConnectorCard): string {
+  if (!isAdmin.value) return `请联系管理员连接${card.name}`
+  if (!card.installed) return `添加${card.name}`
+  return card.connection?.enabled ? `连接${card.name}` : `启用${card.name}`
+}
+
+function statusClass(connector: ConnectorView): string {
+  const status = connectorHealthLabel(connector)
+  if (status === '健康') return 'connectors__status--healthy'
+  return status === '连接异常' ? 'connectors__status--error' : 'connectors__status--pending'
+}
+
+async function loadCatalog(): Promise<void> {
+  catalogLoading.value = true
+  catalogError.value = ''
   try {
-    const [, builtinList] = await Promise.all([
-      store.refresh(true),
-      listBuiltinConnectors().catch(() => [] as BuiltinConnector[]),
-    ])
-    builtins.value = builtinList
+    builtins.value = await listBuiltinConnectors()
   } catch (value) {
-    showError(value)
+    catalogError.value = value instanceof Error ? value.message : '连接器目录加载失败'
   } finally {
-    loading.value = false
+    catalogLoading.value = false
   }
 }
 
-async function install(builtin: BuiltinConnector): Promise<void> {
-  if (busy.value || !isAdmin() || builtin.installed) return
-  busy.value = builtin.key
-  try {
-    await installConnector(builtin.key)
-    await load()
-  } catch (value) {
-    showError(value)
-  } finally {
-    busy.value = ''
-  }
+async function retry(): Promise<void> {
+  await Promise.all([loadCatalog(), store.refresh(true)])
 }
 
-function isInstalled(key: string): boolean {
-  return connectors.value.some((c) => c.key === key)
-}
-
-function openConfig(key: string): void {
-  selectedKey.value = key
-  showConfig.value = true
-}
-
-function onConfigClosed(): void {
-  showConfig.value = false
-  selectedKey.value = ''
-  if (route.query.connector) void router.replace({ query: { ...route.query, connector: undefined } })
-  void load()
-}
-
-async function act(connector: ConnectorView): Promise<void> {
-  if (!isAdmin() || busy.value) return
-  if (connector.auth_action === 'authorize' || connector.auth_action === 'configure') {
-    openConfig(connector.key)
+async function connect(card: ConnectorCard): Promise<void> {
+  if (!isAdmin.value || !store.scope || busy.value) return
+  if (card.connection?.enabled) {
+    selectedKey.value = card.key
     return
   }
-  busy.value = connector.key
+  const scope = store.scope
+  const current = () => active && scope === store.scope
+  busy.value = card.key
+  operationError.value = ''
   try {
-    await testConnector(connector.key)
-    await store.refresh(true)
-  } catch (value) { showError(value) } finally { busy.value = '' }
-}
-
-async function toggleEnabled(connector: ConnectorView): Promise<void> {
-  if (busy.value || !isAdmin()) return
-  busy.value = connector.key
-  try {
-    await setConnectorEnabled(connector.key, !connector.enabled)
-    await load()
+    if (!card.installed) await installConnector(card.key)
+    // 安装是独立操作，切换工作空间后由新页面中的用户继续启用。
+    if (!current()) return
+    const connector = await setConnectorEnabled(card.key, true)
+    if (current() && needsConnection(connector)) selectedKey.value = card.key
   } catch (value) {
-    showError(value)
+    if (current()) operationError.value = value instanceof Error ? value.message : '连接失败，请重试'
   } finally {
-    busy.value = ''
+    if (current()) {
+      await store.refresh(true)
+      busy.value = ''
+    }
   }
 }
 
-function statusClass(status: string): string {
-  return `connectors__status--${status}`
+function closeConfig(): void {
+  selectedKey.value = ''
+  if (route.query.connector) void router.replace({ query: { ...route.query, connector: undefined } })
 }
 
 watch(() => route.query.connector, key => {
-  if (typeof key === 'string' && key) openConfig(key)
+  if (typeof key === 'string' && key) selectedKey.value = key
 }, { immediate: true })
 onMounted(() => {
   store.acquire()
-  void listBuiltinConnectors().then(value => { builtins.value = value }).catch(showError)
+  void loadCatalog()
 })
-onUnmounted(store.release)
+onUnmounted(() => {
+  active = false
+  store.release()
+})
 </script>
 
 <template>
   <section class="connectors">
     <header class="connectors__heading">
-      <div>
-        <span class="connectors__eyebrow">CONNECTORS</span>
-        <h1>连接器</h1>
-        <p>集成外部工具与服务（CLI / MCP / API），为 Agent 提供扩展能力。</p>
-      </div>
+      <h1>连接器</h1>
+      <input
+        v-model="search"
+        class="connectors__search"
+        type="search"
+        aria-label="搜索连接器"
+        placeholder="搜索连接器"
+      />
     </header>
 
-    <p
-      v-if="error || store.error"
-      class="connectors__error"
-    >
-      {{ error || store.error }}
-    </p>
-    <p
-      v-if="loading || store.loading"
-      class="connectors__loading"
-    >
-      加载中…
-    </p>
-
     <div
-      v-if="connectors.length"
+      v-if="operationError || catalogError || store.error"
+      class="connectors__feedback"
+    >
+      <p role="alert">
+        {{ operationError || catalogError || store.error }}
+      </p>
+      <button
+        v-if="catalogError || store.error"
+        type="button"
+        class="connectors__text-button"
+        @click="retry"
+      >
+        重新加载
+      </button>
+    </div>
+
+    <p
+      v-if="catalogLoading || store.loading"
+      class="connectors__empty"
+      role="status"
+    >
+      正在加载连接器…
+    </p>
+    <div
+      v-else-if="visibleCards.length"
       class="connectors__grid"
     >
       <article
-        v-for="connector in connectors"
-        :key="connector.key"
+        v-for="card in visibleCards"
+        :key="card.key"
         class="connectors__card"
-        @click="openConfig(connector.key)"
+        :data-connector="card.key"
       >
-        <div class="connectors__card-header">
-          <span class="connectors__icon">{{ connector.icon || '⬡' }}</span>
-          <div class="connectors__card-meta">
-            <h3 class="connectors__card-name">
-              {{ connector.name }}
-            </h3>
-            <span class="connectors__kind">{{ kindLabels[connector.kind] ?? connector.kind }}</span>
-          </div>
-          <div class="connectors__card-actions">
-            <span :class="['connectors__status', statusClass(connector.status)]">
-              {{ connectorHealthLabel(connector) }}
-            </span>
-            <label
-              class="connectors__toggle"
-              @click.stop
+        <span
+          class="connectors__icon"
+          aria-hidden="true"
+        >{{ card.icon || '⬡' }}</span>
+        <div class="connectors__card-body">
+          <h2 class="connectors__card-name">
+            <button
+              v-if="card.connection"
+              type="button"
+              class="connectors__text-button"
+              @click="selectedKey = card.key"
             >
-              <input
-                type="checkbox"
-                :checked="connector.enabled"
-                :disabled="!isAdmin() || busy === connector.key"
-                @change.stop="toggleEnabled(connector)"
-              />
-              <span class="connectors__toggle-track" />
-            </label>
-          </div>
+              {{ card.name }}
+            </button>
+            <span v-else>{{ card.name }}</span>
+          </h2>
+          <p
+            class="connectors__card-desc"
+            :title="card.description"
+          >
+            {{ card.description }}
+          </p>
         </div>
-        <p class="connectors__card-desc">
-          {{ connector.description }}
-        </p>
-        <p class="connectors__tool-count">
-          最近检查 {{ connectorTime(connector.last_checked_at) }}
-        </p>
-        <p class="connectors__tool-count">
-          最近成功 {{ connectorTime(connector.last_success_at) }}
-        </p>
-        <div class="connectors__card-footer">
-          <span class="connectors__tool-count">{{ connector.tool_count }} 个工具</span>
-          <span
-            v-if="connector.last_error"
-            class="connectors__card-error"
-          >{{ connector.last_error }}</span>
+        <div class="connectors__actions">
+          <template v-if="card.connection && !needsConnection(card.connection)">
+            <span
+              :class="['connectors__status', statusClass(card.connection)]"
+              role="img"
+              :aria-label="connectorHealthLabel(card.connection)"
+              :title="connectorHealthLabel(card.connection)"
+            />
+            <button
+              type="button"
+              class="connectors__action connectors__action--manage"
+              :aria-label="`管理${card.name}`"
+              :title="`管理${card.name}`"
+              @click="selectedKey = card.key"
+            >
+              <span aria-hidden="true">···</span>
+            </button>
+          </template>
+          <button
+            v-else
+            type="button"
+            class="connectors__action connectors__action--add"
+            :disabled="!isAdmin || !store.scope || !!busy || !!store.error"
+            :aria-label="busy === card.key ? `正在连接${card.name}` : addLabel(card)"
+            :title="addLabel(card)"
+            @click="connect(card)"
+          >
+            <span aria-hidden="true">{{ busy === card.key ? '…' : '+' }}</span>
+          </button>
         </div>
-        <button
-          v-if="isAdmin() && connector.enabled"
-          class="connectors__install-btn"
-          :disabled="busy === connector.key"
-          @click.stop="act(connector)"
-        >
-          {{ connectorActionLabel(connector) }}
-        </button>
-        <p
-          v-else-if="connector.enabled && connector.auth_action"
-          class="connectors__tool-count"
-        >
-          请联系管理员处理
-        </p>
       </article>
     </div>
-
-    <div
-      v-else-if="!loading && !store.loading"
+    <p
+      v-else-if="!catalogError && !store.error"
       class="connectors__empty"
+      role="status"
     >
-      <p>暂无已安装连接器。可从下方目录安装。</p>
-    </div>
-
-    <!-- 内置连接器目录 -->
-    <section
-      v-if="builtins.length"
-      class="connectors__section"
-    >
-      <h2 class="connectors__section-title">
-        内置连接器目录
-      </h2>
-      <div class="connectors__grid">
-        <article
-          v-for="builtin in builtins"
-          :key="builtin.key"
-          class="connectors__card connectors__card--builtin"
-          @click="isInstalled(builtin.key) ? openConfig(builtin.key) : install(builtin)"
-        >
-          <div class="connectors__card-header">
-            <span class="connectors__icon">{{ builtin.icon || '⬡' }}</span>
-            <div class="connectors__card-meta">
-              <h3 class="connectors__card-name">
-                {{ builtin.name }}
-              </h3>
-              <span class="connectors__kind">{{ kindLabels[builtin.kind] ?? builtin.kind }}</span>
-            </div>
-            <div class="connectors__card-actions">
-              <span
-                v-if="isInstalled(builtin.key)"
-                class="connectors__status connectors__status--connected"
-              >
-                已安装
-              </span>
-              <button
-                v-else-if="isAdmin()"
-                class="connectors__install-btn"
-                :disabled="busy === builtin.key"
-                @click.stop="install(builtin)"
-              >
-                {{ busy === builtin.key ? '安装中…' : '+ 安装' }}
-              </button>
-              <span
-                v-else
-                class="connectors__status connectors__status--disabled"
-              >
-                未安装
-              </span>
-            </div>
-          </div>
-          <p class="connectors__card-desc">
-            {{ builtin.description }}
-          </p>
-          <div class="connectors__card-footer">
-            <span class="connectors__tool-count">
-              {{ builtin.config_fields.length }} 个配置项
-            </span>
-          </div>
-        </article>
-      </div>
-    </section>
+      {{ search.trim() ? '没有找到匹配的连接器' : '暂无可用连接器' }}
+    </p>
 
     <ConnectorConfigDialog
-      v-if="showConfig && selectedKey"
+      v-if="selectedKey"
       :key="selectedKey"
       :connector-key="selectedKey"
-      @close="onConfigClosed"
+      @close="closeConfig"
     />
   </section>
 </template>
 
 <style scoped lang="scss">
+@use '../../styles/variables' as *;
+
 .connectors {
-  padding: 2rem;
-  max-width: 1200px;
+  max-width: 1320px;
   margin: 0 auto;
+  padding: clamp(1.25rem, 3vw, 2.5rem);
+  color: $ink;
 
   &__heading {
     display: flex;
+    align-items: center;
     justify-content: space-between;
-    align-items: flex-start;
+    gap: 1rem;
+    flex-wrap: wrap;
     margin-bottom: 1.5rem;
 
-    h1 {
-      margin: 0.25rem 0;
-      font-size: 1.75rem;
-      font-weight: 700;
-    }
-
-    p {
-      margin: 0;
-      color: #666;
-      font-size: 0.95rem;
-    }
+    h1 { margin: 0; font-size: 1.65rem; line-height: 1.25; }
   }
 
-  &__eyebrow {
-    font-size: 0.75rem;
-    font-weight: 600;
-    letter-spacing: 0.12em;
-    color: #888;
-    text-transform: uppercase;
+  &__search {
+    width: min(100%, 16rem);
+    min-height: 2.5rem;
+    padding: 0.55rem 0.8rem;
+    border: 1px solid $line;
+    border-radius: 8px;
+    background: #fff;
+    color: inherit;
+    font: inherit;
+
+    &::placeholder { color: #56665c; }
   }
 
-  &__error {
-    color: #c0392b;
+  &__feedback {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
     margin-bottom: 1rem;
-    font-size: 0.9rem;
-  }
+    color: #963c2d;
+    font-size: 0.875rem;
 
-  &__loading {
-    color: #888;
-    margin-bottom: 1rem;
+    p { margin: 0; }
+    button { text-decoration: underline; }
   }
 
   &__grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-    gap: 1.25rem;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 315px), 1fr));
+    gap: 0.9rem;
   }
 
   &__card {
-    background: #fff;
-    border: 1px solid #e0e0e0;
-    border-radius: 12px;
-    padding: 1.25rem;
-    cursor: pointer;
-    transition: box-shadow 0.2s, border-color 0.2s;
-
-    &:hover {
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
-      border-color: #bbb;
-    }
-  }
-
-  &__card-header {
     display: flex;
     align-items: flex-start;
     gap: 0.75rem;
-    margin-bottom: 0.5rem;
+    min-width: 0;
+    padding: 1rem;
+    border: 1px solid $line;
+    border-radius: 12px;
+    background: #fff;
+    transition: border-color 160ms ease, background-color 160ms ease;
+
+    &:hover { border-color: #b2c7b8; background: #fcfefc; }
   }
 
   &__icon {
-    font-size: 1.75rem;
+    display: grid;
+    flex: 0 0 2.75rem;
+    height: 2.75rem;
+    place-items: center;
+    border-radius: 10px;
+    background: $paper;
+    font-size: 1.35rem;
     line-height: 1;
   }
 
-  &__card-meta {
-    flex: 1;
-    min-width: 0;
+  &__card-body { flex: 1; min-width: 0; }
+  &__card-name { margin: 0; font-size: 1rem; line-height: 1.35; overflow-wrap: anywhere; }
+  &__card-desc {
+    display: -webkit-box;
+    overflow: hidden;
+    margin: 0.25rem 0 0;
+    color: #56665c;
+    font-size: 0.8125rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
   }
 
-  &__card-name {
-    margin: 0;
-    font-size: 1.05rem;
-    font-weight: 600;
-  }
-
-  &__kind {
-    display: inline-block;
-    font-size: 0.7rem;
-    font-weight: 600;
-    padding: 0.15rem 0.5rem;
-    border-radius: 4px;
-    background: #f0f0f0;
-    color: #555;
-    margin-top: 0.25rem;
-  }
-
-  &__card-actions {
+  &__actions {
     display: flex;
+    flex: 0 0 auto;
     align-items: center;
-    gap: 0.5rem;
-    flex-shrink: 0;
+    gap: 0.45rem;
   }
 
   &__status {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    font-size: 0.75rem;
-    color: #888;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
 
-    &::before {
-      content: '';
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: #ccc;
-    }
-
-    &--connected::before { background: #27ae60; }
-    &--degraded::before { background: #f39c12; }
-    &--error::before { background: #e74c3c; }
-    &--disabled::before { background: #bbb; }
+    &--healthy { background: $green; }
+    &--pending { background: #aa660d; }
+    &--error { background: #a74336; }
   }
 
-  &__toggle {
-    position: relative;
-    display: inline-flex;
+  &__text-button {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: inherit;
     cursor: pointer;
 
-    input {
-      position: absolute;
-      opacity: 0;
-      width: 0;
-      height: 0;
-    }
+    &:hover { text-decoration: underline; text-underline-offset: 0.15em; }
   }
 
-  &__toggle-track {
-    width: 36px;
-    height: 20px;
-    border-radius: 10px;
-    background: #ddd;
-    position: relative;
-    transition: background 0.2s;
-
-    &::after {
-      content: '';
-      position: absolute;
-      top: 2px;
-      left: 2px;
-      width: 16px;
-      height: 16px;
-      border-radius: 50%;
-      background: #fff;
-      transition: transform 0.2s;
-    }
-
-    input:checked + & {
-      background: #27ae60;
-
-      &::after {
-        transform: translateX(16px);
-      }
-    }
-  }
-
-  &__card-desc {
-    font-size: 0.85rem;
-    color: #666;
-    margin: 0.5rem 0;
-    line-height: 1.5;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-
-  &__card-footer {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-top: 0.5rem;
-  }
-
-  &__tool-count {
-    font-size: 0.8rem;
-    color: #888;
-  }
-
-  &__card-error {
-    font-size: 0.75rem;
-    color: #c0392b;
-    max-width: 180px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  &__empty {
-    text-align: center;
-    padding: 3rem;
-    color: #888;
-  }
-
-  &__section {
-    margin-top: 2.5rem;
-    padding-top: 2rem;
-    border-top: 1px solid #eee;
-  }
-
-  &__section-title {
-    margin: 0 0 1.25rem;
-    font-size: 1.15rem;
-    font-weight: 600;
-    color: #333;
-  }
-
-  &__card--builtin {
-    cursor: default;
-  }
-
-  &__install-btn {
-    padding: 0.4rem 0.9rem;
-    border: 1px solid #27ae60;
-    background: #fff;
-    color: #27ae60;
-    border-radius: 6px;
-    font-size: 0.85rem;
-    font-weight: 600;
+  &__action {
+    display: grid;
+    width: 2.25rem;
+    height: 2.25rem;
+    padding: 0;
+    place-items: center;
+    border: 0;
+    border-radius: 8px;
+    color: $ink;
+    line-height: 1;
     cursor: pointer;
-    transition: all 0.2s;
 
-    &:hover:not(:disabled) {
-      background: #27ae60;
-      color: #fff;
-    }
-
-    &:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
+    &--add { background: #e4efe6; font-size: 1.45rem; }
+    &--manage { background: transparent; font-size: 1.35rem; font-weight: 700; }
+    &:hover:not(:disabled) { background: #d9ebde; }
+    &:disabled { opacity: 0.5; cursor: not-allowed; }
   }
+
+  &__search:focus-visible,
+  &__text-button:focus-visible,
+  &__action:focus-visible { outline: 2px solid $green; outline-offset: 2px; }
+
+  &__empty { margin: 0; padding: 2rem 0; color: #56665c; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connectors__card { transition: none; }
 }
 </style>

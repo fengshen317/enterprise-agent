@@ -1,6 +1,7 @@
 import { beforeEach, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from './auth'
+import { useConnectorsStore } from './connectors'
 import * as api from '../api/auth'
 import { ApiError, getWorkspaceId, setSecurityContext } from '../api/client'
 
@@ -37,6 +38,34 @@ it('退出后迟到的登录恢复响应不会恢复旧用户', async () => {
   expect(await first).toBe(false)
   expect(await second).toBe(false)
   expect(auth.authenticated).toBe(false)
+})
+it('恢复记忆空间与切换空间时，首个连接器请求携带正确的空间请求头', async () => {
+  localStorage.setItem('ea-workspace:u1', 'w2')
+  vi.mocked(api.getSession).mockResolvedValue(session)
+  const fetcher = vi.fn().mockImplementation(() => Promise.resolve(Response.json([])))
+  vi.stubGlobal('fetch', fetcher)
+  const auth = useAuthStore()
+  const connectors = useConnectorsStore()
+  connectors.acquire()
+  try {
+    expect(fetcher).not.toHaveBeenCalled()
+    await auth.restore()
+    expect(auth.selectedWorkspaceId).toBe('w2')
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect(fetcher).toHaveBeenNthCalledWith(1, expect.stringContaining('/api/connectors'), expect.objectContaining({
+      headers: expect.objectContaining({ 'X-Workspace-ID': 'w2', 'X-CSRF-Token': session.csrf_token }),
+    }))
+
+    auth.selectWorkspace('w1')
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(fetcher).toHaveBeenNthCalledWith(2, expect.stringContaining('/api/connectors'), expect.objectContaining({
+      headers: expect.objectContaining({ 'X-Workspace-ID': 'w1', 'X-CSRF-Token': session.csrf_token }),
+    }))
+    await connectors.refresh()
+  } finally {
+    connectors.release()
+    vi.unstubAllGlobals()
+  }
 })
 it('会话过期与网络故障分别处理', async () => {
   const auth = useAuthStore()

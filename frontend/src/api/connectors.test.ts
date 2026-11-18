@@ -20,4 +20,6 @@ it('授权启动允许健康检查和地址生成完成，状态查询采用默�
   expect(requestJson).toHaveBeenCalledWith('/api/admin/connectors/cli%2Fname/auth', { method: 'POST' }, 90_000)
   await getConnectorAuthStatus('cli/name')
   expect(requestJson).toHaveBeenLastCalledWith('/api/admin/connectors/cli%2Fname/auth/status')
+  await getConnectorAuthStatus('yangjibao')
+  expect(requestJson).toHaveBeenLastCalledWith('/api/admin/connectors/yangjibao/auth/status', { method: 'POST' }, 12_000)
 })

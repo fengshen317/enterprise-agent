@@ -1,6 +1,7 @@
 """真实 PostgreSQL 下的定时问答契约验证，模型使用可控替身。"""
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -12,12 +13,15 @@ from uuid import UUID
 
 import pytest
 from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy import update
+from httpx import ASGITransport, AsyncClient, MockTransport, Request, Response
+from langchain_deepseek import ChatDeepSeek
+from pydantic import SecretStr
+from sqlalchemy import delete, update
 
-from app.agents.provider import ChatHistory
+from app.agents.provider import ChatHistory, DeepSeekProvider
 from app.core.config import Settings
 from app.main import create_app
+from app.models.connector import Connector
 from app.models.schedule import ScheduledTask
 from tests.auth_helpers import add_identity, cleanup_identities
 
@@ -235,6 +239,105 @@ async def test_run_now_appends_to_fixed_conversation(schedules: tuple[FastAPI, A
     assert len(items) == 4
     assert [row["role"] for row in items] == ["user", "assistant", "user", "assistant"]
     assert items[0]["content"] == "请总结今天的重点事项。"
+
+
+async def test_enabled_fund_connector_runs_in_chat_and_schedule(
+    schedules: tuple[FastAPI, AsyncClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """在真实测试库验证安装、注册、两种运行入口和免认证状态。"""
+    app, client = schedules
+    key = "fund_market"
+    tool = "fund_market__fund_nav"
+
+    def fund_rows(method: str, arguments: dict[str, str]) -> list[dict[str, object]]:
+        """替换行情网络边界，保持真实解析和工具执行流程。"""
+        assert method == "fund_open_fund_info_em" and arguments["symbol"] == "110022"
+        return [{"净值日期": "2026-11-17", "单位净值": 3.027}]
+
+    def model_response(request: Request) -> Response:
+        """模型先调用基金工具，再根据真实工具结果生成简报。"""
+        body = json.loads(request.content)
+        assert tool in {item["function"]["name"] for item in body["tools"]}
+        tool_result = next((item["content"] for item in body["messages"] if item["role"] == "tool"), None)
+        if tool_result is None:
+            delta = {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "fund-quote",
+                        "type": "function",
+                        "function": {"name": tool, "arguments": '{"code":"110022","limit":1}'},
+                    }
+                ]
+            }
+            finish = "tool_calls"
+        else:
+            result = json.loads(tool_result)
+            assert result["ok"] and result["data"]["data_kind"] == "published_nav"
+            assert result["data"]["points"][0]["unit_nav"] == 3.027
+            delta, finish = {"content": "110022 最新披露单位净值 3.027。"}, "stop"
+        payload = {
+            "id": "fund-schedule-test",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "deepseek-chat",
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+        }
+        return Response(
+            200, text=f"data: {json.dumps(payload)}\n\ndata: [DONE]\n\n", headers={"Content-Type": "text/event-stream"}
+        )
+
+    def model(**kwargs: object) -> ChatDeepSeek:
+        """为每次运行提供独立客户端，由供应商适配器负责关闭。"""
+        return ChatDeepSeek(**kwargs, http_async_client=AsyncClient(transport=MockTransport(model_response)))
+
+    monkeypatch.setattr("app.connectors.fund_market._akshare_rows", fund_rows)
+    monkeypatch.setattr("langchain_deepseek.ChatDeepSeek", model)
+    runtime = app.state.chat_runtime
+    runtime.settings.deepseek_api_key = SecretStr("test-only")
+    runtime.provider = DeepSeekProvider(runtime.settings)
+    try:
+        templates = (await client.get("/api/connectors-builtin")).json()
+        assert any(item["key"] == key and not item["installed"] for item in templates)
+        installed = await client.post(f"/api/admin/connectors/{key}/install")
+        assert installed.status_code == 200 and installed.json()["status"] == "disabled"
+        assert not installed.json()["config_fields"]
+        enabled = await client.post(f"/api/admin/connectors/{key}/enabled", json={"enabled": True})
+        assert enabled.status_code == 200 and enabled.json()["auth_status"] == "not_required"
+        assert len(enabled.json()["tools"]) == 3
+
+        question = "请调用基金行情工具查 110022 的最新净值。"
+        conversation = await new_conversation(client)
+        run = await client.post(
+            f"/api/conversations/{conversation}/runs",
+            json={"content": question, "idempotency_key": "fund-chat-test"},
+        )
+        assert run.status_code == 202, run.text
+        created = await client.post("/api/schedules", json=schedule_body(conversation, prompt=question))
+        assert created.status_code == 201, created.text
+        first = await wait_terminal(client, run.json()["run"]["id"])
+        assert first["run"]["status"] == "completed", json.dumps(first, ensure_ascii=False)
+
+        scheduled = await client.post(f"/api/schedules/{created.json()['id']}/run")
+        assert scheduled.status_code == 202, scheduled.text
+        scheduled_id = scheduled.json()["run"]["id"]
+        for snapshot in (first, await wait_terminal(client, scheduled_id)):
+            assert snapshot["run"]["status"] == "completed", json.dumps(snapshot, ensure_ascii=False)
+            assert snapshot["message"]["content"] == "110022 最新披露单位净值 3.027。"
+            run_id = snapshot["run"]["id"]
+            calls = (await client.get(f"/api/runs/{run_id}/tool-calls")).json()
+            assert any(row["tool_name"] == tool and row["status"] == "completed" for row in calls)
+
+        detail = (await client.get(f"/api/connectors/{key}")).json()
+        assert detail["status"] == "connected" and detail["auth_status"] == "not_required"
+        disabled = await client.post(f"/api/admin/connectors/{key}/enabled", json={"enabled": False})
+        assert disabled.status_code == 200 and not disabled.json()["enabled"]
+        assert tool not in runtime.assembler.default_assembly().tool_keys
+    finally:
+        async with app.state.database.session_factory.begin() as session:
+            await session.execute(delete(Connector).where(Connector.key == key))
+        await app.state.connector_registry.refresh(key)
 
 
 async def test_due_claim_advances_schedule_and_skips_disabled(schedules: tuple[FastAPI, AsyncClient]) -> None:

@@ -47,12 +47,15 @@ class AgentAssembler:
         self.settings = settings
         self.knowledge_service = knowledge_service
 
-    def default_assembly(self, name: str = "序列助手", instructions: str = "") -> AgentAssembly:
+    def default_assembly(
+        self, name: str = "序列助手", instructions: str = "", *, user_id: UUID | None = None
+    ) -> AgentAssembly:
         """构造与当前产品能力一致的内置 Agent，保证旧对话行为不变。
 
         Args:
             name: 内置 Agent 名称。
             instructions: 可选附加指令。
+            user_id: 可信用户；缺少身份时只装配公开工具。
 
         Returns:
             运行能力快照。
@@ -61,7 +64,7 @@ class AgentAssembler:
         tools = tuple(
             item
             for item in self.registry.catalog()
-            if item.risk == "read" or item.key == SET_SCHEDULE_ENABLED_TOOL
+            if item.allows_user(user_id) and (item.risk == "read" or item.key == SET_SCHEDULE_ENABLED_TOOL)
         )
         digest = hashlib.sha256(instructions.encode("utf-8")).hexdigest()
         snapshot = self._snapshot(
@@ -104,7 +107,7 @@ class AgentAssembler:
             ApplicationError: Agent 不存在、不可读或已归档。
         """
         if agent_profile_id is None:
-            return self.default_assembly()
+            return self.default_assembly(user_id=scope.user_id)
         async with self.factory() as session:
             agent = await self._readable_agent(session, scope, agent_profile_id)
             if agent.status != "active":
@@ -229,7 +232,12 @@ class AgentAssembler:
             if row.kind != "tool":
                 continue
             spec = self.registry.resolve(row.capability_key)
-            if spec is not None and not spec.system and policies.get(spec.key, True):
+            if (
+                spec is not None
+                and not spec.system
+                and spec.allows_user(scope.user_id)
+                and policies.get(spec.key, True)
+            ):
                 tool_map[spec.key] = spec
         tools = tuple(tool_map.values())
         skills = await self._skills(session, capabilities, set(tool_map))
@@ -454,7 +462,7 @@ class AgentAssembler:
                 if not isinstance(key, str):
                     continue
                 spec = self.registry.resolve(key)
-                if spec is not None and not spec.system and policies.get(key, True):
+                if spec is not None and not spec.system and spec.allows_user(scope.user_id) and policies.get(key, True):
                     tools.append(spec)
         skills: list[SkillSnapshot] = []
         tool_keys = {item.key for item in tools}

@@ -315,6 +315,8 @@ class ToolExecutor:
             async with asyncio.timeout(spec.timeout_seconds):
                 async with self.factory() as session:
                     scope, conversation_id = await self._scope_row(session)
+                if not spec.allows_user(scope.user_id):
+                    raise ApplicationError("TOOL_NOT_ALLOWED", "当前工具未获授权", 403)
                 result = await spec.handler(self._context(scope, conversation_id), arguments)
             audit = spec.audit(arguments, result)
             raw_days = getattr(arguments, "days", None)

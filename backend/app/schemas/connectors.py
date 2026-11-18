@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
 
 
 class ConnectorHealthView(BaseModel):
@@ -54,6 +54,33 @@ class ConnectorDetail(ConnectorHealthView):
     config_fields: list[dict[str, Any]] = Field(default_factory=list)
     config_values: dict[str, str] = Field(default_factory=dict)
     tools: list[ConnectorToolView] = Field(default_factory=list)
+    can_view_holdings: bool = False
+
+
+class YangJiBaoHoldingView(BaseModel):
+    """绑定账号的基金持仓与行情。"""
+
+    code: str
+    name: str
+    holding_amount: FiniteFloat | None
+    estimated_change_percent: FiniteFloat | None
+    latest_nav_change_percent: FiniteFloat | None
+    quote_time: str | None
+    nav_date: str | None
+    share: FiniteFloat | None = None
+    cost_amount: FiniteFloat | None = None
+    cost_nav: FiniteFloat | None = None
+    estimated_amount: FiniteFloat | None = None
+    latest_nav_amount: FiniteFloat | None = None
+    estimated_today_profit_amount: FiniteFloat | None = None
+
+
+class YangJiBaoPortfolioView(BaseModel):
+    """页面一次同步得到的持仓列表。"""
+
+    synced_at: datetime
+    fund_count: int
+    funds: list[YangJiBaoHoldingView]
 
 
 class ConnectorConfigInput(BaseModel):

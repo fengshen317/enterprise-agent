@@ -431,6 +431,7 @@ class AgentService:
                 used_by_agents=int(used.get(spec.key, 0)),
             )
             for spec in self.registry.catalog()
+            if spec.allows_user(scope.user_id)
         ]
 
     async def get_tool(self, scope: ResourceScope, key: str) -> ToolView:
@@ -466,7 +467,7 @@ class AgentService:
             ApplicationError: 非管理员或工具不存在。
         """
         spec = self.registry.resolve(key)
-        if spec is None or spec.system:
+        if spec is None or spec.system or not spec.allows_user(scope.user_id):
             raise ApplicationError("TOOL_NOT_FOUND", "工具不存在", 404)
         async with self.factory.begin() as session:
             role = await self._role(session, scope)
