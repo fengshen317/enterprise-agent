@@ -6,7 +6,7 @@ import SchedulesView from './SchedulesView.vue'
 import * as api from '../api/schedules'
 import * as chat from '../api/chat'
 
-vi.mock('../api/schedules', () => ({ listSchedules: vi.fn(), createSchedule: vi.fn(), updateSchedule: vi.fn(), updateScheduleWeChatPush: vi.fn(), deleteSchedule: vi.fn(), runScheduleNow: vi.fn() }))
+vi.mock(import('../api/schedules'), async original => ({ ...await original(), listSchedules: vi.fn(), getSchedule: vi.fn(), createSchedule: vi.fn(), updateSchedule: vi.fn(), updateScheduleEnabled: vi.fn(), updateScheduleWeChatPush: vi.fn(), deleteSchedule: vi.fn(), runScheduleNow: vi.fn() }))
 vi.mock('../api/chat', () => ({ listConversations: vi.fn(), createConversation: vi.fn() }))
 
 const schedule: api.Schedule = {
@@ -17,6 +17,9 @@ const schedule: api.Schedule = {
   prompt: '总结今天的重点',
   cron_expression: '0 9 * * *',
   timezone: 'Asia/Shanghai',
+  calendar_mode: 'all_days',
+  calendar_waiting_year: null,
+  revision: 1,
   enabled: true,
   push_to_wechat: false,
   next_run_at: '2026-11-12T01:00:00Z',
@@ -35,14 +38,15 @@ beforeEach(() => {
   vi.mocked(chat.createConversation).mockResolvedValue({ id: 'c2', title: '新对话', status: 'active', updated_at: '2026-11-11T00:00:00Z' })
   vi.mocked(api.createSchedule).mockResolvedValue(schedule)
   vi.mocked(api.updateSchedule).mockResolvedValue({ ...schedule, enabled: false })
+  vi.mocked(api.updateScheduleEnabled).mockResolvedValue({ ...schedule, enabled: false })
   vi.mocked(api.updateScheduleWeChatPush).mockResolvedValue({ ...schedule, push_to_wechat: true })
   vi.mocked(api.deleteSchedule).mockResolvedValue()
   vi.mocked(api.runScheduleNow).mockResolvedValue({ run: { id: 'r1', conversation_id: 'c1', status: 'pending', model: 'test', error_code: null, error_message: null }, message: { id: 'm1', conversation_id: 'c1', run_id: 'r1', sequence: 2, role: 'assistant', content: '', status: 'streaming' } })
 })
 
-async function setup() {
+async function setup(path = '/schedules') {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/schedules', component: SchedulesView }, { path: '/chat/:id', component: { template: '<div>问答</div>' } }] })
-  await router.push('/schedules')
+  await router.push(path)
   const wrapper = mount(SchedulesView, { global: { plugins: [createPinia(), router] } })
   await flushPromises()
   return wrapper
@@ -62,6 +66,7 @@ it('创建任务时提交固定对话、Cron 和时区', async () => {
   await wrapper.findAll('.schedules__primary')[0]!.trigger('click')
   await wrapper.get('[name="scheduleName"]').setValue('每日晨报')
   await wrapper.get('[name="schedulePrompt"]').setValue('总结今天的重点')
+  await wrapper.get('[name="scheduleCalendar"]').setValue('cn_workday')
   await wrapper.get('form.schedules__form').trigger('submit')
   await flushPromises()
   expect(api.createSchedule).toHaveBeenCalledWith({
@@ -70,6 +75,7 @@ it('创建任务时提交固定对话、Cron 和时区', async () => {
     conversation_id: 'c1',
     cron_expression: '0 9 * * *',
     timezone: 'Asia/Shanghai',
+    calendar_mode: 'cn_workday',
     enabled: true,
     push_to_wechat: false,
   })
@@ -103,15 +109,8 @@ it('行内可以切换微信推送、停用、立即执行和删除', async () =
   actions = wrapper.findAll('.schedules__row-actions button')
   await actions[3]!.trigger('click')
   await flushPromises()
-  expect(api.updateSchedule).toHaveBeenCalledWith('s1', {
-    name: '晨报',
-    prompt: '总结今天的重点',
-    conversation_id: 'c1',
-    cron_expression: '0 9 * * *',
-    timezone: 'Asia/Shanghai',
-    enabled: false,
-    push_to_wechat: false,
-  })
+  expect(api.updateScheduleEnabled).toHaveBeenCalledWith('s1', false)
+  expect(api.updateSchedule).not.toHaveBeenCalled()
   actions = wrapper.findAll('.schedules__row-actions button')
   await actions[0]!.trigger('click')
   await flushPromises()
@@ -137,8 +136,36 @@ it('编辑会回填并提交完整字段', async () => {
     conversation_id: 'c1',
     cron_expression: '0 9 * * *',
     timezone: 'Asia/Shanghai',
+    calendar_mode: 'all_days',
+    revision: 1,
     enabled: true,
     push_to_wechat: false,
   })
+  wrapper.unmount()
+})
+
+it('长指令在列表只占两行，详情保留全文并标明等待交易日历', async () => {
+  const prompt = '监控市场。\n'.repeat(150)
+  vi.mocked(api.listSchedules).mockResolvedValue([
+    { ...schedule, prompt, calendar_mode: 'cn_a_share', calendar_waiting_year: 2027, next_run_at: null },
+  ])
+  const wrapper = await setup()
+  expect(wrapper.get('.schedules__excerpt').text().length).toBeLessThan(130)
+  expect(wrapper.get('details').attributes('open')).toBeUndefined()
+  expect(wrapper.get('.schedules__full-prompt').element.textContent?.trim()).toBe(prompt.trim())
+  expect(wrapper.text()).toContain('等待 2027 年日历')
+  wrapper.unmount()
+})
+
+it('按链接从服务端读取所选任务，支持首页以外的历史任务', async () => {
+  vi.mocked(api.getSchedule).mockResolvedValue({ ...schedule, id: 's2', name: '历史任务' })
+  const wrapper = await setup('/schedules?schedule=s2')
+  expect(api.getSchedule).toHaveBeenCalledWith('s2')
+  expect(api.listSchedules).not.toHaveBeenCalled()
+  expect(wrapper.text()).toContain('历史任务')
+  await wrapper.get('a[href="/schedules"]').trigger('click')
+  await flushPromises()
+  expect(wrapper.text()).toContain('晨报')
+  expect(wrapper.text()).not.toContain('历史任务')
   wrapper.unmount()
 })

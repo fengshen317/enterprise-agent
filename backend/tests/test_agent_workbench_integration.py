@@ -1,5 +1,6 @@
 """Agent 配置、技能版本与工具目录的真实数据库验收。"""
 
+from dataclasses import replace
 from uuid import UUID
 
 import httpx
@@ -7,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
 
+from app.core.errors import ApplicationError
 from app.models.conversation import Run
 from app.models.identity import Workspace
 from app.schemas.chat import RunCreate
@@ -208,6 +210,16 @@ async def test_conversation_binding_and_run_snapshot(
         "test",
         app.state.test_scope,
     )
+    assembler = app.state.chat_runtime.assembler
+    legacy = await assembler.assemble_for_run(pending.run.id)
+    assert legacy.agent_id == UUID(second_id) and not legacy.tool_keys
+    async with app.state.database.session_factory.begin() as session:
+        stored_run = await session.get(Run, pending.run.id)
+        assert stored_run is not None
+        stored_run.agent_snapshot = {"schema": 1}
+    with pytest.raises(ApplicationError) as invalid:
+        await assembler.assemble_for_run(pending.run.id)
+    assert invalid.value.code == "AGENT_ASSEMBLY_FAILED"
     busy = await client.post(f"/api/conversations/{conversation_id}/agent", json={"agent_profile_id": first_id})
     assert busy.status_code == 409
     await app.state.chat_runtime.store.cancel(pending.run.id)
@@ -274,15 +286,32 @@ async def test_tool_catalog_policy_and_skill_subset(
     app, client, _ = chat
     scope = app.state.test_scope
     slug = await workspace_slug(app, scope.workspace_id)
+    registry = app.state.agent_service.registry
+    builtin_tool = registry.resolve("get_my_run_stats")
+    assert builtin_tool is not None
+    registry.register(
+        replace(
+            builtin_tool, key="test_connector_stats", source="connector",
+            connector_key="test_connector", owner_user_id=scope.user_id,
+        )
+    )
     tools = await client.get("/api/tools")
     assert tools.status_code == 200
     catalog = {item["key"]: item for item in tools.json()}
     assert catalog["get_my_run_stats"]["approval"] == "never"
     assert catalog["get_my_run_stats"]["risk"] == "read"
     assert "properties" in catalog["get_my_run_stats"]["input_schema"]
+    assert catalog["get_my_run_stats"]["connector_key"] is None
+    assert catalog["test_connector_stats"]["connector_key"] == "test_connector"
+    connector_tool = await client.get("/api/tools/test_connector_stats")
+    assert connector_tool.status_code == 200
+    assert connector_tool.json()["connector_key"] == "test_connector"
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://member") as member:
         await add_identity(app, member, workspace=slug, role="member")
+        member_tools = await member.get("/api/tools")
+        assert member_tools.status_code == 200
+        assert all(item["key"] != "test_connector_stats" for item in member_tools.json())
         denied = await member.post("/api/admin/tools/get_my_run_stats", json={"enabled": False})
         assert denied.status_code == 403
     disabled = await client.post("/api/admin/tools/get_my_run_stats", json={"enabled": False})

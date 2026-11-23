@@ -177,7 +177,7 @@ class AgentService:
             role = await self._role(session, scope)
             if body.visibility == "workspace" and role != "admin":
                 raise ApplicationError("AGENT_ADMIN_REQUIRED", "只有空间管理员可以创建空间 Agent", 403)
-            await self._validate_bindings(session, scope, body)
+            skill_versions = await self._validate_bindings(session, scope, body)
             agent = AgentProfile(
                 workspace_id=scope.workspace_id,
                 owner_user_id=scope.user_id,
@@ -187,7 +187,7 @@ class AgentService:
                 instructions=body.instructions,
                 visibility=body.visibility,
                 status=body.status,
-                model=body.model or self.settings.deepseek_model,
+                model=body.model or self.settings.active_llm_model,
                 allow_planning=body.allow_planning,
                 allow_delegation=body.allow_delegation,
                 knowledge_scope=self._knowledge_scope(body),
@@ -195,7 +195,7 @@ class AgentService:
             )
             session.add(agent)
             await session.flush()
-            await self._replace_capabilities(session, agent, body)
+            await self._replace_capabilities(session, agent, body, skill_versions)
             await session.flush()
             return await self._view(session, agent, scope, role)
 
@@ -232,21 +232,21 @@ class AgentService:
                 raise ApplicationError("AGENT_VERSION_CONFLICT", "Agent 已被其他人修改，请刷新后重试", 409)
             if body.visibility == "workspace" and role != "admin":
                 raise ApplicationError("AGENT_ADMIN_REQUIRED", "只有空间管理员可以发布空间 Agent", 403)
-            await self._validate_bindings(session, scope, body)
+            skill_versions = await self._validate_bindings(session, scope, body)
             agent.name = body.name
             agent.description = body.description
             agent.icon = body.icon
             agent.instructions = body.instructions
             agent.visibility = body.visibility
             agent.status = body.status
-            agent.model = body.model or self.settings.deepseek_model
+            agent.model = body.model or self.settings.active_llm_model
             agent.allow_planning = body.allow_planning
             agent.allow_delegation = body.allow_delegation
             agent.knowledge_scope = self._knowledge_scope(body)
             agent.starter_prompts = body.starter_prompts
             agent.version += 1
             agent.updated_at = datetime.now(UTC)
-            await self._replace_capabilities(session, agent, body)
+            await self._replace_capabilities(session, agent, body, skill_versions)
             await session.flush()
             return await self._view(session, agent, scope, role)
 
@@ -376,7 +376,7 @@ class AgentService:
         return {"mode": "selected", "kb_ids": [str(item) for item in body.knowledge_base_ids]}
 
     async def list_tools(self, scope: ResourceScope) -> list[ToolView]:
-        """列出内置工具目录与当前空间启用状态。
+        """列出工具目录与当前空间启用状态。
 
         Args:
             scope: 可信用户和空间。
@@ -429,6 +429,7 @@ class AgentService:
                 input_schema=dict(spec.args_model.model_json_schema()),
                 enabled=bool(policies.get(spec.key, True)),
                 used_by_agents=int(used.get(spec.key, 0)),
+                connector_key=spec.connector_key,
             )
             for spec in self.registry.catalog()
             if spec.allows_user(scope.user_id)
@@ -496,13 +497,18 @@ class AgentService:
                 row.updated_at = datetime.now(UTC)
         return await self.get_tool(scope, key)
 
-    async def _validate_bindings(self, session: AsyncSession, scope: ResourceScope, body: AgentInput) -> None:
+    async def _validate_bindings(
+        self, session: AsyncSession, scope: ResourceScope, body: AgentInput
+    ) -> dict[UUID, UUID]:
         """校验工具、技能和知识库均存在且不扩大权限。
 
         Args:
             session: 当前事务。
             scope: 可信用户和空间。
             body: Agent 输入。
+
+        Returns:
+            可绑定的技能标识与不可变版本主键。
 
         Raises:
             ApplicationError: 绑定不合法或越权。
@@ -533,7 +539,7 @@ class AgentService:
         if body.knowledge_mode == "selected" and not body.knowledge_base_ids:
             raise ApplicationError("KNOWLEDGE_SCOPE_EMPTY", "指定知识库范围时至少选择一个知识库", 422)
         await self._validate_knowledge(session, scope, body)
-        await self._validate_skills(session, scope, body)
+        return await self._validate_skills(session, scope, body)
 
     async def _validate_knowledge(self, session: AsyncSession, scope: ResourceScope, body: AgentInput) -> None:
         """确认知识库可读，且空间 Agent 不绑定他人私有库。
@@ -564,7 +570,7 @@ class AgentService:
             if body.visibility == "workspace" and visibility != "workspace":
                 raise ApplicationError("AGENT_KNOWLEDGE_SCOPE", "空间 Agent 只能绑定空间知识库", 422)
 
-    async def _validate_skills(self, session: AsyncSession, scope: ResourceScope, body: AgentInput) -> None:
+    async def _validate_skills(self, session: AsyncSession, scope: ResourceScope, body: AgentInput) -> dict[UUID, UUID]:
         """确认技能已发布、可读，且声明的工具已被 Agent 绑定。
 
         Args:
@@ -572,32 +578,44 @@ class AgentService:
             scope: 可信用户和空间。
             body: Agent 输入。
 
+        Returns:
+            可绑定的技能标识与不可变版本主键。
+
         Raises:
             ApplicationError: 技能不可用或越权。
         """
         if not body.skills:
-            return
-        ids = [item.id for item in body.skills]
+            return {}
+        requested = {item.id: item.version for item in body.skills}
+        if len(requested) != len(body.skills):
+            raise ApplicationError("DUPLICATE_SKILL", "同一技能只能绑定一次", 422)
+        ids = list(requested)
         rows = list(
-            await session.scalars(select(Skill).where(Skill.workspace_id == scope.workspace_id, Skill.id.in_(ids)))
+            await session.scalars(
+                select(Skill)
+                .where(Skill.workspace_id == scope.workspace_id, Skill.id.in_(ids))
+                .order_by(Skill.id)
+                .with_for_update(read=True)
+            )
         )
         if len(rows) != len(set(ids)):
             raise ApplicationError("SKILL_NOT_FOUND", "技能不存在", 404)
         tool_keys = set(body.tool_keys)
+        versions: dict[UUID, UUID] = {}
         for skill in rows:
             if skill.visibility == "private" and skill.owner_user_id != scope.user_id:
                 raise ApplicationError("SKILL_ACCESS_DENIED", "无权使用该技能", 403)
             if body.visibility == "workspace" and skill.visibility != "workspace":
                 raise ApplicationError("AGENT_SKILL_SCOPE", "空间 Agent 只能绑定空间技能", 422)
-            version = await session.scalar(
-                select(SkillVersion)
-                .where(
-                    SkillVersion.skill_id == skill.id,
-                    SkillVersion.published_at.is_not(None),
-                )
-                .order_by(SkillVersion.version.desc())
-                .limit(1)
+            target = requested[skill.id]
+            query = select(SkillVersion).where(
+                SkillVersion.skill_id == skill.id, SkillVersion.published_at.is_not(None)
             )
+            if target is not None:
+                if skill.status == "archived":
+                    raise ApplicationError("SKILL_ARCHIVED", "无法绑定已归档技能", 422)
+                query = query.where(SkillVersion.version == target)
+            version = await session.scalar(query.order_by(SkillVersion.version.desc()).limit(1))
             if version is None:
                 raise ApplicationError("SKILL_NOT_PUBLISHED", f"技能未发布：{skill.name}", 422)
             missing = set(version.tool_keys) - tool_keys
@@ -608,40 +626,30 @@ class AgentService:
                     422,
                 )
 
-    async def _replace_capabilities(self, session: AsyncSession, agent: AgentProfile, body: AgentInput) -> None:
+            versions[skill.id] = version.id
+        return versions
+
+    async def _replace_capabilities(
+        self, session: AsyncSession, agent: AgentProfile, body: AgentInput, skill_versions: dict[UUID, UUID]
+    ) -> None:
         """原子替换 Agent 的工具与技能绑定。
 
         Args:
             session: 当前事务。
             agent: 已持久化 Agent。
             body: 新配置。
+            skill_versions: 本事务已校验的确切技能版本主键。
         """
         await session.execute(delete(AgentCapability).where(AgentCapability.agent_profile_id == agent.id))
         for key in body.tool_keys:
             session.add(AgentCapability(agent_profile_id=agent.id, kind="tool", capability_key=key))
         for item in body.skills:
-            skill = await session.scalar(
-                select(Skill).where(Skill.id == item.id, Skill.workspace_id == agent.workspace_id)
-            )
-            if skill is None:
-                continue
-            version = await session.scalar(
-                select(SkillVersion)
-                .where(
-                    SkillVersion.skill_id == skill.id,
-                    SkillVersion.published_at.is_not(None),
-                )
-                .order_by(SkillVersion.version.desc())
-                .limit(1)
-            )
-            if version is None:
-                continue
             session.add(
                 AgentCapability(
                     agent_profile_id=agent.id,
                     kind="skill",
-                    capability_key=str(skill.id),
-                    skill_version_id=version.id,
+                    capability_key=str(item.id),
+                    skill_version_id=skill_versions[item.id],
                     activation=item.activation,
                 )
             )

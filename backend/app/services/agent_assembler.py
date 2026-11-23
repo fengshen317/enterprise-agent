@@ -9,11 +9,15 @@ from uuid import UUID
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.capabilities.builtins.scheduled import SET_SCHEDULE_ENABLED_TOOL
+from app.capabilities.builtins.authoring import CREATE_PRIVATE_AGENT, CREATE_PRIVATE_SKILL, PUBLISH_PRIVATE_SKILL
+from app.capabilities.builtins.deliverables import CREATE_DELIVERABLE
+from app.capabilities.builtins.scheduled import CREATE_SCHEDULE_TOOL, SET_SCHEDULE_ENABLED_TOOL, UPDATE_SCHEDULE_TOOL
 from app.capabilities.registry import ToolRegistry
 from app.capabilities.spec import AgentAssembly, SkillSnapshot, ToolSpec
+from app.connectors.catalog import PERSONAL_CONNECTORS
 from app.core.errors import ApplicationError
 from app.models.agent import AgentCapability, AgentProfile, WorkspaceToolPolicy
+from app.models.connector import PersonalConnectorBinding
 from app.models.conversation import Conversation, Run
 from app.models.knowledge import KnowledgeBase
 from app.models.skill import Skill, SkillVersion
@@ -22,6 +26,19 @@ from app.schemas.auth import ResourceScope
 if TYPE_CHECKING:
     from app.core.config import Settings
     from app.services.knowledge import KnowledgeService
+
+
+DEFAULT_WRITE_TOOLS = frozenset(
+    {
+        CREATE_DELIVERABLE,
+        CREATE_PRIVATE_SKILL,
+        PUBLISH_PRIVATE_SKILL,
+        CREATE_PRIVATE_AGENT,
+        CREATE_SCHEDULE_TOOL,
+        SET_SCHEDULE_ENABLED_TOOL,
+        UPDATE_SCHEDULE_TOOL,
+    }
+)
 
 
 class AgentAssembler:
@@ -48,7 +65,13 @@ class AgentAssembler:
         self.knowledge_service = knowledge_service
 
     def default_assembly(
-        self, name: str = "序列助手", instructions: str = "", *, user_id: UUID | None = None
+        self,
+        name: str = "序列助手",
+        instructions: str = "",
+        *,
+        user_id: UUID | None = None,
+        bound_connectors: frozenset[str] = frozenset(),
+        disabled_tools: frozenset[str] = frozenset(),
     ) -> AgentAssembly:
         """构造与当前产品能力一致的内置 Agent，保证旧对话行为不变。
 
@@ -56,15 +79,20 @@ class AgentAssembler:
             name: 内置 Agent 名称。
             instructions: 可选附加指令。
             user_id: 可信用户；缺少身份时只装配公开工具。
+            bound_connectors: 当前空间中已绑定给本人的个人应用。
+            disabled_tools: 当前空间管理员停用的工具。
 
         Returns:
             运行能力快照。
         """
-        # 内置助手保持最小权限；唯一例外是本人定时任务启停，仍必须逐次审批。
+        # 新注册的写工具必须由产品显式开放，空间策略仍可进一步收窄。
         tools = tuple(
             item
             for item in self.registry.catalog()
-            if item.allows_user(user_id) and (item.risk == "read" or item.key == SET_SCHEDULE_ENABLED_TOOL)
+            if item.allows_user(user_id)
+            and item.key not in disabled_tools
+            and (item.risk == "read" or (item.key in DEFAULT_WRITE_TOOLS and item.approval == "always"))
+            and (item.connector_key not in PERSONAL_CONNECTORS or item.connector_key in bound_connectors)
         )
         digest = hashlib.sha256(instructions.encode("utf-8")).hexdigest()
         snapshot = self._snapshot(
@@ -84,7 +112,7 @@ class AgentAssembler:
             name=name,
             version=0,
             instructions=instructions,
-            model=self.settings.deepseek_model,
+            model=self.settings.active_llm_model,
             tools=tools,
             skills=(),
             knowledge_scope={"mode": "all_readable"},
@@ -106,9 +134,14 @@ class AgentAssembler:
         Raises:
             ApplicationError: Agent 不存在、不可读或已归档。
         """
-        if agent_profile_id is None:
-            return self.default_assembly(user_id=scope.user_id)
         async with self.factory() as session:
+            if agent_profile_id is None:
+                policies = await self._policies(session, scope.workspace_id)
+                return self.default_assembly(
+                    user_id=scope.user_id,
+                    bound_connectors=await self._personal_keys(session, scope),
+                    disabled_tools=frozenset(key for key, enabled in policies.items() if not enabled),
+                )
             agent = await self._readable_agent(session, scope, agent_profile_id)
             if agent.status != "active":
                 raise ApplicationError("AGENT_UNAVAILABLE", "Agent 已归档，不能开始新运行", 409)
@@ -142,10 +175,12 @@ class AgentAssembler:
             if row is None or row[0] is None or row[1] is None:
                 raise ApplicationError("ACCESS_REVOKED", "当前运行已结束或无执行权限", 403)
             scope = ResourceScope(row[0], row[1])
-            snapshot = row[3] if isinstance(row[3], dict) else {}
-            if snapshot.get("instructions") is not None and snapshot.get("agent_name"):
-                return await self._restore(session, scope, snapshot)
-            return await self.assemble(scope, row[2])
+            snapshot = row[3]
+            if snapshot == {}:
+                return await self.assemble(scope, row[2])
+            if not isinstance(snapshot, dict) or snapshot.get("instructions") is None or not snapshot.get("agent_name"):
+                raise ApplicationError("AGENT_ASSEMBLY_FAILED", "本次运行的 Agent 能力快照无效", 500)
+            return await self._restore(session, scope, snapshot)
 
     async def snapshot_for_conversation(
         self, scope: ResourceScope, conversation_id: UUID
@@ -227,6 +262,7 @@ class AgentAssembler:
             )
         )
         policies = await self._policies(session, agent.workspace_id)
+        bound = await self._personal_keys(session, scope)
         tool_map: dict[str, ToolSpec] = {}
         for row in capabilities:
             if row.kind != "tool":
@@ -236,6 +272,7 @@ class AgentAssembler:
                 spec is not None
                 and not spec.system
                 and spec.allows_user(scope.user_id)
+                and (spec.connector_key not in PERSONAL_CONNECTORS or spec.connector_key in bound)
                 and policies.get(spec.key, True)
             ):
                 tool_map[spec.key] = spec
@@ -258,7 +295,7 @@ class AgentAssembler:
             name=agent.name,
             version=agent.version,
             instructions=agent.instructions,
-            model=agent.model or self.settings.deepseek_model,
+            model=agent.model or self.settings.active_llm_model,
             tools=tools,
             skills=skills,
             knowledge_scope=knowledge_scope,
@@ -362,6 +399,18 @@ class AgentAssembler:
         ]
         return {"mode": "selected", "kb_ids": allowed}
 
+    async def _personal_keys(self, session: AsyncSession, scope: ResourceScope) -> frozenset[str]:
+        """仅将本人已绑定的个人应用暴露给模型。"""
+        if not any(item.connector_key in PERSONAL_CONNECTORS for item in self.registry.catalog()):
+            return frozenset()
+        return frozenset(
+            await session.scalars(
+                select(PersonalConnectorBinding.connector_key).filter_by(
+                    workspace_id=scope.workspace_id, user_id=scope.user_id
+                )
+            )
+        )
+
     async def _policies(self, session: AsyncSession, workspace_id: UUID) -> dict[str, bool]:
         """读取空间工具启停策略。
 
@@ -419,7 +468,7 @@ class AgentAssembler:
             "agent_version": version,
             "instructions": instructions,
             "instructions_sha256": hashlib.sha256(instructions.encode("utf-8")).hexdigest(),
-            "model": self.settings.deepseek_model,
+            "model": self.settings.active_llm_model,
             "tools": [{"key": item.key, "version": item.version} for item in tools],
             "skills": [
                 {
@@ -452,6 +501,7 @@ class AgentAssembler:
             可执行能力。
         """
         policies = await self._policies(session, scope.workspace_id)
+        bound = await self._personal_keys(session, scope)
         tools: list[ToolSpec] = []
         raw_tools = snapshot.get("tools")
         if isinstance(raw_tools, list):
@@ -462,7 +512,13 @@ class AgentAssembler:
                 if not isinstance(key, str):
                     continue
                 spec = self.registry.resolve(key)
-                if spec is not None and not spec.system and spec.allows_user(scope.user_id) and policies.get(key, True):
+                if (
+                    spec is not None
+                    and not spec.system
+                    and spec.allows_user(scope.user_id)
+                    and policies.get(key, True)
+                    and (spec.connector_key not in PERSONAL_CONNECTORS or spec.connector_key in bound)
+                ):
                     tools.append(spec)
         skills: list[SkillSnapshot] = []
         tool_keys = {item.key for item in tools}
@@ -519,7 +575,7 @@ class AgentAssembler:
             name=str(snapshot.get("agent_name", "序列助手")),
             version=version_number,
             instructions=instructions,
-            model=str(snapshot.get("model", self.settings.deepseek_model)),
+            model=str(snapshot.get("model", self.settings.active_llm_model)),
             tools=tuple(tools),
             skills=tuple(skills),
             knowledge_scope=knowledge_scope,

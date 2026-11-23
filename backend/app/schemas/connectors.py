@@ -1,9 +1,10 @@
 """连接器接口契约：列表、配置与工具视图。"""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, SecretStr
 
 
 class ConnectorHealthView(BaseModel):
@@ -40,6 +41,44 @@ class ConnectorToolView(BaseModel):
     approval: str = "always"
 
 
+class PersonalField(BaseModel):
+    """个人绑定表单字段，不携带已保存的值。"""
+
+    key: str
+    label: str
+    secret: bool = False
+
+
+class PersonalAccountView(BaseModel):
+    """对当前工作空间成员可见的绑定信息。"""
+
+    bound: bool
+    fields: list[PersonalField]
+    guide_url: str
+
+
+class PersonalAccountInput(BaseModel):
+    """写入凭证时禁止携带外部指定的用户或空间。"""
+
+    model_config = ConfigDict(extra="forbid")
+    credentials: dict[str, SecretStr] = Field(max_length=2)
+
+
+class ImaProbeResult(BaseModel):
+    """单个 ima 只读探针的公开结果。"""
+
+    status: Literal["success", "error"]
+    error_code: str | None = None
+    diagnostic_id: UUID | None = None
+
+
+class ImaAccountCheckResult(BaseModel):
+    """分别报告当前成员的 ima 知识库和笔记连通性。"""
+
+    knowledge_base: ImaProbeResult
+    notes: ImaProbeResult
+
+
 class ConnectorDetail(ConnectorHealthView):
     """连接器详情（含工具列表和配置项声明）。"""
 
@@ -55,6 +94,7 @@ class ConnectorDetail(ConnectorHealthView):
     config_values: dict[str, str] = Field(default_factory=dict)
     tools: list[ConnectorToolView] = Field(default_factory=list)
     can_view_holdings: bool = False
+    personal_account: PersonalAccountView | None = None
 
 
 class YangJiBaoHoldingView(BaseModel):

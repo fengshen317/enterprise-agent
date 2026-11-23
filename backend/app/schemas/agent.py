@@ -19,6 +19,7 @@ class AgentSkillInput(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     id: UUID
+    version: int | None = Field(default=None, ge=1)
     activation: Activation = "always"
 
 

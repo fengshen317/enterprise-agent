@@ -42,6 +42,8 @@ class Approval(Base):
     tool_version: Mapped[int] = mapped_column(Integer)
     risk_level: Mapped[str] = mapped_column(String(16))
     args_digest: Mapped[str] = mapped_column(String(64))
+    # 仅可恢复的本地写工具保存执行参数，展示接口继续使用脱敏预览。
+    execution_args: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
     args_preview: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
     status: Mapped[str] = mapped_column(String(20), default="pending", server_default="pending")
     requested_by_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))

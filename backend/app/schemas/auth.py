@@ -58,3 +58,4 @@ class SessionView(BaseModel):
     workspaces: list[WorkspaceView]
     expires_at: datetime
     csrf_token: str
+    system_admin: bool = False

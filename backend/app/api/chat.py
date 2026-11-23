@@ -5,15 +5,17 @@ from collections.abc import AsyncIterator
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
 from app.api.auth import ScopeDependency, auth_service
+from app.api.materials import attachment_response
 from app.core.errors import ApplicationError
 from app.core.security import COOKIE_NAME
 from app.models.conversation import Run
 from app.schemas.approval import ApprovalDecisionInput, ApprovalView, RunTrace
+from app.schemas.auth import ResourceScope
 from app.schemas.chat import (
     ConversationAgentInput,
     ConversationCreate,
@@ -25,8 +27,10 @@ from app.schemas.chat import (
 from app.schemas.tools import ToolCallView
 from app.services.agents import AgentService
 from app.services.approvals import ApprovalService
+from app.services.chat_attachments import PreparedAttachment, parse_attachment_run
 from app.services.chat_runtime import ChatRuntime
 from app.services.chat_store import ACTIVE
+from app.services.materials import material_namespace
 from app.services.tools import list_tool_calls
 
 router = APIRouter(prefix="/api", tags=["问答"])
@@ -190,10 +194,39 @@ async def create_run(
     """
     await auth_service(request).conversation(scope, conversation_id)
     runtime.provider.validate()
-    snapshot = await runtime.create_run(conversation_id, body, scope)
+    return await _submit_run(request, runtime, conversation_id, body, scope)
+
+
+@router.post("/conversations/{conversation_id}/runs/attachments", response_model=RunSnapshot, status_code=202)
+async def create_attachment_run(
+    conversation_id: UUID, request: Request, scope: ScopeDependency, runtime: RuntimeDependency,
+) -> RunSnapshot:
+    """上传与发送一次完成，只有成功创建对应消息才保存附件。"""
+    await auth_service(request).conversation(scope, conversation_id)
+    runtime.provider.validate()
+    body, files = await parse_attachment_run(request, material_namespace(scope))
+    return await _submit_run(request, runtime, conversation_id, body, scope, files)
+
+
+async def _submit_run(
+    request: Request, runtime: ChatRuntime, conversation_id: UUID, body: RunCreate,
+    scope: ResourceScope, uploads: list[PreparedAttachment] | None = None,
+) -> RunSnapshot:
+    """复用原有幂等、SSE 和诊断流程，事务提交后再生成。"""
+    snapshot = await runtime.create_run(conversation_id, body, scope, uploads=uploads)
     if snapshot.run.status == "pending":
+        request.state.diagnostic_run_id = snapshot.run.id
         runtime.schedule(snapshot.run.id, request.state.request_id)
     return snapshot
+
+
+@router.get("/conversations/{conversation_id}/attachments/{attachment_id}/file")
+async def attachment_file(
+    conversation_id: UUID, attachment_id: UUID, scope: ScopeDependency, runtime: RuntimeDependency,
+    download: bool = False,
+) -> Response:
+    """只对经验证的栅格图片开放内联预览，其余文件始终下载。"""
+    return attachment_response(await runtime.store.attachment(scope, conversation_id, attachment_id), download)
 
 
 @router.get("/runs/{run_id}", response_model=RunSnapshot)

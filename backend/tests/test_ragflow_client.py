@@ -278,3 +278,28 @@ async def test_missing_api_key_is_rejected_before_request() -> None:
         assert caught.value.code == "RAGFLOW_NOT_CONFIGURED"
     finally:
         await client.aclose()
+
+
+
+async def test_restricted_retrieval_serializes_filter_and_skips_empty_access() -> None:
+    """发出实际名单，空名单不能变成整库检索。"""
+    calls: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """捕获检索范围，让其可以和远端审计结果比对。"""
+        assert request.url.path == "/api/v1/retrieval"
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, json={"code": 0, "data": {"chunks": []}})
+
+    client, http = build(httpx.MockTransport(handler))
+    try:
+        assert await client.retrieve(["limited"], "机密", 5, 0.2, document_ids=[]) == []
+        assert not calls
+        await client.retrieve(["limited"], "机密", 5, 0.2, document_ids=["allowed"])
+        await client.retrieve(["shared"], "说明", 5, 0.2)
+        assert calls[0]["document_ids"] == ["allowed"]
+        assert calls[0]["include_knowledge_compilation"] is False
+        assert "document_ids" not in calls[1]
+    finally:
+        await client.aclose()
+        await http.aclose()

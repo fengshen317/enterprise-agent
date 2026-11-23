@@ -147,7 +147,11 @@ class ContextBuilder:
         if sum(len(text) for _, text in result) > self.settings.model_context_characters:
             raise ApplicationError("CONTEXT_TOO_LONG", "摘要与当前问题仍超过上下文限制，请缩短问题或新建对话", 422)
         saved = await self.store.save_summary(
-            state.run_id, state.summary_version, state.messages[cut - 1].sequence, summary, self.settings.deepseek_model
+            state.run_id,
+            state.summary_version,
+            state.messages[cut - 1].sequence,
+            summary,
+            self.settings.active_llm_model,
         )
         if not saved:
             raise asyncio.CancelledError

@@ -9,6 +9,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
+MANAGED_RAGFLOW_URL = "http://ragflow:80"
+DEFAULT_COMPATIBLE_LLM_URL = "https://api.openai.com/v1"
 
 
 class Settings(BaseSettings):
@@ -27,6 +29,12 @@ class Settings(BaseSettings):
     # 工程检查不依赖模型凭证；调用模型时再检查是否已配置。
     deepseek_api_key: SecretStr = SecretStr("")
     deepseek_model: str = Field(default="deepseek-flash", min_length=1, max_length=200)
+    llm_provider: Literal["deepseek", "openai_compatible"] = "deepseek"
+    llm_base_url: str = Field(default=DEFAULT_COMPATIBLE_LLM_URL, min_length=1, max_length=500)
+    llm_model: str = Field(default="", max_length=200)
+    llm_api_key: SecretStr = SecretStr("")
+    llm_vision_model: str = Field(default="", max_length=200)
+    integration_config_key_file: Path = Path.home() / ".enterprise-agent" / "integration-config.key"
     model_timeout_seconds: float = Field(default=120, gt=0, le=600)
     chat_run_timeout_seconds: float = Field(default=1800, gt=0, le=3600)
     model_max_tokens: int = Field(default=4096, ge=1, le=8192)
@@ -43,6 +51,7 @@ class Settings(BaseSettings):
     tool_max_calls_per_run: int = Field(default=4, ge=1, le=10)
     connector_monitor_enabled: bool = True
     connector_monitor_interval_seconds: float = Field(default=60, ge=1, le=3600)
+    connector_credential_key: SecretStr = SecretStr("")
     connector_check_timeout_seconds: float = Field(default=15, gt=0, le=60)
     # 显式归属用于兼容已有本机凭据；网页首次扫码会用登录身份建立绑定。
     yangjibao_owner_user_id: UUID | None = None
@@ -65,6 +74,7 @@ class Settings(BaseSettings):
     knowledge_enabled: bool = True
     ragflow_base_url: str = Field(default="http://localhost", min_length=1, max_length=300)
     ragflow_api_key: SecretStr = SecretStr("")
+    ragflow_api_key_file: Path | None = None
     ragflow_timeout_seconds: float = Field(default=15, gt=0, le=120)
     ragflow_parser_id: str = Field(default="general", min_length=1, max_length=64)
     ragflow_parse_type: int = Field(default=1, ge=1, le=16)
@@ -108,7 +118,9 @@ class Settings(BaseSettings):
     ilink_long_poll_seconds: float = Field(default=35, gt=1, le=120)
     ilink_message_chunk_characters: int = Field(default=1800, ge=100, le=5000)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    system_log_retention_days: int = Field(default=30, ge=1, le=365)
     auth_session_hours: int = Field(default=12, ge=1, le=168)
+    system_admin_username: str = Field(default="", max_length=64)
     auth_cookie_secure: bool = False
     auth_login_max_failures: int = Field(default=5, ge=1, le=20)
     auth_login_window_seconds: int = Field(default=900, ge=60, le=3600)
@@ -119,6 +131,11 @@ class Settings(BaseSettings):
         "http://localhost:8000",
     ]
     database_timeout_seconds: float = Field(default=3, gt=0, le=30)
+
+    @property
+    def active_llm_model(self) -> str:
+        """返回当前部署使用的文本模型标识。"""
+        return self.llm_model if self.llm_provider == "openai_compatible" else self.deepseek_model
 
     @field_validator("database_host", "database_user", "database_name")
     @classmethod

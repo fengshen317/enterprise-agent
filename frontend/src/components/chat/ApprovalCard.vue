@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from 'vue'
+import { authoringAction } from './authoringTools'
 import { decideApproval, type Approval } from '../../api/approvals'
 
 const props = defineProps<{ approval: Approval; runId: string }>()
@@ -10,9 +11,32 @@ const now = ref(Date.now())
 const clock = setInterval(() => { now.value = Date.now() }, 1000)
 const remaining = computed(() => Math.max(0, Math.ceil((Date.parse(props.approval.expires_at) - now.value) / 1000)))
 const preview = computed(() => Object.entries(props.approval.args_preview).filter(([, value]) => value !== null && value !== ''))
+const fieldLabels: Record<string, string> = {
+  summary: '操作', effect: '影响', name: '名称', key: '标识', description: '说明', visibility: '可见范围',
+  version: '版本', skill_id: '技能 ID', schedule_id: '任务 ID', tool_keys: '工具', skill_ids: '绑定技能',
+  knowledge_scope: '知识库范围', cron: 'Cron 表达式', cron_expression: 'Cron 表达式', timezone: '时区',
+  preview: '内容预览', calendar_mode: '日期规则', prompt: '任务指令',
+  enabled: '启用任务', push_to_wechat: '微信推送', skills: '绑定技能及版本', content_md: '技能正文',
+  instructions: 'Agent 指令', allow_planning: '允许规划', allow_delegation: '允许委派',
+}
+function isChange(value: unknown): value is { before: unknown; after: unknown } {
+  return typeof value === 'object' && value !== null && 'before' in value && 'after' in value
+}
+function previewText(key: string, value: unknown): string {
+  if (key === 'visibility' && value === 'private') return '仅自己可见'
+  if (key === 'knowledge_scope' && typeof value === 'object' && value !== null && 'mode' in value) {
+    if (value.mode === 'all_readable') return '全部可读知识库'
+    if (value.mode === 'selected' && 'kb_ids' in value && Array.isArray(value.kb_ids)
+      && value.kb_ids.every(id => typeof id === 'string')) return value.kb_ids.join('、') || '无'
+  }
+  if (Array.isArray(value) && value.every(item => typeof item === 'string')) return value.join('、') || '无'
+  if (typeof value === 'boolean') return value ? '是' : '否'
+  if (typeof value === 'object') return JSON.stringify(value, null, 2)
+  return String(value)
+}
 const risks: Record<string, string> = { write: '写入操作', delete: '删除操作', external: '外发操作' }
 async function decide(decision: 'approve' | 'reject'): Promise<void> {
-  if (busy.value) return
+  if (busy.value || props.approval.status !== 'pending' || !remaining.value) return
   busy.value = true; error.value = ''
   try { emit('decided', await decideApproval(props.runId, props.approval.id, decision)) }
   catch (value) { error.value = value instanceof Error ? value.message : '审批失败，请重试' }
@@ -35,15 +59,24 @@ onBeforeUnmount(() => clearInterval(clock))
       <span class="approval__risk">{{ risks[approval.risk_level] ?? '高风险操作' }}</span>
     </header>
     <p class="approval__tool">
-      Agent 请求执行「{{ approval.tool_name }}」
+      Agent 请求执行「{{ authoringAction(approval.tool_name) ?? approval.tool_name }}」
     </p>
     <dl class="approval__preview">
       <template
         v-for="[key, value] in preview"
         :key="key"
       >
-        <dt>{{ key }}</dt>
-        <dd>{{ String(value) }}</dd>
+        <dt>{{ fieldLabels[key] ?? key }}</dt>
+        <dd
+          v-if="isChange(value)"
+          class="approval__change"
+        >
+          <span><small>修改前</small>{{ previewText(key, value.before) }}</span>
+          <span><small>修改后</small>{{ previewText(key, value.after) }}</span>
+        </dd>
+        <dd v-else>
+          {{ previewText(key, value) }}
+        </dd>
       </template>
     </dl>
     <p class="approval__hint">
@@ -60,7 +93,7 @@ onBeforeUnmount(() => clearInterval(clock))
       <button
         type="button"
         class="approval__approve"
-        :disabled="busy"
+        :disabled="busy || approval.status !== 'pending' || !remaining"
         @click="decide('approve')"
       >
         {{ busy ? '正在提交…' : '批准并执行' }}
@@ -68,7 +101,7 @@ onBeforeUnmount(() => clearInterval(clock))
       <button
         type="button"
         class="approval__reject"
-        :disabled="busy"
+        :disabled="busy || approval.status !== 'pending' || !remaining"
         @click="decide('reject')"
       >
         拒绝
@@ -85,7 +118,8 @@ onBeforeUnmount(() => clearInterval(clock))
   &__eyebrow { font-size: 9px; letter-spacing: 1.4px; color: #a07a45; }
   &__risk { border: 1px solid #d9b98b; color: #7d5a2e; border-radius: 20px; padding: 4px 9px; font-size: 10px; white-space: nowrap; }
   &__tool { margin: 10px 0 8px; font-size: 12px; color: #5f4a2e; }
-  &__preview { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 6px 10px; margin: 0; font-size: 11px; line-height: 1.7; dt { color: #9b7a50; } dd { margin: 0; overflow-wrap: anywhere; color: #57432b; } }
+  &__preview { overflow-y: auto; max-height: 40vh; display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 6px 10px; margin: 0; font-size: 11px; line-height: 1.7; dt { color: #9b7a50; } dd { white-space: pre-wrap; margin: 0; overflow-wrap: anywhere; color: #57432b; } }
+  &__change { display: grid; gap: 6px; span { padding: 5px 8px; background: #fff8ec; } small { display: block; color: #8b6731; } }
   &__hint { color: #9a7b54; font-size: 10px; margin: 10px 0; }
   &__error { color: #8b493c; font-size: 11px; margin: 8px 0; }
   &__actions { display: flex; gap: 9px; }

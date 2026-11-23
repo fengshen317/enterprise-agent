@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import RetrievalEvaluation from './RetrievalEvaluation.vue'
 import { retrievalTest, type KnowledgeBase, type RetrievalTestChunk } from '../../api/knowledge'
 
 const props = defineProps<{ kb: KnowledgeBase }>()
@@ -113,6 +114,10 @@ async function search(): Promise<void> {
         没有命中结果。可以降低相似度阈值，或检查文档是否已经解析完成。
       </p>
     </section>
+    <RetrievalEvaluation
+      :key="kb.id"
+      :kb="kb"
+    />
   </section>
 </template>
 

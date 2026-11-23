@@ -2,6 +2,7 @@
 
 import json
 import logging
+import sys
 from datetime import UTC, datetime
 
 
@@ -23,7 +24,7 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "event": record.getMessage(),
         }
-        for key in ("request_id", "method", "path", "status_code", "duration_ms", "error_type", "run_id"):
+        for key in ("request_id", "method", "path", "status_code", "duration_ms", "error_type", "run_id", "diagnostic"):
             if hasattr(record, key):
                 fields[key] = getattr(record, key)
         return json.dumps(fields, ensure_ascii=False)
@@ -35,7 +36,7 @@ def configure_logging(level: str) -> None:
     Args:
         level: 日志级别。
     """
-    handler = logging.StreamHandler()
+    handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(JsonFormatter())
     logger = logging.getLogger("app")
     logger.handlers.clear()

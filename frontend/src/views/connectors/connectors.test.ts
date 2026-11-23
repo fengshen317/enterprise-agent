@@ -57,11 +57,11 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers() })
 
 it('全局持续展示已启用连接器提醒，管理员入口携带连接器参数', async () => {
-  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: { template: '<div />' } }, { path: '/connectors', component: { template: '<div />' } }] })
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: { template: '<div />' } }, { path: '/capabilities', component: { template: '<div />' } }] })
   const wrapper = mount(ConnectorNotice, { global: { plugins: [router] } })
   await flushPromises()
   expect(wrapper.text()).toContain('测试连接器需要授权')
-  expect(wrapper.get('a').attributes('href')).toBe('/connectors?connector=test')
+  expect(wrapper.get('a').attributes('href')).toBe('/capabilities?tab=connectors&connector=test')
   useConnectorsStore().connectors = [{ ...connector, enabled: false }, { ...connector, key: 'config', auth_action: 'configure', auth_status: 'unknown' }]
   await flushPromises()
   expect(wrapper.text()).toContain('需要配置')

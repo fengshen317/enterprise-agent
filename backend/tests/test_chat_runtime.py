@@ -2,7 +2,7 @@
 
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
@@ -12,6 +12,7 @@ from app.agents.provider import ChatHistory
 from app.core.config import Settings
 from app.core.database import Database
 from app.core.errors import ApplicationError
+from app.services.agent_assembler import AgentAssembler
 from app.services.chat_runtime import ChatRuntime
 from app.services.chat_store import ChatStore
 
@@ -44,6 +45,9 @@ async def runtime() -> AsyncIterator[ChatRuntime]:
     settings = Settings(_env_file=None, environment="test", model_output_characters=1000)
     database = Database(settings)
     runtime = ChatRuntime(database, settings, TextProvider())
+    assembly = runtime.assembler.default_assembly()
+    runtime.assembler = AsyncMock(spec=AgentAssembler)
+    runtime.assembler.assemble_for_run.return_value = assembly
     runtime.store = AsyncMock(spec=ChatStore)
     runtime.store.begin_run.return_value = ContextState(uuid4(), "", 0, 0, [ContextMessage(1, "user", "问题")])
     runtime.store.snapshot.return_value = SimpleNamespace(run=SimpleNamespace(status="cancelled"))
@@ -65,6 +69,38 @@ async def test_output_limit_preserves_partial_answer(runtime: ChatRuntime) -> No
     runtime.store.finish.assert_awaited_once_with(
         run_id, "字" * 1000, "failed", "OUTPUT_TOO_LONG", "回答超过长度限制，请缩小问题范围"
     )
+
+
+@pytest.mark.parametrize(
+    ("cause", "code", "message"),
+    [
+        (ValueError("private metadata"), "AGENT_ASSEMBLY_FAILED", "无法加载本次运行的 Agent 能力配置"),
+        (ApplicationError("ACCESS_REVOKED", "权限已失效", 403), "ACCESS_REVOKED", "权限已失效"),
+    ],
+)
+async def test_assembly_failure_stops_generation(
+    runtime: ChatRuntime, monkeypatch: pytest.MonkeyPatch, cause: Exception, code: str, message: str
+) -> None:
+    """能力无法确认时，运行必须在生成上下文和执行工具之前失败。
+
+    Args:
+        runtime: 测试执行器。
+        monkeypatch: 隔离上下文构建与模型调用。
+        cause: 装配失败原因。
+        code: 预期公开错误码。
+        message: 预期公开错误信息。
+    """
+    run_id = uuid4()
+    runtime.assembler.assemble_for_run.side_effect = cause
+    build = AsyncMock()
+    stream = Mock()
+    monkeypatch.setattr("app.services.chat_runtime.ContextBuilder.build", build)
+    monkeypatch.setattr(runtime.provider, "stream", stream)
+    await runtime._execute(run_id, "request")
+    runtime.store.finish.assert_awaited_once_with(run_id, "", "failed", code, message)
+    runtime.assembler.default_assembly.assert_not_called()
+    build.assert_not_awaited()
+    stream.assert_not_called()
 
 
 async def test_unclaimed_run_does_not_call_model(runtime: ChatRuntime) -> None:

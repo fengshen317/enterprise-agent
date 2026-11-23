@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from app.capabilities.builtins.authoring import authoring_specs
+from app.capabilities.builtins.deliverables import deliverable_spec
 from app.capabilities.builtins.knowledge import knowledge_specs
+from app.capabilities.builtins.materials import material_specs
 from app.capabilities.builtins.run_stats import run_stats_spec
 from app.capabilities.builtins.scheduled import scheduled_specs
-from app.capabilities.builtins.web_search import web_search_spec
+from app.capabilities.builtins.web_search import WEB_SEARCH_TOOL, web_search_spec
 from app.capabilities.spec import ToolSpec
 
 if TYPE_CHECKING:
@@ -84,6 +87,13 @@ class ToolRegistry:
         for key in to_remove:
             del self._specs[key]
 
+    def configure_web_search(self, settings: Settings) -> None:
+        """同步 Tavily 可用性及超时，供新的 Agent 运行装配。"""
+        if settings.tavily_api_key.get_secret_value().strip():
+            self._specs[WEB_SEARCH_TOOL] = web_search_spec(settings)
+        else:
+            self._specs.pop(WEB_SEARCH_TOOL, None)
+
 
 def build_default_registry(
     settings: Settings,
@@ -102,12 +112,16 @@ def build_default_registry(
     """
     registry = ToolRegistry()
     registry.register(run_stats_spec(settings))
+    registry.register(deliverable_spec(settings))
+    for spec in material_specs(settings):
+        registry.register(spec)
+    for spec in authoring_specs(settings):
+        registry.register(spec)
     if knowledge_service is not None:
         for spec in knowledge_specs(settings):
             registry.register(spec)
     if schedule_store is not None and settings.schedule_enabled:
         for spec in scheduled_specs(settings):
             registry.register(spec)
-    if settings.tavily_api_key.get_secret_value().strip():
-        registry.register(web_search_spec(settings))
+    registry.configure_web_search(settings)
     return registry

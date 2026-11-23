@@ -6,7 +6,8 @@ from uuid import UUID
 from fastapi import APIRouter, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.api.auth import ScopeDependency
+from app.api.auth import ScopeDependency, SystemAdminDependency
+from app.capabilities.registry import ToolRegistry
 from app.core.errors import ApplicationError
 from app.schemas.admin import AdminAuditView, MemberCreate, MemberPage, MemberUpdate, MemberView
 from app.schemas.auth import ResourceScope
@@ -25,7 +26,9 @@ def service(request: Request) -> AdminService:
     Returns:
         使用应用会话工厂的服务。
     """
-    return AdminService(request.app.state.database.session_factory)
+    return AdminService(
+        request.app.state.database.session_factory, request.app.state.settings.system_admin_username
+    )
 
 
 @router.get("/members", response_model=MemberPage)
@@ -110,21 +113,38 @@ async def audits(
 
 
 @router.get("/configs", response_model=list[ConfigItem])
-async def list_configs(request: Request, response: Response, scope: ScopeDependency) -> list[ConfigItem]:
+async def list_configs(request: Request, response: Response, identity: SystemAdminDependency) -> list[ConfigItem]:
     """列出可管理的集成配置项（密钥掩码）。
 
     Args:
         request: 当前请求。
         response: 禁止缓存配置。
-        scope: 可信身份。
+        identity: 通过部署级鉴权的可信身份。
 
     Returns:
         配置项列表。
     """
     response.headers["Cache-Control"] = "no-store"
     config_service: ConfigService = request.app.state.config_service
-    await _require_admin(request, scope)
     return await config_service.list_configs()
+
+
+async def _require_admin(request: Request, scope: ResourceScope) -> None:
+    """复核当前用户是空间管理员。"""
+    from sqlalchemy import select
+
+    from app.models.identity import WorkspaceMembership
+
+    async with request.app.state.database.session_factory() as session:
+        role = await session.scalar(
+            select(WorkspaceMembership.role).where(
+                WorkspaceMembership.workspace_id == scope.workspace_id,
+                WorkspaceMembership.user_id == scope.user_id,
+                WorkspaceMembership.status == "active",
+            )
+        )
+    if role != "admin":
+        raise ApplicationError("ADMIN_REQUIRED", "只有空间管理员可以管理配置", 403)
 
 
 class ConfigUpdateItem(BaseModel):
@@ -143,50 +163,27 @@ class ConfigUpdateRequest(BaseModel):
 
 
 @router.post("/configs", response_model=list[ConfigItem])
-async def update_configs(body: ConfigUpdateRequest, request: Request, scope: ScopeDependency) -> list[ConfigItem]:
+async def update_configs(
+    body: ConfigUpdateRequest, request: Request, response: Response, identity: SystemAdminDependency
+) -> list[ConfigItem]:
     """批量更新集成配置，保存即生效。
 
     Args:
         body: 待更新的配置项。
         request: 当前请求。
-        scope: 可信身份。
+        response: 禁止缓存配置。
+        identity: 通过部署级鉴权的可信身份。
 
     Returns:
         更新后的配置项列表。
     """
     config_service: ConfigService = request.app.state.config_service
-    await _require_admin(request, scope)
-    from app.services.config_service import MANAGED_KEYS
-
-    for item in body.configs:
-        if item.key not in MANAGED_KEYS:
-            raise ApplicationError("CONFIG_KEY_UNKNOWN", f"未知配置项: {item.key}", 422)
-    for item in body.configs:
-        await config_service.update(item.key, item.value, scope.user_id)
+    values = {item.key: item.value for item in body.configs}
+    if len(values) != len(body.configs):
+        raise ApplicationError("CONFIG_KEY_DUPLICATE", "同一配置项只能提交一次", 422)
+    await config_service.update(values, identity.user_id)
+    if any(key.startswith(("tavily_", "web_search_")) for key in values):
+        registry: ToolRegistry = request.app.state.tool_registry
+        registry.configure_web_search(request.app.state.settings)
+    response.headers["Cache-Control"] = "no-store"
     return await config_service.list_configs()
-
-
-async def _require_admin(request: Request, scope: ResourceScope) -> None:
-    """复核当前用户是空间管理员。
-
-    Args:
-        request: 当前请求。
-        scope: 已验证身份。
-
-    Raises:
-        ApplicationError: 非管理员。
-    """
-    from sqlalchemy import select
-
-    from app.models.identity import WorkspaceMembership
-
-    async with request.app.state.database.session_factory() as session:
-        role = await session.scalar(
-            select(WorkspaceMembership.role).where(
-                WorkspaceMembership.workspace_id == scope.workspace_id,
-                WorkspaceMembership.user_id == scope.user_id,
-                WorkspaceMembership.status == "active",
-            )
-        )
-    if role != "admin":
-        raise ApplicationError("ADMIN_REQUIRED", "只有空间管理员可以管理配置", 403)

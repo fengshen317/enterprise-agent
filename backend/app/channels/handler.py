@@ -9,7 +9,7 @@ import re
 from collections.abc import Coroutine
 from datetime import UTC, datetime, timedelta
 from time import monotonic
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import UUID
 
 from app.channels.commands import chunk_text, parse_inbound
@@ -21,6 +21,10 @@ from app.core.config import Settings
 from app.core.errors import ApplicationError
 from app.schemas.auth import ResourceScope
 from app.schemas.chat import RunSnapshot
+from app.services.system_logs import emit_system_log, system_log_context
+
+if TYPE_CHECKING:
+    from app.services.system_logs import SystemLogRecorder
 
 logger = logging.getLogger(__name__)
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$")
@@ -160,6 +164,8 @@ class InboundHandler:
         agents: AgentPort,
         membership: MembershipPort,
         approvals: ApprovalPort,
+        *,
+        log_recorder: SystemLogRecorder | None = None,
     ) -> None:
         """绑定依赖。
 
@@ -171,6 +177,7 @@ class InboundHandler:
             agents: Agent 列表和切换。
             membership: 空间成员检查。
             approvals: 审批决定。
+            log_recorder: 应用的脱敏诊断记录器。
         """
         self.settings = settings
         self.repo = repo
@@ -179,6 +186,7 @@ class InboundHandler:
         self.agents = agents
         self.membership = membership
         self.approvals = approvals
+        self.log_recorder = log_recorder
         self.direct_runs: set[UUID] = set()
         self._tasks: set[asyncio.Task[None]] = set()
 
@@ -308,8 +316,13 @@ class InboundHandler:
                 run_id,
                 text[:500],
             )
+            self._record_delivery(
+                workspace_id or account.workspace_id, run_id, "warning", f"WECHAT_{(reason or 'no_inbound').upper()}"
+            )
             return
-        sent = await self.send_text(account, peer.peer_id, peer.context_token, text, run_id=run_id)
+        sent = await self.send_text(
+            account, peer.peer_id, peer.context_token, text, run_id=run_id, workspace_id=workspace_id
+        )
         if sent and workspace_id is not None and conversation_id is not None:
             # 只有手机实际收到消息后才切换上下文，避免失败推送劫持后续微信问答。
             await self.repo.activate_conversation(account.id, workspace_id, peer.peer_id, conversation_id)
@@ -330,8 +343,42 @@ class InboundHandler:
         token = message.context_token or (link.context_token if link is not None else "")
         return await self.send_text(account, message.from_user_id, token, text, run_id=None)
 
+    def _record_delivery(
+        self,
+        workspace_id: UUID,
+        run_id: UUID | None,
+        outcome: Literal["success", "warning", "error"],
+        error_code: str | None = None,
+        duration_ms: float | None = None,
+    ) -> None:
+        """按投递来源记录结果，排除渠道身份、令牌和正文。
+
+        Args:
+            workspace_id: 投递来源的可信空间。
+            run_id: 可关联的对话运行。
+            outcome: 实际投递结果。
+            error_code: 固定错误码。
+            duration_ms: 可用的投递耗时。
+        """
+        with system_log_context(recorder=self.log_recorder, workspace_id=workspace_id, run_id=run_id):
+            emit_system_log(
+                component="wechat",
+                event="wechat_delivery",
+                outcome=outcome,
+                error_code=error_code,
+                duration_ms=duration_ms,
+                details={"channel": "wechat"},
+            )
+
     async def send_text(
-        self, account: AccountRecord, to_user_id: str, context_token: str, text: str, *, run_id: UUID | None
+        self,
+        account: AccountRecord,
+        to_user_id: str,
+        context_token: str,
+        text: str,
+        *,
+        run_id: UUID | None,
+        workspace_id: UUID | None = None,
     ) -> bool:
         """分段发送并写出站日志。
 
@@ -341,10 +388,13 @@ class InboundHandler:
             context_token: 会话令牌。
             text: 完整正文。
             run_id: 关联运行。
+            workspace_id: 异步投递来源的空间快照，默认使用当前渠道空间。
 
         Returns:
             是否发送成功。失败时不把一次性提醒标成已发送。
         """
+        started = monotonic()
+        diagnostic_workspace = workspace_id or account.workspace_id
         chunks = chunk_text(text, self.settings.ilink_message_chunk_characters)
         if not chunks:
             return False
@@ -354,8 +404,19 @@ class InboundHandler:
         except Exception:
             logger.warning("ilink_send_failed", extra={"account_id": str(account.id), "run_id": str(run_id or "")})
             await self.repo.log_outbound(account.id, to_user_id, "failed", "send_failed", run_id, text[:500])
+            self._record_delivery(
+                diagnostic_workspace,
+                run_id,
+                "error",
+                "WECHAT_DELIVERY_FAILED",
+                round((monotonic() - started) * 1000, 2),
+            )
             return False
         await self.repo.log_outbound(account.id, to_user_id, "sent", None, run_id, text[:500])
+        if run_id is not None:
+            self._record_delivery(
+                diagnostic_workspace, run_id, "success", duration_ms=round((monotonic() - started) * 1000, 2)
+            )
         return True
 
     async def _new(self, account: AccountRecord, message: ILinkMessage) -> None:
@@ -523,10 +584,20 @@ class InboundHandler:
         self.direct_runs.add(run_id)
         self.chat.schedule(run_id, f"wechat-{run_id.hex[:8]}")
         token = message.context_token
-        self.spawn(self._deliver(account, message.from_user_id, token, run_id, snapshot.run.conversation_id))
+        self.spawn(
+            self._deliver(
+                account, message.from_user_id, token, run_id, snapshot.run.conversation_id, scope.workspace_id
+            )
+        )
 
     async def _deliver(
-        self, account: AccountRecord, to_user_id: str, context_token: str, run_id: UUID, conversation_id: UUID
+        self,
+        account: AccountRecord,
+        to_user_id: str,
+        context_token: str,
+        run_id: UUID,
+        conversation_id: UUID,
+        workspace_id: UUID,
     ) -> None:
         """等运行结束，把最终正文发回微信。超过阈值时穿插进度。
 
@@ -536,6 +607,7 @@ class InboundHandler:
             context_token: 触发这条回复的令牌。
             run_id: 问答运行。
             conversation_id: 网页上打开完整回答的对话。
+            workspace_id: 接到该消息时的空间，防止切换空间后诊断串到另一空间。
         """
         stop_progress = asyncio.Event()
         progress = asyncio.create_task(self._progress(account, to_user_id, context_token, run_id, stop_progress))
@@ -556,7 +628,7 @@ class InboundHandler:
                 preview_characters=self.settings.channel_reply_preview_characters,
                 page_url=self._page_url(conversation_id),
             )
-            await self.send_text(account, to_user_id, context_token, body, run_id=run_id)
+            await self.send_text(account, to_user_id, context_token, body, run_id=run_id, workspace_id=workspace_id)
         finally:
             stop_progress.set()
             if not progress.done():

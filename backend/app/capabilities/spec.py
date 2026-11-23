@@ -26,7 +26,7 @@ ApprovalMode = Literal["never", "always"]
 ActivationMode = Literal["always", "on_demand"]
 ToolHandler = Callable[["ToolContext", BaseModel], Awaitable[object]]
 AuditBuilder = Callable[[BaseModel, object], dict[str, object]]
-ApprovalPreview = Callable[[BaseModel, "ToolContext"], dict[str, object]]
+ApprovalPreview = Callable[[BaseModel, "ToolContext"], dict[str, object] | Awaitable[dict[str, object]]]
 
 
 @dataclass(frozen=True)
@@ -58,6 +58,7 @@ class ToolContext:
     schedule_store: ScheduleStore | None = None
     assembly: AgentAssembly | None = None
     skills: Mapping[str, SkillSnapshot] = field(default_factory=dict)
+    tool_call_id: UUID | None = None
 
 
 @dataclass(frozen=True)

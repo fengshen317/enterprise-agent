@@ -22,3 +22,5 @@ class ContextState:
     summary_through_sequence: int
     summary_version: int
     messages: list[ContextMessage]
+    query: str | None = None
+    images: tuple[tuple[str, bytes], ...] = ()

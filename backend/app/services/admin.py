@@ -19,13 +19,15 @@ from app.services.accounts import ACCOUNT_LOCK
 class AdminService:
     """角色只作用于当前空间，不能改变用户在其他空间的权限。"""
 
-    def __init__(self, factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(self, factory: async_sessionmaker[AsyncSession], reserved_username: str = "") -> None:
         """保存独立会话工厂。
 
         Args:
             factory: 应用数据库会话。
+            reserved_username: 仅部署操作者可以创建的系统账号。
         """
         self.factory = factory
+        self.reserved_username = reserved_username.strip().lower()
 
     async def _authorize(self, session: AsyncSession, scope: ResourceScope, lock: bool = False) -> User:
         """写入先锁空间再重验角色，使并发撤权和末位管理员保护一致。
@@ -138,6 +140,8 @@ class AdminService:
         """
         await self.authorize(scope)
         username = normalize_username(body.username)
+        if username == self.reserved_username:
+            raise ApplicationError("ACCOUNT_RESERVED", "系统管理员账号由部署操作者初始化", 409)
         encoded = await asyncio.to_thread(hash_password, body.password.get_secret_value())
         async with self.factory.begin() as session:
             # 与本机 CLI 使用相同锁顺序，避免重复用户名和交叉创建死锁。

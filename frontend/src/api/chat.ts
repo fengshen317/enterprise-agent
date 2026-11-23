@@ -1,10 +1,11 @@
-import { API_BASE_URL, ApiError, requestJson, getWorkspaceId, notifyUnauthorized } from './client'
+import { API_BASE_URL, ApiError, requestJson, requestForm, getWorkspaceId, notifyUnauthorized } from './client'
 import { parseApproval, type Approval } from './approvals'
+import { parseChatAttachment, type ChatAttachment } from './chatAttachments'
 
 export interface Conversation { id: string; title: string; status: string; agent_profile_id?: string | null; updated_at: string }
-export interface Message { id: string; conversation_id: string; run_id: string | null; sequence: number; role: 'user' | 'assistant'; content: string; status: string }
+export interface Message { id: string; conversation_id: string; run_id: string | null; sequence: number; role: 'user' | 'assistant'; content: string; status: string; created_at?: string; attachments?: ChatAttachment[] }
 export type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
-export interface Run { id: string; conversation_id: string; status: RunStatus; model: string; error_code: string | null; error_message: string | null }
+export interface Run { id: string; conversation_id: string; status: RunStatus; model: string; error_code: string | null; error_message: string | null; started_at?: string | null; finished_at?: string | null }
 export interface Snapshot { run: Run; message: Message; approval?: Approval | null }
 export interface MessagePage { items: Message[]; has_more: boolean; active_run_id: string | null }
 const RUN_STATUSES = ['pending', 'running', 'completed', 'failed', 'cancelled']
@@ -19,7 +20,10 @@ function parseConversation(value: unknown): Conversation {
 }
 function parseMessage(value: unknown): Message {
   if (!record(value) || typeof value.id !== 'string' || typeof value.conversation_id !== 'string' || !(value.run_id === null || typeof value.run_id === 'string') || typeof value.sequence !== 'number' || !['user', 'assistant'].includes(String(value.role)) || typeof value.content !== 'string' || !['streaming', 'completed', 'interrupted'].includes(String(value.status))) return invalid()
-  return value as unknown as Message
+  const message = value as unknown as Message
+  if (value.attachments === undefined) return message
+  if (!Array.isArray(value.attachments)) return invalid()
+  return { ...message, attachments: value.attachments.map(parseChatAttachment) }
 }
 export function parseSnapshot(value: unknown): Snapshot {
   if (!record(value) || !record(value.run)) return invalid()
@@ -53,8 +57,17 @@ export async function getMessages(id: string, afterSequence = 0): Promise<Messag
   if (!record(body) || !Array.isArray(body.items) || typeof body.has_more !== 'boolean' || !(body.active_run_id === null || typeof body.active_run_id === 'string')) return invalid()
   return { items: body.items.map(parseMessage), has_more: body.has_more, active_run_id: body.active_run_id }
 }
-export async function createRun(id: string, content: string, key: string): Promise<Snapshot> {
-  return parseSnapshot(await requestJson('/api/conversations/' + encodeURIComponent(id) + '/runs', { method: 'POST', body: JSON.stringify({ content, idempotency_key: key }) }))
+export async function createRun(id: string, content: string, key: string, attachmentIds: string[] = []): Promise<Snapshot> {
+  const body = attachmentIds.length ? { content, idempotency_key: key, attachment_ids: attachmentIds } : { content, idempotency_key: key }
+  return parseSnapshot(await requestJson('/api/conversations/' + encodeURIComponent(id) + '/runs', { method: 'POST', body: JSON.stringify(body) }))
+}
+export async function createRunWithFiles(id: string, content: string, key: string, files: File[], attachmentIds: string[]): Promise<Snapshot> {
+  const form = new FormData()
+  form.set('content', content)
+  form.set('idempotency_key', key)
+  if (attachmentIds.length) form.set('attachment_ids', JSON.stringify(attachmentIds))
+  for (const file of files) form.append('files', file, file.name)
+  return parseSnapshot(await requestForm('/api/conversations/' + encodeURIComponent(id) + '/runs/attachments', form))
 }
 export async function getRun(id: string): Promise<Snapshot> { return parseSnapshot(await requestJson('/api/runs/' + encodeURIComponent(id))) }
 export async function cancelRun(id: string): Promise<Snapshot> {

@@ -31,7 +31,8 @@ it('保留代码块与换行', () => {
 })
 
 it('renderCitations 把 [n] 渲染为可点击角标', () => {
-  const html = renderCitations('<p>参考 [1] 和 [2] 的内容。</p>')
+  const { html, cited } = renderCitations('<p>参考 [1] 和 [2] 的内容。</p>', [1, 2])
+  expect(cited).toEqual([1, 2])
   expect(html).toContain('data-cite="1"')
   expect(html).toContain('data-cite="2"')
   expect(html).toContain('[1]')
@@ -39,7 +40,7 @@ it('renderCitations 把 [n] 渲染为可点击角标', () => {
 })
 
 it('renderCitations 跳过代码块中的 [n]', () => {
-  const html = renderCitations('<pre><code>arr[1] = 5</code></pre><p>参考 [1]。</p>')
+  const { html } = renderCitations('<pre><code>arr[1] = 5</code></pre><p>参考 [1]。</p>', [1])
   // 代码块中的 [1] 保持原样
   expect(html).toContain('arr[1]')
   // 正文中的 [1] 被渲染为角标
@@ -50,7 +51,7 @@ it('renderCitations 跳过代码块中的 [n]', () => {
 })
 
 it('renderCitations 不替换越界编号', () => {
-  const html = renderCitations('<p>参考 [99] 的内容。</p>', 5)
+  const { html } = renderCitations('<p>参考 [99] 的内容。</p>', [5])
   expect(html).toContain('[99]')
   expect(html).not.toContain('data-cite="99"')
 })

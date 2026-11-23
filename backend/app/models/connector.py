@@ -4,12 +4,40 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
 from app.models.identity import User  # noqa: F401  导入以解析 FK 元数据
+
+
+class PersonalConnectorBinding(Base):
+    """每位空间成员独立绑定自己的外部账号。"""
+
+    __tablename__ = "personal_connector_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "user_id"],
+            ["workspace_memberships.workspace_id", "workspace_memberships.user_id"],
+            ondelete="CASCADE",
+        ),
+    )
+    workspace_id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(primary_key=True)
+    connector_key: Mapped[str] = mapped_column(ForeignKey("connectors.key", ondelete="CASCADE"), primary_key=True)
+    ciphertext: Mapped[str] = mapped_column(Text)
 
 
 class Connector(Base):

@@ -23,7 +23,14 @@ async function setup(role: api.Role = 'admin') {
   const auth = useAuthStore(pinia)
   auth.session = { user: { id: 'u1', username: 'admin', display_name: '管理员' }, csrf_token: 'csrf', expires_at: '', workspaces: [{ id: 'w1', slug: 'default', name: '测试空间', status: 'active', role }] }
   auth.selectedWorkspaceId = 'w1'
-  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/admin/members', component: AdminView }, { path: '/chat', component: { template: '<div>问答</div>' } }] })
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/admin/members', component: AdminView },
+      { path: '/admin/system-logs', component: { template: '<div>系统日志</div>' } },
+      { path: '/chat', component: { template: '<div>问答</div>' } },
+    ],
+  })
   await router.push('/admin/members')
   const wrapper = mount(AdminView, { global: { plugins: [pinia, router] } })
   await flushPromises()
@@ -39,6 +46,7 @@ it('普通成员不能读取管理列表或创建用户', async () => {
 it('管理员创建用户，密码明文且不施加字符长度限制', async () => {
   const { wrapper } = await setup()
   expect(wrapper.text()).toContain('成员甲')
+  expect(wrapper.get('.admin__logs-link').attributes('href')).toBe('/admin/system-logs')
   await wrapper.get('.admin__heading button').trigger('click')
   await wrapper.get('[name="username"]').setValue('alice')
   await wrapper.get('[name="displayName"]').setValue('成员甲')

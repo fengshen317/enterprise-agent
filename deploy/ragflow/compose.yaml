@@ -1,0 +1,203 @@
+x-logging: &logging
+  driver: local
+
+x-ragflow-password: &ragflow-password ${EA_RAGFLOW_SERVICE_PASSWORD:?请在根目录 .env 中设置 RAGFlow 内部服务密码}
+
+services:
+  ragflow:
+    image: ${EA_RAGFLOW_IMAGE:-infiniflow/ragflow:v1.0.0}
+    restart: unless-stopped
+    entrypoint: ["/bin/bash", "/etc/enterprise-agent/ragflow-entrypoint.sh"]
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    environment:
+      DEVICE: cpu
+      DB_TYPE: mysql
+      DOC_ENGINE: elasticsearch
+      STORAGE_IMPL: MINIO
+      ENABLE_REGISTER: ${EA_RAGFLOW_REGISTER_ENABLED:-0}
+      EA_RAGFLOW_ADMIN_PASSWORD: ${EA_RAGFLOW_ADMIN_PASSWORD:-}
+      MYSQL_HOST: ragflow-db
+      MYSQL_DBNAME: rag_flow
+      MYSQL_USER: rag_flow
+      MYSQL_PASSWORD: *ragflow-password
+      ES_HOST: ragflow-search
+      ELASTIC_PASSWORD: *ragflow-password
+      MINIO_HOST: ragflow-objects
+      MINIO_USER: rag_flow
+      MINIO_PASSWORD: *ragflow-password
+      KVROCKS_HOST: ragflow-cache
+      REDIS_PASSWORD: *ragflow-password
+      NATS_HOST: ragflow-queue
+      CLICKHOUSE_HOST: ragflow-analytics
+      CLICKHOUSE_PASSWORD: *ragflow-password
+    ports:
+      # 管理界面通过服务器本机或 SSH 隧道访问，工作台 API 通过容器网络调用。
+      - "127.0.0.1:${EA_RAGFLOW_UI_PORT:-9388}:80"
+    volumes:
+      - ./entrypoint.sh:/etc/enterprise-agent/ragflow-entrypoint.sh:ro
+      - ragflow_admin_state:/var/lib/ea-ragflow-admin
+    networks:
+      - ragflow_client
+      - ragflow_storage
+    depends_on:
+      ragflow-db:
+        condition: service_healthy
+      ragflow-search:
+        condition: service_healthy
+      ragflow-objects:
+        condition: service_healthy
+      ragflow-cache:
+        condition: service_healthy
+      ragflow-queue:
+        condition: service_healthy
+      ragflow-analytics:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "--max-time", "5", "http://127.0.0.1/api/v1/system/healthz"]
+      interval: 10s
+      timeout: 6s
+      retries: 24
+      start_period: 60s
+    logging: *logging
+
+  ragflow-db:
+    image: mysql:8.0.39
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_HOST: localhost
+      MYSQL_ROOT_PASSWORD: *ragflow-password
+      MYSQL_DATABASE: rag_flow
+      MYSQL_USER: rag_flow
+      MYSQL_PASSWORD: *ragflow-password
+    command:
+      - --max_connections=1000
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+    volumes:
+      - ragflow_mysql:/var/lib/mysql
+    networks:
+      - ragflow_storage
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysql --protocol=TCP -h127.0.0.1 -u\"$$MYSQL_USER\" \"$$MYSQL_DATABASE\" -e 'SELECT 1'"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 30s
+    logging: *logging
+
+  ragflow-search:
+    image: elasticsearch:8.11.3
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "false"
+      xpack.security.transport.ssl.enabled: "false"
+      ES_JAVA_OPTS: -Xms1g -Xmx1g
+      ELASTIC_PASSWORD: *ragflow-password
+    volumes:
+      - ragflow_elasticsearch:/usr/share/elasticsearch/data
+    networks:
+      - ragflow_storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS --user \"elastic:$$ELASTIC_PASSWORD\" 'http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=4s'"]
+      interval: 10s
+      timeout: 6s
+      retries: 24
+      start_period: 30s
+    logging: *logging
+
+  ragflow-objects:
+    image: pgsty/minio:RELEASE.2026-03-25T00-00-00Z
+    restart: unless-stopped
+    command: ["server", "--console-address", ":9001", "/data"]
+    environment:
+      MINIO_ROOT_USER: rag_flow
+      MINIO_ROOT_PASSWORD: *ragflow-password
+    volumes:
+      - ragflow_minio:/data
+    networks:
+      - ragflow_storage
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    logging: *logging
+
+  ragflow-cache:
+    image: apache/kvrocks:2.16.0
+    restart: unless-stopped
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      # Kvrocks 配置文件不会展开环境变量，启动时生成仅容器用户可读的配置。
+      - |
+        umask 077
+        printf 'bind 0.0.0.0\nport 6379\ndir /var/lib/kvrocks\nrequirepass %s\n' "$$REDIS_PASSWORD" > /tmp/kvrocks.conf
+        exec kvrocks -c /tmp/kvrocks.conf
+    environment:
+      REDIS_PASSWORD: *ragflow-password
+    volumes:
+      - ragflow_kvrocks:/var/lib/kvrocks
+    networks:
+      - ragflow_storage
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -qx PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    logging: *logging
+
+  ragflow-queue:
+    image: nats:2.14.2
+    restart: unless-stopped
+    command: ["-js", "-sd", "/data", "--http_port", "8222"]
+    volumes:
+      - ragflow_nats:/data
+    networks:
+      - ragflow_storage
+    healthcheck:
+      test: ["CMD", "nats-server", "--health-check"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    logging: *logging
+
+  ragflow-analytics:
+    image: clickhouse/clickhouse-server:26.5.5.8
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: ragflow
+      CLICKHOUSE_USER: ragflow
+      CLICKHOUSE_PASSWORD: *ragflow-password
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - ragflow_clickhouse:/var/lib/clickhouse
+    networks:
+      - ragflow_storage
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user \"$$CLICKHOUSE_USER\" --password \"$$CLICKHOUSE_PASSWORD\" --database \"$$CLICKHOUSE_DB\" --query 'SELECT 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 24
+      start_period: 30s
+    logging: *logging
+
+networks:
+  ragflow_client:
+  ragflow_storage:
+    internal: true
+
+volumes:
+  ragflow_admin_state:
+  ragflow_mysql:
+  ragflow_elasticsearch:
+  ragflow_minio:
+  ragflow_kvrocks:
+  ragflow_nats:
+  ragflow_clickhouse:

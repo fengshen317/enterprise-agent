@@ -13,6 +13,7 @@ import pytest
 import uvicorn
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from pydantic import SecretStr
 
 from app.agents.provider import ChatHistory
 from app.core.config import Settings
@@ -111,6 +112,8 @@ async def chat() -> AsyncIterator[tuple[FastAPI, AsyncClient, ControlledProvider
             "task_scheduler_enabled": False,
             "schedule_enabled": False,
             "knowledge_enabled": False,
+            # SDK 用例断言模型可见的工具全集，不能随开发机的联网搜索配置变化。
+            "tavily_api_key": SecretStr(""),
         }
     )
     provider = ControlledProvider()

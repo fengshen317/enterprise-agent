@@ -52,18 +52,37 @@ export function renderMarkdown(source: string): string {
   }
 }
 
-/** 把正文中的 [n] 引用编号渲染为可点击角标，跳过代码块和链接。 */
-export function renderCitations(html: string, maxCite = 99): string {
-  // 按代码块分割，只在非代码段替换 [n]。
-  const segments = html.split(/(<pre[\s\S]*?<\/pre>|<code[\s\S]*?<\/code>)/g)
-  return segments.map(segment => {
-    // 代码块原样保留
-    if (segment.startsWith('<pre') || segment.startsWith('<code')) return segment
-    // 跳过已有的 <a> 链接内容中的 [n]（如 [1](url) 已被 marked 解析为 <a>）
-    return segment.replace(/\[(\d{1,2})\]/g, (match, num: string) => {
-      const n = parseInt(num, 10)
-      if (n < 1 || n > maxCite) return match
-      return `<sup class="citation" data-cite="${n}" style="cursor:pointer;color:#18775c;font-size:0.75em;">[${n}]</sup>`
-    })
-  }).join('')
+export function renderCitations(html: string, allowed: readonly number[]): { html: string; cited: number[] } {
+  if (!allowed.length) return { html, cited: [] }
+  const template = document.createElement('template')
+  template.innerHTML = html
+  const walk = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT)
+  const nodes: Node[] = []
+  const valid = new Set(allowed)
+  const cited = new Set<number>()
+  while (walk.nextNode()) nodes.push(walk.currentNode)
+  for (const node of nodes) {
+    if (node.parentElement?.closest('a, code, pre, button')) continue
+    const text = node.textContent ?? ''
+    let offset = 0
+    const fragment = document.createDocumentFragment()
+    for (const match of text.matchAll(/\[([1-9]\d*)\]/g)) {
+      const index = Number(match[1])
+      if (!valid.has(index)) continue
+      cited.add(index)
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'citation'
+      button.dataset.cite = String(index)
+      button.setAttribute('aria-label', '查看引用 ' + index)
+      button.textContent = match[0]
+      fragment.append(text.slice(offset, match.index), button)
+      offset = match.index + match[0].length
+    }
+    if (offset) {
+      fragment.append(text.slice(offset))
+      node.parentNode?.replaceChild(fragment, node)
+    }
+  }
+  return { html: template.innerHTML, cited: [...cited] }
 }

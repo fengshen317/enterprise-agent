@@ -1,0 +1,10 @@
+*
+!package.json
+!package-lock.json
+!index.html
+!tsconfig.json
+!vite.config.ts
+!src/
+!Caddyfile
+**/.env*
+**/*.tsbuildinfo

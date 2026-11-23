@@ -748,6 +748,15 @@ async def test_schedule_result_and_approval_push_use_the_window() -> None:
     assert linked.conversation_id == conversation_id
     await runtime.on_run_finished(muted_run)
     assert ilink.sent == ["【定时问答 · 每日晨报】\n晨报正文"]
+    # 即使用户已绑定微信且窗口有效，网页问答也不应跨通道发送。
+    for status in ("completed", "failed"):
+        web_run = uuid4()
+        store.deliveries[web_run] = RunDelivery(
+            web_run, account.user_id, account.workspace_id, conversation_id,
+            status, "网页回答", "网页错误", "web_question", None, None, False,
+        )
+        await runtime.on_run_finished(web_run)
+        assert ilink.sent == ["【定时问答 · 每日晨报】\n晨报正文"]
     handler.direct_runs.add(fresh_run)
     await runtime.on_run_finished(fresh_run)
     assert ilink.sent == ["【定时问答 · 每日晨报】\n晨报正文"]

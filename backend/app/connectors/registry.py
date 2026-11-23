@@ -25,7 +25,7 @@ from app.connectors.base import (
     health_exception,
     health_failure,
 )
-from app.connectors.catalog import FUND_MARKET, YANGJIBAO
+from app.connectors.catalog import FUND_MARKET, PERSONAL_CONNECTORS, YANGJIBAO
 from app.connectors.yangjibao import BINDING_OWNER_KEY, YangJiBaoConnector
 from app.connectors.yangjibao_authorization import YangJiBaoScan
 from app.core.errors import ApplicationError
@@ -445,6 +445,10 @@ class ConnectorRegistry:
             带健康反馈的工具声明。
         """
 
+        if connector.key in PERSONAL_CONNECTORS:
+            # 单个用户授权失效不能改变其他用户看到的全局连接器状态。
+            return spec
+
         async def handler(context: ToolContext, arguments: BaseModel) -> object:
             """记录当前实例的真实调用结果。
 
@@ -634,6 +638,10 @@ class ConnectorRegistry:
         Returns:
             连接器实例；kind 未知返回空。
         """
+        if row.key in PERSONAL_CONNECTORS:
+            from app.connectors.personal import PersonalConnector
+
+            return PersonalConnector(row.key)
         if row.kind == "api":
             if row.key == FUND_MARKET.key:
                 from app.connectors.fund_market import FundMarketConnector

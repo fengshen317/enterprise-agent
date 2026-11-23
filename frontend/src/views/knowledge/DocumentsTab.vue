@@ -8,7 +8,9 @@ import {
   type KnowledgeBase,
   type KnowledgeDocument,
 } from '../../api/knowledge'
+import { useAuthStore } from '../../stores/auth'
 import DocumentChunksDialog from './DocumentChunksDialog.vue'
+import DocumentReadersDialog from './DocumentReadersDialog.vue'
 import ReparseDialog from './ReparseDialog.vue'
 import {
   errorLabel,
@@ -38,6 +40,11 @@ const uploadItems = ref<UploadItem[]>([])
 const chunkDoc = ref<KnowledgeDocument | null>(null)
 const reparseDoc = ref<KnowledgeDocument | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
+const auth = useAuthStore()
+const uploadMode = ref<'inherited' | 'restricted'>('inherited')
+const openingUploadReaders = ref(false)
+const editingReaders = ref<KnowledgeDocument>()
+const currentUserId = computed(() => auth.session?.user.id ?? '')
 let alive = true
 let revision = 0
 let timer: ReturnType<typeof setTimeout> | undefined
@@ -77,14 +84,20 @@ function onFiles(event: Event): void {
   uploadItems.value = files.map(file => ({ file, status: 'pending' }))
 }
 
-async function uploadAll(): Promise<void> {
+function startUpload(): void {
+  if (props.kb.visibility === 'workspace' && uploadMode.value === 'restricted') openingUploadReaders.value = true
+  else void uploadAll()
+}
+
+async function uploadAll(readers?: string[]): Promise<void> {
   if (uploading.value || !uploadItems.value.length) return
   uploading.value = true; error.value = ''; notice.value = ''
   for (const item of uploadItems.value) {
     if (item.status !== 'pending') continue
     item.status = 'uploading'
     try {
-      await uploadKnowledgeDocument(props.kb.id, item.file)
+      if (readers) await uploadKnowledgeDocument(props.kb.id, item.file, readers)
+      else await uploadKnowledgeDocument(props.kb.id, item.file)
       item.status = 'done'
     } catch (value) {
       item.status = 'failed'
@@ -99,6 +112,18 @@ async function uploadAll(): Promise<void> {
   await load()
   emit('changed')
   schedulePoll()
+}
+
+function uploadRestricted(readers: string[]): void {
+  openingUploadReaders.value = false
+  void uploadAll(readers)
+}
+
+async function afterReadersChanged(): Promise<void> {
+  editingReaders.value = undefined
+  notice.value = '读取权限已更新。'
+  await load()
+  emit('changed')
 }
 
 function preview(item: KnowledgeDocument): void {
@@ -142,7 +167,18 @@ onBeforeUnmount(() => { alive = false; revision++; clearTimeout(timer) })
         </p>
       </div>
       <div class="documents-tab__upload">
+        <label v-if="kb.can_manage && kb.visibility === 'workspace'">
+          读取权限
+          <select
+            v-model="uploadMode"
+            :disabled="uploading"
+          >
+            <option value="inherited">继承知识库</option>
+            <option value="restricted">仅指定成员</option>
+          </select>
+        </label>
         <input
+          v-if="kb.can_manage"
           ref="fileInput"
           name="knowledgeFiles"
           type="file"
@@ -150,12 +186,13 @@ onBeforeUnmount(() => { alive = false; revision++; clearTimeout(timer) })
           :disabled="uploading"
           @change="onFiles"
         /><button
+          v-if="kb.can_manage"
           type="button"
           class="documents-tab__primary"
           :disabled="uploading || !uploadItems.length"
-          @click="uploadAll"
+          @click="startUpload"
         >
-          {{ uploading ? '上传中…' : '上传所选文件' }}
+          {{ uploading ? '上传中…' : kb.visibility === 'workspace' && uploadMode === 'restricted' ? '选择读者并上传' : '上传所选文件' }}
         </button><button
           type="button"
           :disabled="loading"
@@ -202,7 +239,12 @@ onBeforeUnmount(() => { alive = false; revision++; clearTimeout(timer) })
             :key="item.id"
           >
             <td>
-              <strong>{{ item.name }}</strong><small>{{ item.mime }} · {{ formatSize(item.size) }} · {{ timeLabel(item.created_at) }}</small>
+              <strong>{{ item.name }}</strong>
+              <span
+                v-if="item.restricted"
+                class="documents-tab__scope"
+              >仅指定成员</span>
+              <small>{{ item.mime }} · {{ formatSize(item.size) }} · {{ timeLabel(item.created_at) }}</small>
             </td>
             <td>
               <span class="documents-tab__state">{{ statusLabel(item.status) }}</span>
@@ -231,12 +273,20 @@ onBeforeUnmount(() => { alive = false; revision++; clearTimeout(timer) })
               >
                 查看分块
               </button><button
+                v-if="kb.can_manage && item.restricted"
+                type="button"
+                @click="editingReaders = item"
+              >
+                读取权限
+              </button><button
+                v-if="kb.can_manage"
                 type="button"
                 :disabled="!!rowBusy"
                 @click="reparseDoc = item"
               >
                 重新解析
               </button><button
+                v-if="kb.can_manage"
                 type="button"
                 :disabled="!!rowBusy"
                 @click="remove(item)"
@@ -254,6 +304,15 @@ onBeforeUnmount(() => { alive = false; revision++; clearTimeout(timer) })
         {{ loading ? '正在读取文档…' : '还没有文档。支持 PDF、Word、Excel、PPT、TXT、Markdown、HTML 等。' }}
       </p>
     </div>
+    <DocumentReadersDialog
+      v-if="openingUploadReaders || editingReaders"
+      :kb-id="kb.id"
+      :document="editingReaders"
+      :current-user-id="currentUserId"
+      @close="openingUploadReaders = false; editingReaders = undefined"
+      @selected="uploadRestricted"
+      @saved="afterReadersChanged"
+    />
     <DocumentChunksDialog
       v-if="chunkDoc"
       :document="chunkDoc"
@@ -276,6 +335,9 @@ onBeforeUnmount(() => { alive = false; revision++; clearTimeout(timer) })
   &__toolbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; flex-wrap: wrap; h2 { font-size: 17px; font-weight: 500; } }
   &__hint { color: $muted; font-size: 11px; line-height: 1.8; margin-top: 8px; max-width: 520px; }
   &__upload { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; input[type="file"] { max-width: 260px; font-size: 11px; } button { border: 1px solid $line; background: $paper; border-radius: 5px; padding: 8px 12px; color: $green; font-size: 12px; } }
+  &__upload label, &__scope { color: $muted; font-size: 11px; }
+  &__upload select { border: 1px solid $line; border-radius: 5px; padding: 6px; background: $paper; color: $green; }
+  &__scope { margin-left: 8px; }
   &__primary { background: $green !important; color: white !important; border-color: $green !important; }
   &__queue { list-style: none; margin: 16px 0 0; padding: 12px 14px; background: $paper; border-radius: 6px; font-size: 11px; li { display: flex; flex-wrap: wrap; gap: 10px; padding: 4px 0; color: $green; small { color: #934b40; width: 100%; } } }
   &__table-wrap { overflow-x: auto; margin-top: 18px; }

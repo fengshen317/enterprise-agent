@@ -221,7 +221,17 @@ async def test_real_sdk_tool_roundtrip_and_builtin_denial(
         """
         body = json.loads(request.content)
         captured.append(body)
-        assert {item["function"]["name"] for item in body["tools"]} == {TOOL_NAME, "update_plan", "delegate_tasks"}
+        assert {item["function"]["name"] for item in body["tools"]} == {
+            TOOL_NAME,
+            "search_uploaded_materials",
+            "read_uploaded_material",
+            "update_plan",
+            "delegate_tasks",
+            "create_private_skill",
+            "create_deliverable",
+            "publish_private_skill",
+            "create_private_agent",
+        }
         if len(captured) == 1:
             delta = {
                 "tool_calls": [

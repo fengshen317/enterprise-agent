@@ -15,6 +15,7 @@ export interface Tool {
   input_schema: Record<string, unknown>
   enabled: boolean
   used_by_agents: number
+  connector_key?: string | null
 }
 
 export interface ToolCall {
@@ -41,7 +42,8 @@ export function parseTool(value: unknown): Tool {
     || !['read', 'write', 'delete', 'external'].includes(String(value.risk))
     || (value.approval !== 'never' && value.approval !== 'always')
     || typeof value.timeout_seconds !== 'number' || typeof value.quota_per_run !== 'number'
-    || !record(value.input_schema) || typeof value.enabled !== 'boolean' || typeof value.used_by_agents !== 'number') return invalid()
+    || !record(value.input_schema) || typeof value.enabled !== 'boolean' || typeof value.used_by_agents !== 'number'
+    || (value.connector_key != null && typeof value.connector_key !== 'string')) return invalid()
   return value as unknown as Tool
 }
 export async function listTools(): Promise<Tool[]> {

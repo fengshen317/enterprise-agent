@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -131,12 +132,17 @@ class ApprovalService:
             async with executor.factory() as session:
                 scope, conversation_id = await executor._scope_row(session)
             context = executor._context(scope, conversation_id)
-            preview = (
+            candidate = (
                 spec.approval_preview(arguments, context)
                 if spec.approval_preview is not None
                 else {"summary": f"{spec.display_name}需要执行"}
             )
-            payload = json.dumps(arguments.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, default=str)
+            preview = await candidate if inspect.isawaitable(candidate) else candidate
+            values = arguments.model_dump(mode="json")
+            if spec.key == "create_scheduled_task":
+                # 默认时区属于本次审批内容，恢复时配置可能已改变。
+                values["timezone"] = preview["timezone"]
+            payload = json.dumps(values, ensure_ascii=False, sort_keys=True, default=str)
             digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
             expires_at = datetime.now(UTC) + timedelta(seconds=self.settings.approval_timeout_seconds)
             async with self.factory.begin() as session:
@@ -152,6 +158,7 @@ class ApprovalService:
                         risk_level=spec.risk,
                         args_digest=digest,
                         args_preview=preview,
+                        execution_args=values if spec.key == "create_scheduled_task" else None,
                         requested_by_user_id=scope.user_id,
                         expires_at=expires_at,
                     )
@@ -182,7 +189,13 @@ class ApprovalService:
                 )
             if scope is None:
                 raise ApplicationError("ACCESS_REVOKED", "资源权限已失效，生成已停止", 403)
-            preview_text = json.dumps(preview, ensure_ascii=False, default=str)[:300]
+            # 个人流程和 Agent 指令的全文供网页审批查看，渠道通知只转发操作摘要。
+            if {"content_md", "instructions"}.intersection(preview) or spec.key in {
+                "update_scheduled_task", "create_deliverable",
+            }:
+                preview_text = str(preview.get("summary", spec.display_name))[:300]
+            else:
+                preview_text = json.dumps(preview, ensure_ascii=False, default=str)[:300]
             await self._emit_requested(
                 ApprovalNotice(
                     approval_id=approval_id,

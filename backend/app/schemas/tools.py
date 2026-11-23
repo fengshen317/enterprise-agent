@@ -44,7 +44,7 @@ class ToolCallView(BaseModel):
 
 
 class ToolView(BaseModel):
-    """内置工具目录项，不包含 handler 或内部策略。"""
+    """工具目录项，不包含 handler 或内部策略。"""
 
     key: str
     version: int
@@ -57,6 +57,7 @@ class ToolView(BaseModel):
     input_schema: dict[str, object]
     enabled: bool = True
     used_by_agents: int = 0
+    connector_key: str | None = None
 
 
 class ToolPolicyInput(BaseModel):

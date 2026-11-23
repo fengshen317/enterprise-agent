@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    Integer,
     String,
     Text,
     func,
@@ -18,6 +19,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
+from app.services.schedule_calendar import ScheduleCalendar
 
 
 class ScheduledTask(Base):
@@ -29,7 +31,14 @@ class ScheduledTask(Base):
         CheckConstraint("length(trim(prompt)) > 0", name="prompt_nonempty"),
         CheckConstraint("length(trim(cron_expression)) > 0", name="cron_nonempty"),
         CheckConstraint("length(trim(timezone)) > 0", name="timezone_nonempty"),
-        CheckConstraint("NOT enabled OR next_run_at IS NOT NULL", name="enabled_next_run"),
+        CheckConstraint(
+            "NOT enabled OR next_run_at IS NOT NULL OR calendar_waiting_year IS NOT NULL", name="enabled_next_run"
+        ),
+        CheckConstraint("calendar_mode IN ('all_days', 'cn_workday', 'cn_a_share')", name="calendar_mode"),
+        CheckConstraint(
+            "calendar_waiting_year IS NULL OR (enabled AND next_run_at IS NULL AND calendar_mode != 'all_days')",
+            name="calendar_waiting",
+        ),
         CheckConstraint("last_status IS NULL OR last_status IN ('started', 'skipped')", name="last_status"),
         ForeignKeyConstraint(
             ["workspace_id", "owner_user_id"],
@@ -52,6 +61,9 @@ class ScheduledTask(Base):
     prompt: Mapped[str] = mapped_column(Text)
     cron_expression: Mapped[str] = mapped_column(String(100))
     timezone: Mapped[str] = mapped_column(String(64))
+    calendar_mode: Mapped[ScheduleCalendar] = mapped_column(String(16), default="all_days", server_default="all_days")
+    calendar_waiting_year: Mapped[int | None] = mapped_column(Integer)
+    revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     # 主动外发必须由用户逐任务开启，避免新增渠道后旧任务突然产生通知。
     push_to_wechat: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")

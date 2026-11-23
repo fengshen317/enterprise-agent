@@ -1,18 +1,21 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { useConnectorsStore } from '../../stores/connectors'
 import {
   listBuiltinConnectors,
   connectorHealthLabel,
   installConnector,
+  isPersonalConnector,
   setConnectorEnabled,
   type BuiltinConnector,
   type ConnectorHealth,
   type ConnectorView,
 } from '../../api/connectors'
 import ConnectorConfigDialog from './ConnectorConfigDialog.vue'
+
+defineProps<{ embedded?: boolean }>()
 
 interface ConnectorCard {
   key: string
@@ -97,7 +100,7 @@ async function connect(card: ConnectorCard): Promise<void> {
     // 安装是独立操作，切换工作空间后由新页面中的用户继续启用。
     if (!current()) return
     const connector = await setConnectorEnabled(card.key, true)
-    if (current() && needsConnection(connector)) selectedKey.value = card.key
+    if (current() && (needsConnection(connector) || isPersonalConnector(card.key))) selectedKey.value = card.key
   } catch (value) {
     if (current()) operationError.value = value instanceof Error ? value.message : '连接失败，请重试'
   } finally {
@@ -114,7 +117,7 @@ function closeConfig(): void {
 }
 
 watch(() => route.query.connector, key => {
-  if (typeof key === 'string' && key) selectedKey.value = key
+  selectedKey.value = typeof key === 'string' ? key : ''
 }, { immediate: true })
 onMounted(() => {
   store.acquire()
@@ -127,9 +130,15 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section class="connectors">
+  <section
+    class="connectors"
+    :class="{ 'connectors--embedded': embedded }"
+    aria-label="连接器"
+  >
     <header class="connectors__heading">
-      <h1>连接器</h1>
+      <h1 v-if="!embedded">
+        连接器
+      </h1>
       <input
         v-model="search"
         class="connectors__search"
@@ -195,9 +204,24 @@ onUnmounted(() => {
           >
             {{ card.description }}
           </p>
+          <RouterLink
+            v-if="embedded && card.connection"
+            class="connectors__tools-link"
+            :to="{ path: '/capabilities', query: { tab: 'tools', source: card.key } }"
+          >
+            查看工具
+          </RouterLink>
         </div>
         <div class="connectors__actions">
-          <template v-if="card.connection && !needsConnection(card.connection)">
+          <button
+            v-if="card.connection?.enabled && isPersonalConnector(card.key)"
+            type="button"
+            class="connectors__text-button"
+            @click="selectedKey = card.key"
+          >
+            我的账号
+          </button>
+          <template v-else-if="card.connection && !needsConnection(card.connection)">
             <span
               :class="['connectors__status', statusClass(card.connection)]"
               role="img"
@@ -253,6 +277,7 @@ onUnmounted(() => {
   margin: 0 auto;
   padding: clamp(1.25rem, 3vw, 2.5rem);
   color: $ink;
+  &--embedded { padding: 0; }
 
   &__heading {
     display: flex;
@@ -322,6 +347,7 @@ onUnmounted(() => {
   }
 
   &__card-body { flex: 1; min-width: 0; }
+  &__tools-link { display: inline-block; margin-top: 7px; color: $green; font-size: 12px; text-decoration: underline; }
   &__card-name { margin: 0; font-size: 1rem; line-height: 1.35; overflow-wrap: anywhere; }
   &__card-desc {
     display: -webkit-box;

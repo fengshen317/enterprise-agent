@@ -5,6 +5,7 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
+from app.agents.llm import create_llm
 from app.agents.provider import load_agent_sdk
 from app.core.config import Settings
 from app.core.errors import ApplicationError
@@ -62,14 +63,11 @@ class DeepSeekTaskProvider:
         """
         if len(system) + len(user) > self.settings.model_context_characters:
             raise ApplicationError("TASK_CONTEXT_TOO_LONG", "步骤输入超过上下文限制，请缩小任务范围", 422)
-        if not self.settings.deepseek_api_key.get_secret_value().strip():
-            raise ApplicationError("MODEL_NOT_CONFIGURED", "请配置 DeepSeek API Key", 503)
         await asyncio.to_thread(load_agent_sdk)
         from deepagents import create_deep_agent
         from langchain.agents.middleware import ModelRequest, ModelResponse, wrap_model_call
         from langchain.agents.middleware.types import InputAgentState
         from langchain_core.messages import AIMessage
-        from langchain_deepseek import ChatDeepSeek
 
         @wrap_model_call
         async def no_tools(
@@ -89,15 +87,7 @@ class DeepSeekTaskProvider:
                 raise ApplicationError("TOOL_NOT_ALLOWED", "请按确认计划通过执行器调用工具", 403)
             return response
 
-        model = ChatDeepSeek(
-            model=self.settings.deepseek_model,
-            api_key=self.settings.deepseek_api_key,
-            base_url="https://api.deepseek.com",
-            max_tokens=self.settings.model_max_tokens,
-            timeout=self.settings.model_timeout_seconds,
-            max_retries=0,
-            extra_body={"thinking": {"type": "disabled"}},
-        )
+        model = create_llm(self.settings)
         try:
             agent = create_deep_agent(model=model, system_prompt=system, middleware=[no_tools])
             state: InputAgentState = {"messages": [{"role": "user", "content": user}]}

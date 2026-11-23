@@ -97,7 +97,7 @@ async def test_chat_plan_parallel_agents_retry_and_private_history(
         names = {item["function"]["name"] for item in body.get("tools", [])}
         system = str(body["messages"][0]["content"])
         if "独立的" in system:
-            assert names == {"get_my_run_stats"}
+            assert names == {"get_my_run_stats", "search_uploaded_materials", "read_uploaded_material"}
             tool_messages = [message for message in body["messages"] if message["role"] == "tool"]
             if not tool_messages:
                 assert len(body["messages"]) == 2
@@ -109,7 +109,17 @@ async def test_chat_plan_parallel_agents_retry_and_private_history(
             result = json.loads(tool_messages[-1]["content"])
             assert result["ok"] and result["data"]["total"] == 1
             return response("子任务真实图结果")
-        assert names == {"get_my_run_stats", "update_plan", "delegate_tasks"}
+        assert names == {
+            "get_my_run_stats",
+            "search_uploaded_materials",
+            "read_uploaded_material",
+            "update_plan",
+            "delegate_tasks",
+            "create_private_skill",
+            "create_deliverable",
+            "publish_private_skill",
+            "create_private_agent",
+        }
         main_requests += 1
         if main_requests == 1:
             return response(name="update_plan", arguments=plan)

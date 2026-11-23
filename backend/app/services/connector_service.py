@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.connectors.base import ConnectorError
-from app.connectors.catalog import BUILTIN_CONNECTORS, YANGJIBAO, get_builtin
+from app.connectors.catalog import BUILTIN_CONNECTORS, PERSONAL_CONNECTORS, YANGJIBAO, get_builtin
 from app.connectors.registry import ConnectorRegistry
 from app.connectors.yangjibao import YangJiBaoConnector
 from app.core.errors import ApplicationError
@@ -190,6 +190,8 @@ class ConnectorService:
         if desc is None:
             raise ApplicationError("CONNECTOR_NOT_FOUND", "连接器不存在", 404)
 
+        if key in PERSONAL_CONNECTORS:
+            raise ApplicationError("PERSONAL_ACCOUNT_REQUIRED", "请在个人账号绑定区保存凭证", 409)
         if key == YANGJIBAO.key:
             raise ApplicationError("CONNECTOR_AUTH_REQUIRED", "养基宝持仓通过微信扫码配置", 409)
 
@@ -251,9 +253,10 @@ class ConnectorService:
         desc = self._registry.descriptor(key)
         if desc is None:
             raise ApplicationError("CONNECTOR_NOT_FOUND", "连接器不存在", 404)
+        success = "工具已加载，个人凭证将在实际调用时验证" if key in PERSONAL_CONNECTORS else "连接正常"
         return ConnectorTestResult(
             status=desc.status,
-            message=desc.last_error if desc.last_error else ("连接正常" if desc.status == "connected" else "连接失败"),
+            message=desc.last_error or (success if desc.status == "connected" else "连接失败"),
             tool_count=desc.tool_count,
             **ConnectorHealthView.model_validate(desc, from_attributes=True).model_dump(),
         )

@@ -8,13 +8,17 @@ from uuid import UUID
 
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.config import Settings
 from app.core.errors import ApplicationError
-from app.models.identity import WorkspaceMembership
-from app.models.knowledge import KnowledgeBase, KnowledgeDocument
+from app.models.identity import User, WorkspaceMembership
+from app.models.knowledge import KnowledgeBase, KnowledgeDocument, KnowledgeDocumentGrant
 from app.schemas.auth import ResourceScope
 from app.schemas.knowledge import (
+    MAX_RESTRICTED_DOCUMENTS,
+    DocumentReaders,
+    KnowledgeAccessMember,
     KnowledgeBaseInput,
     KnowledgeBaseView,
     KnowledgeChunk,
@@ -29,12 +33,13 @@ from app.schemas.knowledge import (
     RetrievalTestResult,
 )
 from app.services.auth import require_membership
-from app.services.ragflow import DatasetInfo, DocumentFile, DocumentInfo, RagflowClientProtocol
+from app.services.ragflow import DatasetInfo, DocumentFile, DocumentInfo, RagflowClientProtocol, RetrievedChunk
 
 logger = logging.getLogger(__name__)
 
 RETRIEVAL_TEST_CHUNK_CHARACTERS = 2000
 REPARSE_BATCH_SIZE = 50
+RETRIEVAL_DATASET_BATCH_SIZE = 20
 
 
 @dataclass(frozen=True)
@@ -83,7 +88,9 @@ class KnowledgeService:
         self.client = client
 
     @staticmethod
-    def _kb_view(kb: KnowledgeBase, document_count: int = 0, chunk_count: int = 0) -> KnowledgeBaseView:
+    def _kb_view(
+        kb: KnowledgeBase, document_count: int = 0, chunk_count: int = 0, *, can_manage: bool = False
+    ) -> KnowledgeBaseView:
         """把 ORM 记录转换为不暴露 RAGFlow ID 的公开视图。
 
         Args:
@@ -99,6 +106,7 @@ class KnowledgeService:
             name=kb.name,
             description=kb.description,
             visibility=kb.visibility,
+            can_manage=can_manage,
             status=kb.status,
             error_code=kb.error_code,
             parser_settings=ParserSettings.from_config(kb.parser_config),
@@ -123,6 +131,7 @@ class KnowledgeService:
         return KnowledgeDocumentView(
             id=doc.id,
             kb_id=doc.kb_id,
+            restricted=doc.restricted,
             name=doc.name,
             mime=doc.mime,
             size=doc.size,
@@ -186,7 +195,39 @@ class KnowledgeService:
         if role != "admin" and kb.owner_user_id != scope.user_id:
             raise ApplicationError("KNOWLEDGE_FORBIDDEN", "没有管理该知识库的权限", 403)
 
-    async def _kb(self, session: AsyncSession, scope: ResourceScope, kb_id: UUID) -> KnowledgeBase:
+    @staticmethod
+    def _document_readable(scope: ResourceScope) -> ColumnElement[bool]:
+        """统一过滤列表、统计和检索来源。"""
+        grant = select(KnowledgeDocumentGrant.document_id).where(
+            KnowledgeDocumentGrant.document_id == KnowledgeDocument.id,
+            KnowledgeDocumentGrant.workspace_id == scope.workspace_id,
+            KnowledgeDocumentGrant.user_id == scope.user_id,
+        ).exists()
+        return or_(KnowledgeDocument.restricted.is_(False), grant)
+
+    async def _require_document_read(
+        self, session: AsyncSession, scope: ResourceScope, kb: KnowledgeBase, doc: KnowledgeDocument
+    ) -> None:
+        """下载、详情和分块使用同一份显式授权。"""
+        self._require_read(kb, scope)
+        if doc.restricted and not await session.scalar(
+            select(KnowledgeDocument.id).where(KnowledgeDocument.id == doc.id, self._document_readable(scope))
+        ):
+            raise ApplicationError("DOCUMENT_NOT_FOUND", "文档不存在", 404)
+
+    @staticmethod
+    def _dataset_for(kb: KnowledgeBase, doc: KnowledgeDocument) -> str | None:
+        """受限文档只使用独立数据集，缺失配置时也不会回退到主数据集。"""
+        return kb.restricted_dataset_id if doc.restricted else kb.ragflow_dataset_id
+
+    @staticmethod
+    def _can_manage(kb: KnowledgeBase, scope: ResourceScope, role: str) -> bool:
+        """授权管理与内容读取分别校验。"""
+        return kb.owner_user_id == scope.user_id or (kb.visibility == "workspace" and role == "admin")
+
+    async def _kb(
+        self, session: AsyncSession, scope: ResourceScope, kb_id: UUID, *, lock: bool = False
+    ) -> KnowledgeBase:
         """按空间加载知识库，不存在或不属当前空间统一返回 404。
 
         Args:
@@ -197,12 +238,11 @@ class KnowledgeService:
         Returns:
             知识库记录。
         """
-        kb = await session.scalar(
-            select(KnowledgeBase).where(
-                KnowledgeBase.id == kb_id,
-                KnowledgeBase.workspace_id == scope.workspace_id,
-            )
+        query = select(KnowledgeBase).where(
+            KnowledgeBase.id == kb_id,
+            KnowledgeBase.workspace_id == scope.workspace_id,
         )
+        kb = await session.scalar(query.with_for_update() if lock else query)
         if kb is None:
             raise ApplicationError("KNOWLEDGE_NOT_FOUND", "知识库不存在", 404)
         return kb
@@ -253,6 +293,7 @@ class KnowledgeService:
                 .where(
                     KnowledgeDocument.workspace_id == scope.workspace_id,
                     KnowledgeDocument.kb_id.in_(kb_ids),
+                    self._document_readable(scope),
                 )
                 .group_by(KnowledgeDocument.kb_id)
             )
@@ -323,11 +364,13 @@ class KnowledgeService:
                 raise ApplicationError("KNOWLEDGE_NOT_FOUND", "知识库不存在", 404)
             stored.status = "ready"
             stored.ragflow_dataset_id = created.dataset_id
+            # 保留创建时选择的模型标识，后续更换租户默认模型不影响该库。
+            stored.embedding_model = stored.embedding_model or created.embedding_model
             stored.parser_config = config
             stored.error_code = None
             stored.updated_at = datetime.now(UTC)
             await session.flush()
-            return self._kb_view(stored)
+            return self._kb_view(stored, can_manage=True)
 
     async def list_bases(self, scope: ResourceScope, offset: int, limit: int) -> list[KnowledgeBaseView]:
         """列出当前用户可读的知识库。
@@ -341,7 +384,7 @@ class KnowledgeService:
             空间知识库与自己的私有知识库。
         """
         async with self.factory() as session:
-            await self._role(session, scope)
+            role = await self._role(session, scope)
             rows = list(
                 await session.scalars(
                     select(KnowledgeBase)
@@ -358,7 +401,10 @@ class KnowledgeService:
                 )
             )
             stats = await self._kb_stats(session, scope, [row.id for row in rows])
-            return [self._kb_view(row, *stats.get(row.id, (0, 0))) for row in rows]
+            return [
+                self._kb_view(row, *stats.get(row.id, (0, 0)), can_manage=self._can_manage(row, scope, role))
+                for row in rows
+            ]
 
     async def get(self, scope: ResourceScope, kb_id: UUID) -> KnowledgeBaseView:
         """读取知识库详情。
@@ -371,11 +417,11 @@ class KnowledgeService:
             公开视图。
         """
         async with self.factory() as session:
-            await self._role(session, scope)
+            role = await self._role(session, scope)
             kb = await self._kb(session, scope, kb_id)
             self._require_read(kb, scope)
             stats = await self._kb_stats(session, scope, [kb.id])
-            return self._kb_view(kb, *stats.get(kb.id, (0, 0)))
+            return self._kb_view(kb, *stats.get(kb.id, (0, 0)), can_manage=self._can_manage(kb, scope, role))
 
     async def update(self, scope: ResourceScope, kb_id: UUID, body: KnowledgeBaseInput) -> KnowledgeBaseView:
         """更新知识库；解析配置变化时同步 RAGFlow。
@@ -388,25 +434,24 @@ class KnowledgeService:
         Returns:
             更新后的公开视图。
         """
-        async with self.factory() as session:
+        async with self.factory.begin() as session:
             role = await self._role(session, scope)
-            kb = await self._kb(session, scope, kb_id)
+            kb = await self._kb(session, scope, kb_id, lock=True)
             self._require_manage(kb, scope, role)
             if body.visibility == "workspace" and role != "admin":
                 raise ApplicationError("KNOWLEDGE_FORBIDDEN", "仅空间管理员可以发布空间知识库", 403)
             if body.embedding_model and body.embedding_model != kb.embedding_model:
                 raise ApplicationError("EMBEDDING_MODEL_IMMUTABLE", "首版不支持修改 embedding 模型", 409)
             previous_config = dict(kb.parser_config or {})
-            dataset_id = kb.ragflow_dataset_id
             parser_id = body.parser_id or kb.parser_id
             parse_type = kb.parse_type
             new_config = body.parser_settings.merged_into(previous_config)
             config_changed = new_config != previous_config
             parser_changed = parser_id != kb.parser_id
-        if (config_changed or parser_changed) and dataset_id:
-            await self.client.update_dataset(dataset_id, parser_id, parse_type, new_config)
-        async with self.factory.begin() as session:
-            kb = await self._kb(session, scope, kb_id)
+            if config_changed or parser_changed:
+                for dataset_id in (kb.ragflow_dataset_id, kb.restricted_dataset_id):
+                    if dataset_id:
+                        await self.client.update_dataset(dataset_id, parser_id, parse_type, new_config)
             kb.name = body.name
             kb.description = body.description
             kb.visibility = body.visibility
@@ -417,7 +462,7 @@ class KnowledgeService:
             kb.updated_at = datetime.now(UTC)
             await session.flush()
             stats = await self._kb_stats(session, scope, [kb.id])
-            return self._kb_view(kb, *stats.get(kb.id, (0, 0)))
+            return self._kb_view(kb, *stats.get(kb.id, (0, 0)), can_manage=True)
 
     async def delete(self, scope: ResourceScope, kb_id: UUID) -> None:
         """删除知识库；RAGFlow 删除失败时保留失败状态。
@@ -426,26 +471,115 @@ class KnowledgeService:
             scope: 可信用户和空间。
             kb_id: 知识库标识。
         """
+        failure: ApplicationError | None = None
+        async with self.factory.begin() as session:
+            role = await self._role(session, scope)
+            kb = await self._kb(session, scope, kb_id, lock=True)
+            self._require_manage(kb, scope, role)
+            for field in ("restricted_dataset_id", "ragflow_dataset_id"):
+                dataset_id = getattr(kb, field)
+                if not dataset_id:
+                    continue
+                try:
+                    await self.client.delete_dataset(dataset_id)
+                except ApplicationError as exc:
+                    failure = exc
+                    break
+                setattr(kb, field, None)
+            if failure:
+                # 提交已删除的数据集状态，以便重试时只处理还存在的映射。
+                kb.status = "delete_failed"
+                kb.error_code = failure.code
+                kb.updated_at = datetime.now(UTC)
+            else:
+                await session.delete(kb)
+        if failure:
+            raise failure
+
+    async def list_access_members(
+        self, scope: ResourceScope, kb_id: UUID, query: str, offset: int, limit: int
+    ) -> list[KnowledgeAccessMember]:
+        """仅允许知识库管理者查询当前空间的可授权成员。"""
         async with self.factory() as session:
             role = await self._role(session, scope)
             kb = await self._kb(session, scope, kb_id)
             self._require_manage(kb, scope, role)
-            dataset_id = kb.ragflow_dataset_id
-            kb.status = "deleting"
-            kb.updated_at = datetime.now(UTC)
-        if dataset_id:
-            try:
-                await self.client.delete_dataset(dataset_id)
-            except ApplicationError as exc:
-                async with self.factory.begin() as session:
-                    await session.execute(
-                        update(KnowledgeBase)
-                        .where(KnowledgeBase.id == kb_id)
-                        .values(status="delete_failed", error_code=exc.code, updated_at=datetime.now(UTC))
-                    )
-                raise
+            members = select(User).join(WorkspaceMembership).where(
+                WorkspaceMembership.workspace_id == scope.workspace_id,
+                WorkspaceMembership.status == "active",
+                User.status == "active",
+            )
+            if query.strip():
+                search = query.strip()
+                members = members.where(or_(
+                    User.username.icontains(search, autoescape=True),
+                    User.display_name.icontains(search, autoescape=True),
+                ))
+            rows = await session.scalars(members.order_by(User.username).offset(offset).limit(limit))
+            return [
+                KnowledgeAccessMember(id=row.id, username=row.username, display_name=row.display_name) for row in rows
+            ]
+
+    @staticmethod
+    async def _validate_readers(session: AsyncSession, scope: ResourceScope, users: set[UUID]) -> None:
+        """只接受当前空间中的有效成员。"""
+        if not users:
+            return
+        active = await session.scalars(select(WorkspaceMembership.user_id).join(User).where(
+            WorkspaceMembership.workspace_id == scope.workspace_id,
+            WorkspaceMembership.user_id.in_(users),
+            WorkspaceMembership.status == "active",
+            User.status == "active",
+        ))
+        if set(active) != users:
+            raise ApplicationError("DOCUMENT_READERS_INVALID", "只能授权当前空间中的有效成员", 422)
+
+    async def document_readers(
+        self, scope: ResourceScope, document_id: UUID, new_readers: DocumentReaders | None = None
+    ) -> DocumentReaders:
+        """读取或原子替换受限文档的完整名单。"""
         async with self.factory.begin() as session:
-            await session.execute(delete(KnowledgeBase).where(KnowledgeBase.id == kb_id))
+            role = await self._role(session, scope)
+            doc = await self._document(session, scope, document_id)
+            kb = await self._kb(session, scope, doc.kb_id, lock=new_readers is not None)
+            self._require_manage(kb, scope, role)
+            if not doc.restricted:
+                raise ApplicationError("DOCUMENT_ACCESS_INHERITED", "该文件继承知识库权限", 409)
+            if new_readers is not None:
+                await require_membership(session, scope, write=True)
+                users = set(new_readers.user_ids)
+                await self._validate_readers(session, scope, users)
+                await session.execute(delete(KnowledgeDocumentGrant).where(
+                    KnowledgeDocumentGrant.document_id == doc.id
+                ))
+                session.add_all([
+                    KnowledgeDocumentGrant(document_id=doc.id, user_id=user, workspace_id=scope.workspace_id)
+                    for user in sorted(users)
+                ])
+                return DocumentReaders(user_ids=sorted(users))
+            users_in_store = await session.scalars(select(KnowledgeDocumentGrant.user_id).where(
+                KnowledgeDocumentGrant.document_id == doc.id
+            ).order_by(KnowledgeDocumentGrant.user_id))
+            return DocumentReaders(user_ids=list(users_in_store))
+
+    async def _restricted_dataset(self, kb: KnowledgeBase) -> str:
+        """在持有知识库行锁时初始化受限数据集，避免并发上传重复创建。"""
+        if kb.restricted_dataset_id:
+            return kb.restricted_dataset_id
+        if not kb.embedding_model and kb.ragflow_dataset_id:
+            # 旧库未保存模型标识，受限数据集应继承旧库的模型。
+            kb.embedding_model = await self.client.dataset_embedding_model(kb.ragflow_dataset_id)
+        created = await self.client.create_dataset(
+            f"EA-restricted-{kb.id}", kb.parser_id, kb.parse_type, kb.embedding_model, self.settings.ragflow_language
+        )
+        try:
+            config = ParserSettings.from_config(kb.parser_config).merged_into(created.parser_config)
+            await self.client.update_dataset(created.dataset_id, kb.parser_id, kb.parse_type, config)
+        except Exception:
+            await self._discard_dataset(created)
+            raise
+        kb.restricted_dataset_id = created.dataset_id
+        return created.dataset_id
 
     async def upload(
         self,
@@ -454,6 +588,7 @@ class KnowledgeService:
         filename: str,
         content: bytes,
         content_type: str,
+        readers: DocumentReaders | None = None,
     ) -> KnowledgeDocumentView:
         """上传后立即写文档级解析配置并触发解析。
 
@@ -463,6 +598,7 @@ class KnowledgeService:
             filename: 文件名。
             content: 文件内容。
             content_type: MIME 类型。
+            readers: 受限上传的指定读者；缺省时继承知识库。
 
         Returns:
             已进入解析状态的文档。
@@ -475,15 +611,32 @@ class KnowledgeService:
         digest = hashlib.sha256(content).hexdigest()
         async with self.factory.begin() as session:
             role = await self._role(session, scope)
-            kb = await self._kb(session, scope, kb_id)
+            kb = await self._kb(session, scope, kb_id, lock=True)
             self._require_manage(kb, scope, role)
             if kb.status != "ready" or not kb.ragflow_dataset_id:
                 raise ApplicationError("KNOWLEDGE_NOT_READY", "知识库尚未就绪", 409)
             dataset_id = kb.ragflow_dataset_id
+            users: set[UUID] = set()
+            if readers is not None:
+                if kb.visibility != "workspace":
+                    raise ApplicationError("DOCUMENT_READERS_PRIVATE_BASE", "仅空间知识库支持指定成员", 422)
+                users.update(readers.user_ids)
+                if scope.user_id not in users:
+                    raise ApplicationError("DOCUMENT_UPLOADER_READ_REQUIRED", "上传受限文件时请将自己加入名单", 422)
+                await self._validate_readers(session, scope, users)
+                count = await session.scalar(select(func.count(KnowledgeDocument.id)).where(
+                    KnowledgeDocument.kb_id == kb.id, KnowledgeDocument.restricted.is_(True)
+                ))
+                if (count or 0) >= MAX_RESTRICTED_DOCUMENTS:
+                    raise ApplicationError(
+                        "DOCUMENT_RESTRICTED_LIMIT", f"每个知识库最多保存 {MAX_RESTRICTED_DOCUMENTS} 份受限文档", 409
+                    )
+                dataset_id = await self._restricted_dataset(kb)
             parser_id = kb.parser_id
             parse_type = kb.parse_type
             config = ParserSettings.from_config(kb.parser_config).merged_into(kb.parser_config)
             doc = KnowledgeDocument(
+                restricted=readers is not None,
                 kb_id=kb.id,
                 workspace_id=scope.workspace_id,
                 uploaded_by_user_id=scope.user_id,
@@ -497,6 +650,10 @@ class KnowledgeService:
             session.add(doc)
             await session.flush()
             document_id = doc.id
+            session.add_all([
+                KnowledgeDocumentGrant(document_id=document_id, user_id=user, workspace_id=scope.workspace_id)
+                for user in sorted(users)
+            ])
         try:
             uploaded = await self.client.upload_document(dataset_id, filename, content, content_type)
             await self._doc_update(
@@ -541,8 +698,12 @@ class KnowledgeService:
             await self._role(session, scope)
             kb = await self._kb(session, scope, kb_id)
             self._require_read(kb, scope)
-            dataset_id = kb.ragflow_dataset_id
-        if dataset_id:
+            has_restricted_docs = await session.scalar(select(KnowledgeDocument.id).where(
+                KnowledgeDocument.kb_id == kb_id, KnowledgeDocument.restricted.is_(True),
+                self._document_readable(scope),
+            ).limit(1))
+            dataset_ids = (kb.ragflow_dataset_id, kb.restricted_dataset_id if has_restricted_docs else None)
+        for dataset_id in filter(None, dataset_ids):
             try:
                 remote = await self.client.list_documents(dataset_id)
                 await self._sync_documents(scope, kb_id, remote)
@@ -550,12 +711,16 @@ class KnowledgeService:
                 # 列表仍返回本地状态，外部服务恢复后再次刷新即可。
                 logger.warning("knowledge_status_refresh_failed", extra={"kb_id": str(kb_id)})
         async with self.factory() as session:
+            await self._role(session, scope)
+            kb = await self._kb(session, scope, kb_id)
+            self._require_read(kb, scope)
             rows = list(
                 await session.scalars(
                     select(KnowledgeDocument)
                     .where(
                         KnowledgeDocument.kb_id == kb_id,
                         KnowledgeDocument.workspace_id == scope.workspace_id,
+                        self._document_readable(scope),
                     )
                     .order_by(KnowledgeDocument.created_at.desc(), KnowledgeDocument.id.desc())
                 )
@@ -576,7 +741,7 @@ class KnowledgeService:
             await self._role(session, scope)
             doc = await self._document(session, scope, document_id)
             kb = await self._kb(session, scope, doc.kb_id)
-            self._require_read(kb, scope)
+            await self._require_document_read(session, scope, kb, doc)
             return self._document_view(doc)
 
     async def parse(
@@ -597,9 +762,10 @@ class KnowledgeService:
             doc = await self._document(session, scope, document_id)
             kb = await self._kb(session, scope, doc.kb_id)
             self._require_manage(kb, scope, role)
-            if not kb.ragflow_dataset_id or not doc.ragflow_document_id:
+            await self._require_document_read(session, scope, kb, doc)
+            dataset_id = self._dataset_for(kb, doc)
+            if not dataset_id or not doc.ragflow_document_id:
                 raise ApplicationError("DOCUMENT_NOT_READY", "文档尚未上传完成", 409)
-            dataset_id = kb.ragflow_dataset_id
             remote_document_id = doc.ragflow_document_id
             parser_id = kb.parser_id
             parse_type = kb.parse_type
@@ -634,7 +800,7 @@ class KnowledgeService:
             doc = await self._document(session, scope, document_id)
             kb = await self._kb(session, scope, doc.kb_id)
             self._require_manage(kb, scope, role)
-            dataset_id = kb.ragflow_dataset_id
+            dataset_id = self._dataset_for(kb, doc)
             remote_document_id = doc.ragflow_document_id
         if dataset_id and remote_document_id:
             try:
@@ -662,10 +828,10 @@ class KnowledgeService:
             await self._role(session, scope)
             doc = await self._document(session, scope, document_id)
             kb = await self._kb(session, scope, doc.kb_id)
-            self._require_read(kb, scope)
-            if not kb.ragflow_dataset_id or not doc.ragflow_document_id:
+            await self._require_document_read(session, scope, kb, doc)
+            dataset_id = self._dataset_for(kb, doc)
+            if not dataset_id or not doc.ragflow_document_id:
                 raise ApplicationError("DOCUMENT_NOT_READY", "文档尚未上传完成", 409)
-            dataset_id = kb.ragflow_dataset_id
             remote_document_id = doc.ragflow_document_id
             view = self._document_view(doc)
         file = await self.client.download_document(dataset_id, remote_document_id)
@@ -694,10 +860,10 @@ class KnowledgeService:
             await self._role(session, scope)
             doc = await self._document(session, scope, document_id)
             kb = await self._kb(session, scope, doc.kb_id)
-            self._require_read(kb, scope)
-            if not kb.ragflow_dataset_id or not doc.ragflow_document_id:
+            await self._require_document_read(session, scope, kb, doc)
+            dataset_id = self._dataset_for(kb, doc)
+            if not dataset_id or not doc.ragflow_document_id:
                 raise ApplicationError("DOCUMENT_NOT_READY", "文档尚未上传完成", 409)
-            dataset_id = kb.ragflow_dataset_id
             remote_document_id = doc.ragflow_document_id
         page = offset // limit + 1
         result = await self.client.list_chunks(dataset_id, remote_document_id, page, limit)
@@ -709,41 +875,24 @@ class KnowledgeService:
         )
 
     async def search_test(self, scope: ResourceScope, kb_id: UUID, args: RetrievalTestInput) -> RetrievalTestResult:
-        """面向登录用户的检索测试，不写工具审计、不做上下文预算裁剪。
-
-        Args:
-            scope: 可信用户和空间。
-            kb_id: 知识库标识。
-            args: 用户指定的查询、条数与阈值。
-
-        Returns:
-            带来源与相似度的命中片段。
-        """
+        """手工检索和题集评测使用与问答相同的授权检索流程。"""
         async with self.factory() as session:
             await self._role(session, scope)
             kb = await self._kb(session, scope, kb_id)
             self._require_read(kb, scope)
             if kb.status != "ready" or not kb.ragflow_dataset_id:
                 raise ApplicationError("KNOWLEDGE_NOT_READY", "知识库尚未就绪", 409)
-            dataset_id = kb.ragflow_dataset_id
         top_k = min(args.top_k, self.settings.knowledge_test_top_k)
-        chunks = await self.client.retrieve([dataset_id], args.query, top_k, args.threshold)
-        documents = await self._documents_by_remote_id(scope, [kb_id], [chunk.document_id for chunk in chunks])
-        result: list[RetrievalTestChunk] = []
-        for chunk in chunks:
-            document = documents.get(chunk.document_id)
-            if document is None:
-                continue
-            result.append(
-                RetrievalTestChunk(
-                    content=chunk.content[:RETRIEVAL_TEST_CHUNK_CHARACTERS],
-                    document_id=document[0],
-                    document_name=document[1],
-                    similarity=chunk.similarity,
-                    positions=chunk.positions,
-                )
+        chunks = await self._scoped_retrieval(scope, [kb], args.query, top_k, args.threshold)
+        result = [
+            RetrievalTestChunk(
+                content=chunk.content[:RETRIEVAL_TEST_CHUNK_CHARACTERS],
+                document_id=chunk.document_id, document_name=chunk.document_name,
+                similarity=chunk.similarity, positions=chunk.positions,
             )
-        return RetrievalTestResult(chunks=result)
+            for chunk in chunks
+        ]
+        return RetrievalTestResult(effective_top_k=top_k, chunks=result)
 
     async def reparse_all(self, scope: ResourceScope, kb_id: UUID) -> list[KnowledgeDocumentView]:
         """把知识库当前配置批量应用到已有文档并触发重新解析。
@@ -761,20 +910,29 @@ class KnowledgeService:
             self._require_manage(kb, scope, role)
             if kb.status != "ready" or not kb.ragflow_dataset_id:
                 raise ApplicationError("KNOWLEDGE_NOT_READY", "知识库尚未就绪", 409)
-            dataset_id = kb.ragflow_dataset_id
             parser_config = dict(kb.parser_config or {})
             rows = (
-                await session.execute(
-                    select(KnowledgeDocument.id, KnowledgeDocument.ragflow_document_id).where(
+                await session.scalars(
+                    select(KnowledgeDocument).where(
                         KnowledgeDocument.kb_id == kb_id,
                         KnowledgeDocument.workspace_id == scope.workspace_id,
                         KnowledgeDocument.ragflow_document_id.is_not(None),
                     )
                 )
             ).all()
-        pairs = [(row[0], row[1]) for row in rows if isinstance(row[1], str)]
-        if not pairs:
-            return await self.list_documents(scope, kb_id)
+        groups: dict[str, list[tuple[UUID, str]]] = {}
+        for doc in rows:
+            dataset_id = self._dataset_for(kb, doc)
+            if dataset_id and doc.ragflow_document_id:
+                groups.setdefault(dataset_id, []).append((doc.id, doc.ragflow_document_id))
+        for dataset_id, pairs in groups.items():
+            await self._reparse_dataset(dataset_id, pairs, parser_config)
+        return await self.list_documents(scope, kb_id)
+
+    async def _reparse_dataset(
+        self, dataset_id: str, pairs: list[tuple[UUID, str]], parser_config: dict[str, object]
+    ) -> None:
+        """将解析设置应用到一个数据集并按批次启动。"""
         document_ids = [item[0] for item in pairs]
         remote_ids = [item[1] for item in pairs]
         try:
@@ -794,104 +952,118 @@ class KnowledgeService:
         except ApplicationError as exc:
             await self._doc_update_many(document_ids, status="failed", error_code=exc.code)
             raise
-        return await self.list_documents(scope, kb_id)
 
-    async def _documents_by_remote_id(
-        self, scope: ResourceScope, kb_ids: list[UUID], remote_ids: list[str]
-    ) -> dict[str, tuple[UUID, str, UUID]]:
-        """把 RAGFlow 文档 ID 映射回可访问的应用侧文档。
+    async def _scoped_retrieval(
+        self, scope: ResourceScope, bases: list[KnowledgeBase], query: str, top_k: int, threshold: float
+    ) -> list[KnowledgeChunk]:
+        """共享资料按库召回，受限资料按授权文档召回，再复核两类来源。"""
+        base_ids = [kb.id for kb in bases]
+        shared: dict[str, list[str]] = {}
+        restricted: dict[UUID, str] = {}
+        for kb in bases:
+            if kb.ragflow_dataset_id:
+                shared.setdefault(kb.embedding_model, []).append(kb.ragflow_dataset_id)
+            if kb.restricted_dataset_id:
+                restricted[kb.id] = kb.restricted_dataset_id
+        allowed: dict[str, list[str]] = {}
+        if restricted:
+            async with self.factory() as session:
+                rows = (await session.execute(select(
+                    KnowledgeDocument.kb_id, KnowledgeDocument.ragflow_document_id
+                ).join(KnowledgeDocumentGrant, KnowledgeDocumentGrant.document_id == KnowledgeDocument.id).where(
+                    KnowledgeDocument.kb_id.in_(restricted),
+                    KnowledgeDocument.workspace_id == scope.workspace_id,
+                    KnowledgeDocument.restricted.is_(True),
+                    KnowledgeDocument.ragflow_document_id.is_not(None),
+                    KnowledgeDocumentGrant.workspace_id == scope.workspace_id,
+                    KnowledgeDocumentGrant.user_id == scope.user_id,
+                ))).all()
+            for kb_id, remote_id in rows:
+                if remote_id:
+                    allowed.setdefault(restricted[kb_id], []).append(remote_id)
 
-        Args:
-            scope: 可信用户和空间。
-            kb_ids: 允许的知识库。
-            remote_ids: RAGFlow 文档 ID。
+        retrieved: list[RetrievedChunk] = []
+        batches = 0
+        for dataset_ids in shared.values():
+            for start in range(0, len(dataset_ids), RETRIEVAL_DATASET_BATCH_SIZE):
+                batch = dataset_ids[start : start + RETRIEVAL_DATASET_BATCH_SIZE]
+                search_result = await self.client.retrieve(batch, query, top_k, threshold)
+                retrieved.extend(chunk for chunk in search_result if chunk.dataset_id in batch)
+                batches += 1
+        for dataset_id, remote_ids in allowed.items():
+            search_result = await self.client.retrieve([dataset_id], query, top_k, threshold, document_ids=remote_ids)
+            allowed_ids = set(remote_ids)
+            retrieved.extend(
+                chunk for chunk in search_result if chunk.dataset_id == dataset_id and chunk.document_id in allowed_ids
+            )
+            batches += 1
+        if not retrieved:
+            return []
+        if batches > 1:
+            retrieved.sort(key=lambda chunk: chunk.similarity if chunk.similarity is not None else -1, reverse=True)
 
-        Returns:
-            `remote_id -> (document_id, document_name, kb_id)`。
-        """
-        if not remote_ids:
-            return {}
-        async with self.factory() as session:
-            rows = (
-                await session.execute(
-                    select(
-                        KnowledgeDocument.ragflow_document_id,
-                        KnowledgeDocument.id,
-                        KnowledgeDocument.name,
-                        KnowledgeDocument.kb_id,
-                    ).where(
-                        KnowledgeDocument.workspace_id == scope.workspace_id,
-                        KnowledgeDocument.kb_id.in_(kb_ids),
-                        KnowledgeDocument.ragflow_document_id.in_(remote_ids),
-                    )
-                )
-            ).all()
-        return {
-            remote_id: (document_id, name, kb_id)
-            for remote_id, document_id, name, kb_id in rows
-            if isinstance(remote_id, str)
-        }
-
-    async def retrieve(self, scope: ResourceScope, args: KnowledgeSearchArgs) -> KnowledgeSearchResult:
-        """按当前用户和空间裁剪 dataset，再调用 RAGFlow 检索。
-
-        Args:
-            scope: 可信用户和空间。
-            args: 模型提供的查询条件和可选知识库 ID。
-
-        Returns:
-            只包含可访问来源的片段。
-        """
+        # 网络请求期间可能撤权或切换库可见性。只用最新数据库记录组装来源。
+        hit_ids = {chunk.document_id for chunk in retrieved}
         async with self.factory() as session:
             await self._role(session, scope)
-            rows = (
-                await session.execute(
-                    select(KnowledgeBase.id, KnowledgeBase.ragflow_dataset_id).where(
-                        KnowledgeBase.workspace_id == scope.workspace_id,
-                        KnowledgeBase.status == "ready",
-                        KnowledgeBase.ragflow_dataset_id.is_not(None),
-                        or_(
-                            KnowledgeBase.visibility == "workspace",
-                            KnowledgeBase.owner_user_id == scope.user_id,
-                        ),
-                    )
-                )
-            ).all()
-        allowed = {kb_id: dataset_id for kb_id, dataset_id in rows if isinstance(dataset_id, str) and dataset_id}
-        if args.kb_ids:
-            requested = set(args.kb_ids)
-            allowed = {kb_id: dataset_id for kb_id, dataset_id in allowed.items() if kb_id in requested}
-        if not allowed:
+            sources = (await session.execute(select(KnowledgeDocument, KnowledgeBase).join(
+                KnowledgeBase, KnowledgeBase.id == KnowledgeDocument.kb_id
+            ).where(
+                KnowledgeDocument.workspace_id == scope.workspace_id,
+                KnowledgeDocument.ragflow_document_id.in_(hit_ids),
+                KnowledgeBase.id.in_(base_ids),
+                KnowledgeBase.workspace_id == scope.workspace_id,
+                KnowledgeBase.status == "ready",
+                or_(KnowledgeBase.visibility == "workspace", KnowledgeBase.owner_user_id == scope.user_id),
+                self._document_readable(scope),
+            ))).all()
+            documents = {doc.ragflow_document_id: (doc, kb) for doc, kb in sources}
+
+        result: list[KnowledgeChunk] = []
+        seen: set[tuple[str, str, str]] = set()
+        for chunk in retrieved:
+            source = documents.get(chunk.document_id)
+            if source is None:
+                continue
+            doc, kb = source
+            key = (chunk.dataset_id, chunk.document_id, chunk.content)
+            if self._dataset_for(kb, doc) != chunk.dataset_id or key in seen:
+                continue
+            seen.add(key)
+            result.append(KnowledgeChunk(
+                content=chunk.content, kb_id=kb.id, document_id=doc.id, document_name=doc.name,
+                similarity=chunk.similarity, positions=chunk.positions,
+            ))
+            if len(result) == top_k:
+                break
+        return result
+
+    async def retrieve(self, scope: ResourceScope, args: KnowledgeSearchArgs) -> KnowledgeSearchResult:
+        """在用户与 Agent 共同允许的库中搜索，不截断整库候选范围。"""
+        async with self.factory() as session:
+            await self._role(session, scope)
+            statement = select(KnowledgeBase).where(
+                KnowledgeBase.workspace_id == scope.workspace_id,
+                KnowledgeBase.status == "ready",
+                KnowledgeBase.ragflow_dataset_id.is_not(None),
+                or_(KnowledgeBase.visibility == "workspace", KnowledgeBase.owner_user_id == scope.user_id),
+            )
+            if args.kb_ids:
+                statement = statement.where(KnowledgeBase.id.in_(args.kb_ids))
+            bases = list(await session.scalars(statement.order_by(KnowledgeBase.id)))
+        if not bases:
             raise ApplicationError("KNOWLEDGE_ACCESS_DENIED", "没有可用的知识库", 403)
-        dataset_ids = list(allowed.values())[:20]
-        reverse = {dataset_id: kb_id for kb_id, dataset_id in allowed.items()}
-        top_k = min(args.top_k, self.settings.knowledge_top_k)
-        chunks = await self.client.retrieve(
-            dataset_ids,
-            args.query,
-            top_k,
+        chunks = await self._scoped_retrieval(
+            scope, bases, args.query, min(args.top_k, self.settings.knowledge_top_k),
             self.settings.knowledge_similarity_threshold,
         )
-        documents = await self._documents_by_remote_id(scope, list(allowed), [chunk.document_id for chunk in chunks])
-        result: list[KnowledgeChunk] = []
         remaining = self.settings.knowledge_max_context_characters
+        result: list[KnowledgeChunk] = []
         for chunk in chunks:
-            kb_id = reverse.get(chunk.dataset_id)
-            document = documents.get(chunk.document_id)
-            if kb_id is None or document is None or remaining <= 0:
-                continue
-            content = chunk.content[:remaining]
-            result.append(
-                KnowledgeChunk(
-                    content=content,
-                    kb_id=document[2],
-                    document_id=document[0],
-                    document_name=document[1],
-                    similarity=chunk.similarity,
-                    positions=chunk.positions,
-                )
-            )
-            remaining -= len(content)
+            if remaining <= 0:
+                break
+            result.append(chunk.model_copy(update={"content": chunk.content[:remaining]}))
+            remaining -= len(result[-1].content)
         return KnowledgeSearchResult(chunks=result)
 
     async def _doc_update(self, document_id: UUID, **values: object) -> None:

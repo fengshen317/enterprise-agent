@@ -1,11 +1,17 @@
 """连接器管理接口：列表、配置、启停与测试。"""
 
-from typing import Any
+import asyncio
+from time import monotonic
+from typing import Any, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Request, Response
 
 from app.api.admin import _require_admin
 from app.api.auth import ScopeDependency
+from app.connectors import ima
+from app.connectors.base import ConnectorError
+from app.connectors.catalog import PERSONAL_CONNECTORS
 from app.connectors.registry import ConnectorRegistry
 from app.core.errors import ApplicationError
 from app.schemas.connectors import (
@@ -15,11 +21,25 @@ from app.schemas.connectors import (
     ConnectorSecretsInput,
     ConnectorTestResult,
     ConnectorView,
+    ImaAccountCheckResult,
+    ImaProbeResult,
+    PersonalAccountInput,
+    PersonalAccountView,
     YangJiBaoPortfolioView,
 )
+from app.services.auth import require_membership
 from app.services.connector_service import ConnectorService
+from app.services.personal_credentials import account_status, read_credentials, remove_credentials, save_credentials
+from app.services.system_logs import emit_system_log
 
 router = APIRouter(prefix="/api", tags=["连接器管理"])
+_IMA_PROBE_TIMEOUT_SECONDS = 15
+# 使用固定的高熵探测词，避免按成员输入的内容搜索个人笔记。
+_IMA_NOTE_PROBE_QUERY = "7cfd2c0390994d1293a8822b63fecb28"
+_IMA_PUBLIC_ERRORS = frozenset({
+    "auth_failed", "invalid_arguments", "invalid_output", "network_error", "permission_denied", "timeout",
+    "upstream_error",
+})
 
 
 def service(request: Request) -> ConnectorService:
@@ -99,7 +119,104 @@ async def get_connector(key: str, request: Request, response: Response, scope: S
         连接器详情。
     """
     response.headers["Cache-Control"] = "no-store"
-    return await service(request).get_detail(key, user_id=scope.user_id)
+    detail = await service(request).get_detail(key, user_id=scope.user_id)
+    if key in PERSONAL_CONNECTORS:
+        async with request.app.state.database.session_factory() as session:
+            detail.personal_account = await account_status(session, scope, key)
+    return detail
+
+
+@router.put("/connectors/{key}/my-account", response_model=PersonalAccountView)
+async def bind_personal_account(
+    key: str, body: PersonalAccountInput, request: Request, response: Response, scope: ScopeDependency
+) -> PersonalAccountView:
+    """当前登录成员替换本人凭证，响应中只包含绑定状态。"""
+    if key not in PERSONAL_CONNECTORS:
+        raise ApplicationError("CONNECTOR_NOT_FOUND", "连接器不支持个人绑定", 404)
+    response.headers["Cache-Control"] = "no-store"
+    async with request.app.state.database.session_factory.begin() as session:
+        await save_credentials(session, request.app.state.settings, scope, key, body.credentials)
+        return await account_status(session, scope, key)
+
+
+@router.delete("/connectors/{key}/my-account", response_model=PersonalAccountView)
+async def unbind_personal_account(
+    key: str, request: Request, response: Response, scope: ScopeDependency
+) -> PersonalAccountView:
+    """按当前身份幂等解绑，即使连接器已停用也能删除凭证。"""
+    if key not in PERSONAL_CONNECTORS:
+        raise ApplicationError("CONNECTOR_NOT_FOUND", "连接器不支持个人绑定", 404)
+    response.headers["Cache-Control"] = "no-store"
+    async with request.app.state.database.session_factory.begin() as session:
+        await remove_credentials(session, scope, key)
+        return await account_status(session, scope, key)
+
+
+async def _probe_ima(
+    name: str, arguments: dict[str, object], credentials: dict[str, str], workspace_id: UUID
+) -> ImaProbeResult:
+    """执行一个限时只读探针，只归档公开检查状态。
+
+    Args:
+        name: 预先选定的 ima 只读工具名。
+        arguments: 固定的探测参数。
+        credentials: 已验证成员的当次凭证。
+        workspace_id: 已验证工作空间。
+
+    Returns:
+        不含上游结果的检查状态与诊断编号。
+    """
+    started = monotonic()
+    error_code = None
+    details: dict[str, str | int] = {}
+    try:
+        async with asyncio.timeout(_IMA_PROBE_TIMEOUT_SECONDS):
+            # 成功返回零条结果也证明上游接受了本次请求。
+            await ima.invoke(name, arguments, credentials)
+    except ConnectorError as exc:
+        error_code = exc.code if exc.code in _IMA_PUBLIC_ERRORS else "check_failed"
+        details = exc.diagnostics
+    except TimeoutError:
+        error_code = "timeout"
+        details = {"phase": "transport"}
+    except Exception:
+        error_code = "check_failed"
+    status: Literal["success", "error"] = "error" if error_code else "success"
+    diagnostic_id = emit_system_log(
+        component="connector",
+        event="connector_check",
+        outcome=status,
+        workspace_id=workspace_id,
+        connector_key="ima",
+        tool_name=name,
+        error_code=error_code.upper() if error_code else None,
+        duration_ms=int((monotonic() - started) * 1000),
+        details=details,
+    )
+    return ImaProbeResult(status=status, error_code=error_code, diagnostic_id=diagnostic_id)
+
+
+@router.post("/connectors/ima/my-account/check", response_model=ImaAccountCheckResult)
+async def check_ima_account(request: Request, response: Response, scope: ScopeDependency) -> ImaAccountCheckResult:
+    """用当前成员已保存的凭证分别检查 ima 知识库和笔记。
+
+    Args:
+        request: 应用请求。
+        response: 禁止缓存账号检查结果。
+        scope: 当前可信用户和工作空间。
+
+    Returns:
+        两项互相独立的检查结果。
+    """
+    response.headers["Cache-Control"] = "no-store"
+    async with request.app.state.database.session_factory() as session:
+        await require_membership(session, scope)
+        credentials = await read_credentials(session, request.app.state.settings, scope, "ima")
+    knowledge_base, notes = await asyncio.gather(
+        _probe_ima("search_knowledge_base", {"limit": 1}, credentials, scope.workspace_id),
+        _probe_ima("search_note", {"query": _IMA_NOTE_PROBE_QUERY, "limit": 1}, credentials, scope.workspace_id),
+    )
+    return ImaAccountCheckResult(knowledge_base=knowledge_base, notes=notes)
 
 
 @router.get("/connectors/yangjibao/holdings", response_model=YangJiBaoPortfolioView)
@@ -168,7 +285,38 @@ async def test_connection(key: str, request: Request, scope: ScopeDependency) ->
         测试结果。
     """
     await _require_admin(request, scope)
-    return await service(request).test_connection(key)
+    started = monotonic()
+    try:
+        result = await service(request).test_connection(key)
+    except Exception as exc:
+        emit_system_log(
+            component="connector",
+            event="connector_check",
+            outcome="error",
+            workspace_id=scope.workspace_id,
+            error_code=exc.code if isinstance(exc, ApplicationError) else "CHECK_FAILED",
+            duration_ms=int((monotonic() - started) * 1000),
+        )
+        raise exc
+
+    outcome: Literal["success", "warning", "error"] = "success"
+    error_code = result.last_error_code
+    if result.status == "disabled":
+        outcome, error_code = "warning", "connector_disabled"
+    elif result.status != "connected":
+        outcome, error_code = "error", error_code or "check_failed"
+    elif key in PERSONAL_CONNECTORS:
+        outcome, error_code = "warning", "personal_check_required"
+    emit_system_log(
+        component="connector",
+        event="connector_check",
+        outcome=outcome,
+        workspace_id=scope.workspace_id,
+        connector_key=key,
+        error_code=error_code.upper() if error_code else None,
+        duration_ms=int((monotonic() - started) * 1000),
+    )
+    return result
 
 
 @router.post("/admin/connectors/{key}/auth")

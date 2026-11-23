@@ -1,5 +1,6 @@
 """应用入口与生命周期。"""
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -8,6 +9,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import SecretStr
 
 from app.agents.provider import DeepSeekProvider, StreamProvider
 from app.agents.task_provider import DeepSeekTaskProvider, TaskProvider
@@ -19,8 +21,11 @@ from app.api.chat import router as chat_router
 from app.api.connectors import router as connector_router
 from app.api.health import router
 from app.api.knowledge import router as knowledge_router
+from app.api.materials import router as material_router
+from app.api.ragflow_models import router as ragflow_models_router
 from app.api.schedules import router as schedule_router
 from app.api.skills import router as skill_router
+from app.api.system_logs import router as system_log_router
 from app.api.tasks import router as task_router
 from app.api.tools import router as tool_router
 from app.capabilities.registry import build_default_registry
@@ -30,7 +35,7 @@ from app.channels.repository import ChannelStore
 from app.channels.runtime import ChannelRuntime
 from app.channels.service import ChannelService
 from app.connectors.registry import ConnectorRegistry
-from app.core.config import Settings
+from app.core.config import MANAGED_RAGFLOW_URL, Settings
 from app.core.database import Database
 from app.core.errors import register_error_handlers
 from app.core.logging import configure_logging
@@ -41,9 +46,11 @@ from app.services.chat_runtime import ChatRuntime
 from app.services.config_service import ConfigService
 from app.services.knowledge import KnowledgeService
 from app.services.ragflow import RagflowClient, RagflowClientProtocol
+from app.services.ragflow_models import RagflowModelService
 from app.services.schedule_runtime import ScheduleRuntime
 from app.services.schedule_store import ScheduleStore
 from app.services.skills import SkillService
+from app.services.system_logs import SystemLogRecorder, emit_system_log, system_log_context
 from app.services.task_runtime import TaskRuntime
 
 logger = logging.getLogger(__name__)
@@ -59,7 +66,7 @@ def create_app(
 
     Args:
         settings: 测试或运行配置，默认从环境读取。
-        provider: 测试可注入模型替身；默认使用 DeepSeek。
+        provider: 测试可注入模型替身；默认使用部署级 LLM。
         task_provider: 独立的计划和步骤模型，测试不发送真实请求。
         ragflow_client: 测试可注入的知识库客户端；默认使用真实 RAGFlow。
 
@@ -79,8 +86,12 @@ def create_app(
         Yields:
             应用可提供服务的生命周期。
         """
+        # 中间件已经记录路由模板，避免 Uvicorn 访问日志重复输出原始查询串。
+        logging.getLogger("uvicorn.access").disabled = True
         database = Database(config)
         app.state.database = database
+        log_recorder = SystemLogRecorder(database.session_factory, retention_days=config.system_log_retention_days)
+        app.state.system_log_recorder = log_recorder
         app.state.auth_service = AuthService(database.session_factory, config)
         # 集成配置服务：从 DB 加载覆盖值并同步到 Settings，支持前端管理。
         config_service = ConfigService(database.session_factory, config)
@@ -89,9 +100,27 @@ def create_app(
         except Exception:
             logger.warning("config_load_failed", extra={"reason": "DB 不可用或表未创建"})
         app.state.config_service = config_service
+        ragflow_settings = config
+        use_generated_key = (
+            ragflow_client is None
+            and config.knowledge_enabled
+            and not config.ragflow_api_key.get_secret_value().strip()
+            and config.ragflow_base_url.rstrip("/") == MANAGED_RAGFLOW_URL
+            and config.ragflow_api_key_file is not None
+        )
+        if use_generated_key and config.ragflow_api_key_file is not None:
+            try:
+                key = (await asyncio.to_thread(config.ragflow_api_key_file.read_text, encoding="utf-8")).strip()
+                ragflow_settings = config.model_copy(update={"ragflow_api_key": SecretStr(key)})
+            except OSError:
+                logger.warning("ragflow_generated_key_unavailable")
         ragflow = ragflow_client
-        if ragflow is None and config.knowledge_enabled and config.ragflow_api_key.get_secret_value().strip():
-            ragflow = RagflowClient(config)
+        if ragflow is None and config.knowledge_enabled and ragflow_settings.ragflow_api_key.get_secret_value().strip():
+            ragflow = RagflowClient(ragflow_settings)
+        app.state.ragflow_model_service = (
+            RagflowModelService(ragflow, config.ragflow_embedding_model) if isinstance(ragflow, RagflowClient) else None
+        )
+        app.state.ragflow_managed = use_generated_key
         knowledge_service = (
             KnowledgeService(database.session_factory, config, ragflow)
             if config.knowledge_enabled and ragflow is not None
@@ -100,6 +129,7 @@ def create_app(
         app.state.knowledge_service = knowledge_service
         schedule_store = ScheduleStore(database.session_factory, config.schedule_timezone)
         registry = build_default_registry(config, knowledge_service, schedule_store)
+        app.state.tool_registry = registry
         # 连接器注册表：启动时加载已启用的连接器，工具注入 registry。
         connector_registry = ConnectorRegistry(database.session_factory, registry, config)
         try:
@@ -120,6 +150,7 @@ def create_app(
             registry,
             schedule_store=schedule_store,
             approval_service=approval_service,
+            log_recorder=log_recorder,
         )
         app.state.chat_runtime = runtime
         task_runtime = TaskRuntime(database, config, task_provider or DeepSeekTaskProvider(config))
@@ -146,6 +177,7 @@ def create_app(
         runtime.on_run_finished.append(channel_runtime.on_run_finished)
         approval_service.on_requested.append(channel_runtime.on_approval)
         await channel_runtime.start()
+        await log_recorder.start()
         try:
             yield
         finally:
@@ -159,7 +191,10 @@ def create_app(
                 if ragflow is not None:
                     await ragflow.aclose()
             finally:
-                await database.close()
+                try:
+                    await log_recorder.close()
+                finally:
+                    await database.close()
 
     app = FastAPI(title="企业 Agent 工作台 API", version="0.1.0", lifespan=lifespan)
     app.state.settings = config
@@ -186,22 +221,43 @@ def create_app(
         request.state.request_id = uuid4().hex
         started = perf_counter()
         status_code = 500
-        try:
-            response = await call_next(request)
-            status_code = response.status_code
-            response.headers["X-Request-ID"] = request.state.request_id
-            return response
-        finally:
-            logger.info(
-                "http_request",
-                extra={
-                    "request_id": request.state.request_id,
-                    "method": request.method,
-                    "path": request.url.path,
-                    "status_code": status_code,
-                    "duration_ms": round((perf_counter() - started) * 1000, 2),
-                },
-            )
+        recorder = getattr(request.app.state, "system_log_recorder", None)
+        with system_log_context(recorder=recorder, workspace_id=None, request_id=request.state.request_id, run_id=None):
+            try:
+                response = await call_next(request)
+                status_code = response.status_code
+                response.headers["X-Request-ID"] = request.state.request_id
+                return response
+            finally:
+                route = getattr(request.scope.get("route"), "path", None)
+                duration_ms = round((perf_counter() - started) * 1000, 2)
+                logger.info(
+                    "http_request",
+                    extra={
+                        "request_id": request.state.request_id,
+                        "method": request.method,
+                        "path": route,
+                        "status_code": status_code,
+                        "duration_ms": duration_ms,
+                    },
+                )
+                workspace_id = getattr(request.state, "diagnostic_workspace_id", None)
+                run_id = getattr(request.state, "diagnostic_run_id", None)
+                if status_code >= 400 or (workspace_id is not None and run_id is not None):
+                    emit_system_log(
+                        component="http",
+                        event="http_request_failed" if status_code >= 400 else "http_request_accepted",
+                        outcome="error" if status_code >= 500 else "warning" if status_code >= 400 else "success",
+                        workspace_id=workspace_id,
+                        run_id=run_id,
+                        error_code=(
+                            getattr(request.state, "diagnostic_error_code", f"HTTP_{status_code}")
+                            if status_code >= 400
+                            else None
+                        ),
+                        duration_ms=duration_ms,
+                        details={"route": route, "method": request.method, "status_code": status_code},
+                    )
 
     register_error_handlers(app)
     app.include_router(router)
@@ -213,9 +269,12 @@ def create_app(
     app.include_router(schedule_router)
     app.include_router(channel_router)
     app.include_router(knowledge_router)
+    app.include_router(ragflow_models_router)
+    app.include_router(material_router)
     app.include_router(agent_router)
     app.include_router(skill_router)
     app.include_router(tool_router)
+    app.include_router(system_log_router)
     return app
 
 

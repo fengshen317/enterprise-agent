@@ -13,21 +13,29 @@ from app.core.errors import ApplicationError
 def test_missing_model_key() -> None:
     """未配置密钥时不能静默使用测试回复。"""
     provider = DeepSeekProvider(Settings(_env_file=None, deepseek_api_key=""))
-    with pytest.raises(ApplicationError, match="EA_DEEPSEEK_API_KEY"):
+    with pytest.raises(ApplicationError, match="API 配置"):
         provider.validate()
 
 
 @pytest.mark.parametrize("finish_reason", ["stop", "length", "tool_calls"])
-async def test_real_sdk_stream_with_mock_http(monkeypatch: pytest.MonkeyPatch, finish_reason: str) -> None:
+@pytest.mark.parametrize("provider_name", ["deepseek", "openai_compatible"])
+async def test_real_sdk_stream_with_mock_http(
+    monkeypatch: pytest.MonkeyPatch, finish_reason: str, provider_name: str
+) -> None:
     """运行真实图和供应商 SDK，确认流式正文及工具禁用行为。
 
     Args:
         monkeypatch: 替换网络传输而非替换 Agent 图。
         finish_reason: 供应商报告的结束原因。
+        provider_name: 当前部署的 LLM 供应商。
     """
     from langchain_deepseek import ChatDeepSeek
+    from langchain_openai import ChatOpenAI
 
     captured: list[dict] = []
+    compatible = provider_name == "openai_compatible"
+    sdk = ChatOpenAI if compatible else ChatDeepSeek
+    expected_model = "fixture-model" if compatible else "deepseek-flash"
 
     def transport(request: httpx.Request) -> httpx.Response:
         """返回供应商格式的 SSE，不访问网络。
@@ -40,17 +48,20 @@ async def test_real_sdk_stream_with_mock_http(monkeypatch: pytest.MonkeyPatch, f
         """
         body = json.loads(request.content)
         captured.append(body)
-        assert request.url.host == "api.deepseek.com"
+        assert request.url.host == ("local-llm.invalid" if compatible else "api.deepseek.com")
+        assert request.headers["Authorization"] == ("Bearer compatible-test" if compatible else "Bearer test-only")
+        assert request.url.path == ("/v1/chat/completions" if compatible else "/chat/completions")
         assert not body.get("tools")
         assert body["stream"] is True
-        assert body["thinking"] == {"type": "disabled"}
+        assert body["model"] == expected_model
+        assert body.get("thinking") == (None if compatible else {"type": "disabled"})
         chunks = []
         for content, finish in [("你好", None), ("，世界", None), ("", finish_reason)]:
             chunk = {
                 "id": "test-stream",
                 "object": "chat.completion.chunk",
                 "created": 1,
-                "model": "deepseek-flash",
+                "model": expected_model,
                 "choices": [{"index": 0, "delta": {"role": "assistant", "content": content}, "finish_reason": finish}],
             }
             if finish_reason == "tool_calls":
@@ -75,7 +86,7 @@ async def test_real_sdk_stream_with_mock_http(monkeypatch: pytest.MonkeyPatch, f
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
 
-        def model(**kwargs: object) -> ChatDeepSeek:
+        def model(**kwargs: object) -> ChatOpenAI | ChatDeepSeek:
             """给真实 SDK 注入测试传输。
 
             Args:
@@ -84,10 +95,19 @@ async def test_real_sdk_stream_with_mock_http(monkeypatch: pytest.MonkeyPatch, f
             Returns:
                 带模拟网络的模型。
             """
-            return ChatDeepSeek(**kwargs, http_async_client=client)
+            return sdk(**kwargs, http_async_client=client)
 
-        monkeypatch.setattr("langchain_deepseek.ChatDeepSeek", model)
-        provider = DeepSeekProvider(Settings(_env_file=None, deepseek_api_key="test-only"))
+        monkeypatch.setattr("langchain_openai.ChatOpenAI" if compatible else "langchain_deepseek.ChatDeepSeek", model)
+        provider = DeepSeekProvider(
+            Settings(
+                _env_file=None,
+                deepseek_api_key="test-only",
+                llm_provider=provider_name,
+                llm_base_url="http://local-llm.invalid/v1",
+                llm_model="fixture-model",
+                llm_api_key="compatible-test",
+            )
+        )
         provider.validate()
         if finish_reason == "tool_calls":
             with pytest.raises(ApplicationError, match="不支持执行工具"):

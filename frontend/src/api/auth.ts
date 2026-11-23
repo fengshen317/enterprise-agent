@@ -1,7 +1,7 @@
 import { ApiError, requestJson } from './client'
 
 export interface Workspace { id: string; slug: string; name: string; status: 'active' | 'archived'; role: 'admin' | 'member' }
-export interface Session { user: { id: string; username: string; display_name: string }; workspaces: Workspace[]; csrf_token: string; expires_at: string }
+export interface Session { user: { id: string; username: string; display_name: string }; workspaces: Workspace[]; csrf_token: string; expires_at: string; system_admin?: boolean }
 function record(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null }
 export function parseSession(value: unknown): Session {
   if (!record(value) || !record(value.user) || typeof value.user.id !== 'string' || typeof value.user.username !== 'string' || typeof value.user.display_name !== 'string' || !Array.isArray(value.workspaces) || typeof value.csrf_token !== 'string' || typeof value.expires_at !== 'string') throw new ApiError('登录响应格式不正确', 502)

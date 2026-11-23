@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.schemas.approval import ApprovalView
 
 RunStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
+MAX_CHAT_ATTACHMENTS = 4
 
 
 class ConversationCreate(BaseModel):
@@ -38,6 +39,7 @@ class RunCreate(BaseModel):
 
     content: str = Field(min_length=1, max_length=20000)
     idempotency_key: str = Field(min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9_-]+$")
+    attachment_ids: list[UUID] = Field(default_factory=list, max_length=MAX_CHAT_ATTACHMENTS)
 
     @field_validator("content")
     @classmethod
@@ -53,6 +55,14 @@ class RunCreate(BaseModel):
         if not value.strip():
             raise ValueError("问题不能为空")
         return value
+
+    @field_validator("attachment_ids")
+    @classmethod
+    def unique_attachment_ids(cls, values: list[UUID]) -> list[UUID]:
+        """保留发送顺序并拒绝重复引用同一原件。"""
+        if len(values) != len(set(values)):
+            raise ValueError("同一附件只能添加一次")
+        return values
 
 
 class ConversationView(BaseModel):
@@ -74,6 +84,17 @@ class ConversationAgentInput(BaseModel):
     agent_profile_id: UUID | None = None
 
 
+class ChatAttachmentView(BaseModel):
+    """只公开附件名称、类型和读取状态，原件走独立授权接口。"""
+
+    id: UUID
+    filename: str
+    media_type: str
+    size_bytes: int
+    text_available: bool
+    text_truncated: bool
+
+
 class MessageView(BaseModel):
     """持久化消息。"""
 
@@ -84,6 +105,7 @@ class MessageView(BaseModel):
     sequence: int
     role: Literal["user", "assistant"]
     content: str
+    attachments: list[ChatAttachmentView] = Field(default_factory=list)
     status: Literal["streaming", "completed", "interrupted"]
     created_at: datetime
     updated_at: datetime

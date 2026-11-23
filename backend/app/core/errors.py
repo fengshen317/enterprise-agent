@@ -39,6 +39,7 @@ def error_response(request: Request, code: str, message: str, status_code: int) 
     Returns:
         带请求标识的 JSON 错误响应。
     """
+    request.state.diagnostic_error_code = code
     return JSONResponse(
         status_code=status_code,
         content={

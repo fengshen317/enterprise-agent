@@ -1,0 +1,171 @@
+{
+  "started_at": "2026-11-23T06:40:27.520987+00:00",
+  "dataset": "EA-检索基线-20261123-bd535b",
+  "dataset_id": "65e7df355dc54d6fa2058195ba3f0fa7",
+  "config": {
+    "parser_id": "general",
+    "parser_settings": {
+      "chunk_token_size": 512,
+      "delimiters": [
+        "\n"
+      ],
+      "overlapped_percent": 0,
+      "use_parent_child": false,
+      "parent_child_delimiter": "\n",
+      "pdf_parse_method": "deepdoc",
+      "auto_keywords_top_n": 0,
+      "auto_questions_top_n": 0
+    },
+    "embedding_model": "",
+    "resolved_embedding_model": "BAAI/bge-m3@default@SILICONFLOW"
+  },
+  "suite": {
+    "name": "松桥试点资料",
+    "version": "1.0",
+    "top_k": 5,
+    "threshold": 0.2,
+    "cases": [
+      {
+        "query": "松桥试点哪组复核蓝色工单？",
+        "document": "工单分流.docx",
+        "evidence": "北岸小组"
+      },
+      {
+        "query": "蓝色工单的复核结果在周几登记？",
+        "document": "工单分流.docx",
+        "evidence": "每周四"
+      },
+      {
+        "query": "银杏标签存放在哪个库位？",
+        "document": "仓位索引.xlsx",
+        "evidence": "C-17"
+      },
+      {
+        "query": "白桦封条的补货批量是多少？",
+        "document": "仓位索引.xlsx",
+        "evidence": "360"
+      },
+      {
+        "query": "What is the amber sensor calibration code?",
+        "document": "calibration.pdf",
+        "evidence": "AMBER-42"
+      },
+      {
+        "query": "Which team receives the calibration record?",
+        "document": "calibration.pdf",
+        "evidence": "Juniper"
+      },
+      {
+        "query": "扫描交接单上登记的箱号是什么？",
+        "document": "扫描交接单.pdf",
+        "evidence": "LOT-7316"
+      },
+      {
+        "query": "扫描交接单上的交接站点叫什么？",
+        "document": "扫描交接单.pdf",
+        "evidence": "石榴站"
+      }
+    ]
+  },
+  "documents": [
+    {
+      "name": "扫描交接单.pdf",
+      "status": "ready",
+      "error_message": null,
+      "chunk_count": 1,
+      "progress": 1
+    },
+    {
+      "name": "calibration.pdf",
+      "status": "ready",
+      "error_message": null,
+      "chunk_count": 1,
+      "progress": 1
+    },
+    {
+      "name": "仓位索引.xlsx",
+      "status": "ready",
+      "error_message": null,
+      "chunk_count": 1,
+      "progress": 1
+    },
+    {
+      "name": "工单分流.docx",
+      "status": "ready",
+      "error_message": null,
+      "chunk_count": 1,
+      "progress": 1
+    }
+  ],
+  "finished_at": "2026-11-23T06:40:47.983505+00:00",
+  "results": [
+    {
+      "query": "松桥试点哪组复核蓝色工单？",
+      "document": "工单分流.docx",
+      "evidence": "北岸小组",
+      "rank": 1,
+      "returned": 2,
+      "effective_top_k": 5
+    },
+    {
+      "query": "蓝色工单的复核结果在周几登记？",
+      "document": "工单分流.docx",
+      "evidence": "每周四",
+      "rank": 1,
+      "returned": 1,
+      "effective_top_k": 5
+    },
+    {
+      "query": "银杏标签存放在哪个库位？",
+      "document": "仓位索引.xlsx",
+      "evidence": "C-17",
+      "rank": 1,
+      "returned": 1,
+      "effective_top_k": 5
+    },
+    {
+      "query": "白桦封条的补货批量是多少？",
+      "document": "仓位索引.xlsx",
+      "evidence": "360",
+      "rank": 1,
+      "returned": 1,
+      "effective_top_k": 5
+    },
+    {
+      "query": "What is the amber sensor calibration code?",
+      "document": "calibration.pdf",
+      "evidence": "AMBER-42",
+      "rank": 1,
+      "returned": 1,
+      "effective_top_k": 5
+    },
+    {
+      "query": "Which team receives the calibration record?",
+      "document": "calibration.pdf",
+      "evidence": "Juniper",
+      "rank": 1,
+      "returned": 1,
+      "effective_top_k": 5
+    },
+    {
+      "query": "扫描交接单上登记的箱号是什么？",
+      "document": "扫描交接单.pdf",
+      "evidence": "LOT-7316",
+      "rank": 1,
+      "returned": 2,
+      "effective_top_k": 5
+    },
+    {
+      "query": "扫描交接单上的交接站点叫什么？",
+      "document": "扫描交接单.pdf",
+      "evidence": "石榴站",
+      "rank": 1,
+      "returned": 1,
+      "effective_top_k": 5
+    }
+  ],
+  "metrics": {
+    "hitRate": 1,
+    "mrr": 1
+  }
+}

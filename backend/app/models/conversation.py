@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -128,6 +129,33 @@ class Message(Base):
     sequence: Mapped[int] = mapped_column(BigInteger)
     role: Mapped[str] = mapped_column(String(20))
     content: Mapped[str] = mapped_column(Text, default="", server_default="")
+    attachments: Mapped[list[dict[str, object]]] = mapped_column(JSONB, default=list, server_default="[]")
     status: Mapped[str] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ChatAttachment(Base):
+    """个人工作空间材料，来源对话仅用于定位上传记录。"""
+
+    __tablename__ = "chat_attachments"
+    __table_args__ = (
+        Index("ix_chat_attachments_conversation_id", "conversation_id"),
+        Index("ix_chat_attachments_owner_created", "workspace_id", "owner_user_id", "created_at", "id"),
+        ForeignKeyConstraint(
+            ["workspace_id", "owner_user_id"], ["workspace_memberships.workspace_id", "workspace_memberships.user_id"],
+            ondelete="CASCADE", name="fk_chat_attachments_membership",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    workspace_id: Mapped[UUID] = mapped_column()
+    owner_user_id: Mapped[UUID] = mapped_column()
+    conversation_id: Mapped[UUID | None] = mapped_column(ForeignKey("conversations.id", ondelete="SET NULL"))
+    filename: Mapped[str] = mapped_column(String(180))
+    media_type: Mapped[str] = mapped_column(String(110))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    extracted_text: Mapped[str] = mapped_column(Text, default="", server_default="")
+    text_truncated: Mapped[bool] = mapped_column(default=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

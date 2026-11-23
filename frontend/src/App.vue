@@ -64,12 +64,12 @@ async function changeWorkspace(event: Event): Promise<void> {
       >✦ 能力中心</RouterLink>
       <RouterLink
         class="workspace__nav"
-        to="/connectors"
-      >⬡ 连接器</RouterLink>
-      <RouterLink
-        class="workspace__nav"
         to="/knowledge"
       >▤ 知识库</RouterLink>
+      <RouterLink
+        class="workspace__nav"
+        to="/materials"
+      >▧ 我的材料</RouterLink>
       <RouterLink
         class="workspace__nav"
         to="/schedules"
@@ -87,6 +87,16 @@ async function changeWorkspace(event: Event): Promise<void> {
         class="workspace__nav"
         to="/admin/members"
       >⚙ 后台管理</RouterLink>
+      <RouterLink
+        v-if="auth.activeWorkspace?.role === 'admin' && auth.activeWorkspace.status === 'active'"
+        class="workspace__nav workspace__nav--admin-child"
+        to="/admin/system-logs"
+      >系统日志</RouterLink>
+      <RouterLink
+        v-if="auth.session?.system_admin === true"
+        class="workspace__nav workspace__nav--admin-child"
+        to="/admin/api-settings"
+      >API 配置</RouterLink>
       <div class="workspace__next">
         对话 · 智能体 · 能力扩展
       </div>
@@ -109,7 +119,7 @@ async function changeWorkspace(event: Event): Promise<void> {
     </aside>
     <main class="workspace__main">
       <header class="workspace__header">
-        <span>工作空间 / {{ sectionTitle }}</span><span class="workspace__stage">对话 · 规划 · 协作</span>
+        <span>{{ route.meta.admin ? '后台管理' : '工作空间' }} / {{ sectionTitle }}</span><span class="workspace__stage">对话 · 规划 · 协作</span>
       </header>
       <ConnectorNotice />
       <RouterView :key="(auth.session?.user.id ?? '') + auth.selectedWorkspaceId" />
@@ -122,4 +132,9 @@ async function changeWorkspace(event: Event): Promise<void> {
 .workspace__space select { width: 100%; background: #244737; color: #e5eddb; border: 1px solid #58745a; border-radius: 4px; padding: 8px; font: inherit; }
 .workspace__account { margin: auto 10px 20px; padding-top: 20px; font-size: 12px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
 .workspace__account button { border: 0; background: none; color: #c4d8b5; padding: 0; font-size: 11px; text-decoration: underline; }
+.workspace__nav--admin-child {
+  margin-left: 12px; padding: 9px 14px; border: 1px solid transparent; background: transparent;
+  &::before { content: ''; display: inline-block; width: 6px; height: 6px; margin: 0 8px 2px 0; border-radius: 50%; background: #b5d5a5; }
+  &:hover, &[aria-current='page'] { border-color: #557763; background: #2b5143; }
+}
 </style>

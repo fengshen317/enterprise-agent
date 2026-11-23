@@ -1,20 +1,82 @@
 """空间管理员管理成员与角色的真实 PostgreSQL 验收。"""
 
 import asyncio
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy import func, select
+from httpx import ASGITransport, AsyncClient, Response
+from sqlalchemy import delete, func, select
 
+from app.core.config import Settings
 from app.models.admin_audit import AdminAudit
+from app.models.config import IntegrationConfig
 from app.models.identity import User, Workspace, WorkspaceMembership
+from app.services.config_service import ENCRYPTED_PREFIX, ConfigService
 from tests.auth_helpers import add_identity
 from tests.test_chat_integration import ControlledProvider, new_conversation, settled, submit
 from tests.test_chat_integration import chat as chat
 
 pytestmark = pytest.mark.integration
+
+
+async def test_deployment_api_settings(chat: tuple[FastAPI, AsyncClient, ControlledProvider], tmp_path: Path) -> None:
+    """部署权限、批量保存、加密、重载和 Tavily 热启用使用真实数据库。"""
+    app, client, _ = chat
+    settings: Settings = app.state.settings
+    settings.integration_config_key_file = tmp_path / "api-key"
+    path = "/api/admin/configs"
+    assert (await client.get(path)).status_code == 403
+    settings.system_admin_username = (await client.get("/api/auth/me")).json()["user"]["username"]
+    del client.headers["X-Workspace-ID"]
+    initial = await client.get(path)
+    assert initial.status_code == 200 and initial.headers["Cache-Control"] == "no-store"
+    values = {
+        "llm_provider": "openai_compatible",
+        "llm_base_url": "http://local-llm.invalid/v1",
+        "llm_model": "fixture-model",
+        "llm_vision_model": "fixture-vision",
+        "llm_api_key": "fixture-llm-secret",
+        "tavily_api_key": "fixture-search-secret",
+        "model_max_tokens": "128",
+    }
+    factory = app.state.database.session_factory
+    async with factory() as session:
+        before = list(
+            (await session.scalars(select(IntegrationConfig).where(IntegrationConfig.key.in_(tuple(values))))).all()
+        )
+
+    async def save(updates: dict[str, str]) -> Response:
+        """将同一批配置交给真实 HTTP 接口。"""
+        return await client.post(path, json={"configs": [{"key": key, "value": val} for key, val in updates.items()]})
+
+    try:
+        invalid = await save({**values, "model_max_tokens": "1000000"})
+        assert invalid.status_code == 422 and settings.active_llm_model != "fixture-model"
+        response = await save(values)
+        assert response.status_code == 200, response.text
+        assert response.headers["Cache-Control"] == "no-store"
+        assert "fixture-llm-secret" not in response.text and "fixture-search-secret" not in response.text
+        assert settings.active_llm_model == "fixture-model"
+        assert app.state.tool_registry.resolve("web_search") is not None
+        async with factory() as session:
+            saved = await session.get(IntegrationConfig, "llm_api_key")
+            assert saved is not None and saved.value.startswith(ENCRYPTED_PREFIX)
+            assert "fixture-llm-secret" not in saved.value
+        fresh = Settings(_env_file=None, integration_config_key_file=settings.integration_config_key_file)
+        await ConfigService(factory, fresh).load()
+        assert fresh.llm_api_key.get_secret_value() == "fixture-llm-secret"
+        assert fresh.llm_model == "fixture-model"
+        changed = await save({"llm_base_url": "https://other-llm.invalid/v1"})
+        assert changed.status_code == 422 and changed.json()["error"]["code"] == "CONFIG_LLM_KEY_REQUIRED"
+        assert (await save({"tavily_api_key": ""})).status_code == 200
+        assert app.state.tool_registry.resolve("web_search") is None
+    finally:
+        async with factory.begin() as session:
+            await session.execute(delete(IntegrationConfig).where(IntegrationConfig.key.in_(tuple(values))))
+            for row in before:
+                await session.merge(row)
 
 
 async def create_user(app: FastAPI, client: AsyncClient, role: str = "member", password: str = "1") -> dict:

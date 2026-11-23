@@ -5,13 +5,16 @@ from typing import Annotated
 from urllib.parse import quote
 from uuid import UUID
 
-from fastapi import APIRouter, File, Query, Request, Response, UploadFile
+from fastapi import APIRouter, File, Form, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 
 from app.api.auth import ScopeDependency
 from app.core.errors import ApplicationError
 from app.schemas.knowledge import (
     DocumentParseInput,
+    DocumentReaders,
+    KnowledgeAccessMember,
     KnowledgeBaseInput,
     KnowledgeBaseView,
     KnowledgeChunkPage,
@@ -20,6 +23,7 @@ from app.schemas.knowledge import (
     RetrievalTestResult,
 )
 from app.services.knowledge import KnowledgeService
+from app.services.ragflow_models import RagflowModelService
 
 router = APIRouter(prefix="/api", tags=["知识库"])
 INLINE_MIME = {"application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp", "text/plain"}
@@ -78,7 +82,12 @@ async def create_knowledge_base(
     Returns:
         已就绪的知识库。
     """
-    return await service(request).create(scope, body)
+    executor = service(request)
+    if request.app.state.ragflow_managed and not (body.embedding_model or executor.settings.ragflow_embedding_model):
+        models: RagflowModelService | None = request.app.state.ragflow_model_service
+        if models is not None and (await models.status()).state == "needs_model":
+            raise ApplicationError("KNOWLEDGE_EMBEDDING_REQUIRED", "请让系统管理员先配置知识库 Embedding 模型", 409)
+    return await executor.create(scope, body)
 
 
 @router.get("/knowledge-bases/{kb_id}", response_model=KnowledgeBaseView)
@@ -150,6 +159,7 @@ async def upload_document(
     request: Request,
     scope: ScopeDependency,
     file: Annotated[UploadFile, File(description="待上传文档")],
+    readers: Annotated[str | None, Form(max_length=4000)] = None,
 ) -> KnowledgeDocumentView:
     """上传文件，随后写入解析配置并触发解析。
 
@@ -158,11 +168,18 @@ async def upload_document(
         request: 当前请求。
         scope: 已验证用户和空间。
         file: multipart 文件。
+        readers: 压缩成 JSON 的可选完整授权名单。
 
     Returns:
         进入解析状态的文档。
     """
     executor = service(request)
+    if readers is None and "readers" in await request.form():
+        raise ApplicationError("DOCUMENT_READERS_INVALID", "文档授权名单不能为空", 422)
+    try:
+        access = DocumentReaders.model_validate_json(readers) if readers is not None else None
+    except ValidationError as exc:
+        raise ApplicationError("DOCUMENT_READERS_INVALID", "文档授权名单格式无效", 422) from exc
     content = await file.read(executor.settings.knowledge_max_file_bytes + 1)
     filename = Path(file.filename or "未命名文档").name
     return await executor.upload(
@@ -171,6 +188,7 @@ async def upload_document(
         filename,
         content,
         file.content_type or "application/octet-stream",
+        access,
     )
 
 
@@ -187,6 +205,31 @@ async def list_documents(kb_id: UUID, request: Request, scope: ScopeDependency) 
         文档列表。
     """
     return await service(request).list_documents(scope, kb_id)
+
+
+@router.get("/knowledge-bases/{kb_id}/access-members", response_model=list[KnowledgeAccessMember])
+async def list_access_members(
+    kb_id: UUID, request: Request, scope: ScopeDependency,
+    q: Annotated[str, Query(max_length=100)] = "",
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> list[KnowledgeAccessMember]:
+    """列出知识库管理员可授权的成员。"""
+    return await service(request).list_access_members(scope, kb_id, q, offset, limit)
+
+
+@router.get("/knowledge-documents/{document_id}/readers", response_model=DocumentReaders)
+async def get_document_readers(document_id: UUID, request: Request, scope: ScopeDependency) -> DocumentReaders:
+    """读取受限文档的授权名单。"""
+    return await service(request).document_readers(scope, document_id)
+
+
+@router.post("/knowledge-documents/{document_id}/readers", response_model=DocumentReaders)
+async def set_document_readers(
+    document_id: UUID, body: DocumentReaders, request: Request, scope: ScopeDependency
+) -> DocumentReaders:
+    """替换指定受限文档的读者名单。"""
+    return await service(request).document_readers(scope, document_id, body)
 
 
 @router.get("/knowledge-documents/{document_id}", response_model=KnowledgeDocumentView)

@@ -1,42 +1,65 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, ref, watch } from 'vue'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { listSkills, type Skill } from '../../api/skills'
 import { listTools, setToolEnabled, type Tool } from '../../api/tools'
+import ConnectorsView from '../connectors/ConnectorsView.vue'
 
+type CapabilityTab = 'tools' | 'skills' | 'connectors'
+const sections = {
+  tools: { label: '工具', description: '查看 Agent 可调用的工具、审批要求和空间启用状态。' },
+  skills: { label: '技能', description: '维护版本化的 Markdown / SOP，让 Agent 按工作流程执行。' },
+  connectors: { label: '连接器', description: '接入外部服务，管理授权、配置和连接状态。' },
+}
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
-const tab = computed(() => route.query.tab === 'skills' ? 'skills' : 'tools')
+const tab = computed<CapabilityTab>(() => {
+  const value = route.query.tab
+  return value === 'skills' || value === 'connectors' ? value : 'tools'
+})
+const source = computed(() => typeof route.query.source === 'string' ? route.query.source : '')
 const tools = ref<Tool[]>([])
 const skills = ref<Skill[]>([])
 const loading = ref(false)
 const error = ref('')
 const busy = ref('')
+const visibleTools = computed(() => source.value ? tools.value.filter(tool => tool.connector_key === source.value) : tools.value)
 const isAdmin = computed(() => auth.activeWorkspace?.role === 'admin' && auth.activeWorkspace.status === 'active')
 const riskLabels: Record<string, string> = { read: '只读', write: '写入', delete: '删除', external: '外发' }
 
 function showError(value: unknown): void { error.value = value instanceof Error ? value.message : '操作失败，请重试' }
-async function load(): Promise<void> {
-  loading.value = true; error.value = ''
+let loadVersion = 0
+async function load(section: CapabilityTab = tab.value): Promise<void> {
+  const version = ++loadVersion
+  loading.value = section !== 'connectors'
+  error.value = ''
+  if (section === 'connectors') return
   try {
-    const [toolList, skillList] = await Promise.all([listTools(), listSkills().catch(() => [] as Skill[])])
-    tools.value = toolList; skills.value = skillList
-  } catch (value) { showError(value) }
-  finally { loading.value = false }
+    if (section === 'tools') {
+      const items = await listTools()
+      if (version === loadVersion) tools.value = items
+    } else {
+      const items = await listSkills()
+      if (version === loadVersion) skills.value = items
+    }
+  } catch (value) { if (version === loadVersion) showError(value) }
+  finally { if (version === loadVersion) loading.value = false }
 }
-function switchTab(value: 'tools' | 'skills'): void {
-  void router.replace({ query: { ...route.query, tab: value } })
+function switchTab(value: CapabilityTab): void {
+  if (value !== tab.value || source.value || route.query.connector) void router.push({ query: { tab: value } })
 }
 async function toggle(tool: Tool): Promise<void> {
   if (busy.value || !isAdmin.value) return
   busy.value = tool.key
-  try { await setToolEnabled(tool.key, !tool.enabled); await load() } catch (value) { showError(value) }
+  try {
+    const updated = await setToolEnabled(tool.key, !tool.enabled)
+    tools.value = tools.value.map(item => item.key === updated.key ? updated : item)
+  } catch (value) { if (tab.value === 'tools') showError(value) }
   finally { busy.value = '' }
 }
-watch(() => route.query.tab, () => { if (!loading.value) void load() })
-onMounted(load)
+watch(tab, value => { void load(value) }, { immediate: true })
 </script>
 
 <template>
@@ -45,7 +68,7 @@ onMounted(load)
       <div>
         <span class="capabilities__eyebrow">CAPABILITY CENTER</span>
         <h1>能力中心</h1>
-        <p>内置工具编目与版本化技能。工具由服务端实现，技能是 Markdown/SOP；外部连接将在后续版本加入。</p>
+        <p>管理工作空间的工具、技能和外部连接。为单个 Agent 分配能力，请前往「Agent 管理」。</p>
       </div>
       <button
         v-if="tab === 'skills'"
@@ -61,20 +84,18 @@ onMounted(load)
       aria-label="能力分类"
     >
       <button
+        v-for="(section, key) in sections"
+        :key="key"
         type="button"
-        :class="{ 'capabilities__tab--active': tab === 'tools' }"
-        @click="switchTab('tools')"
+        :aria-current="tab === key ? 'page' : undefined"
+        @click="switchTab(key)"
       >
-        工具目录
-      </button>
-      <button
-        type="button"
-        :class="{ 'capabilities__tab--active': tab === 'skills' }"
-        @click="switchTab('skills')"
-      >
-        技能库
+        {{ section.label }}
       </button>
     </nav>
+    <p class="capabilities__section-description">
+      {{ sections[tab].description }}
+    </p>
     <p
       v-if="error"
       class="capabilities__error"
@@ -82,8 +103,12 @@ onMounted(load)
     >
       {{ error }}
     </p>
+    <ConnectorsView
+      v-if="tab === 'connectors'"
+      embedded
+    />
     <p
-      v-if="loading"
+      v-else-if="loading"
       class="capabilities__hint"
     >
       正在读取能力…
@@ -93,29 +118,50 @@ onMounted(load)
       v-else-if="tab === 'tools'"
       class="capabilities__table-wrap"
     >
+      <div
+        v-if="source"
+        class="capabilities__filter"
+      >
+        <span>仅显示连接器工具：<code>{{ source }}</code></span>
+        <RouterLink :to="{ path: '/capabilities', query: { tab: 'tools' } }">
+          查看全部工具
+        </RouterLink>
+      </div>
       <table class="capabilities__table">
         <thead>
           <tr>
-            <th>工具</th><th>风险</th><th>审批</th><th>超时</th><th>单次配额</th><th>被 Agent 使用</th><th v-if="isAdmin">
-              空间启用
+            <th>工具</th><th>来源</th><th>风险</th><th>审批</th><th>超时</th><th>单次配额</th><th>被 Agent 使用</th><th>
+              空间状态
             </th>
           </tr>
         </thead>
         <tbody>
           <tr
-            v-for="tool in tools"
+            v-for="tool in visibleTools"
             :key="tool.key"
           >
             <td><strong>{{ tool.display_name }}</strong><small>{{ tool.key }} · v{{ tool.version }}</small><p>{{ tool.description }}</p></td>
+            <td>
+              <RouterLink
+                v-if="tool.connector_key"
+                :to="{ path: '/capabilities', query: { tab: 'connectors', connector: tool.connector_key } }"
+                :title="tool.connector_key"
+              >
+                连接器
+              </RouterLink>
+              <span v-else>内置</span>
+            </td>
             <td>{{ riskLabels[tool.risk] ?? tool.risk }}</td>
             <td>{{ tool.approval === 'always' ? '逐次审批' : '自动执行' }}</td>
             <td>{{ tool.timeout_seconds }}s</td>
             <td>{{ tool.quota_per_run }}</td>
             <td>{{ tool.used_by_agents }}</td>
-            <td v-if="isAdmin">
+            <td>
+              <span>{{ tool.enabled ? '已启用' : '已停用' }}</span>
               <button
+                v-if="isAdmin"
                 type="button"
-                :disabled="busy === tool.key"
+                :disabled="Boolean(busy)"
                 @click="toggle(tool)"
               >
                 {{ tool.enabled ? '停用' : '启用' }}
@@ -124,6 +170,12 @@ onMounted(load)
           </tr>
         </tbody>
       </table>
+      <p
+        v-if="!visibleTools.length && !error"
+        class="capabilities__boundary"
+      >
+        {{ source ? '此连接器暂无当前账号可见的工具。请检查连接器的启用与授权状态。' : '暂无可见工具。' }}
+      </p>
       <p class="capabilities__boundary">
         停用工具不会删除历史审计；新的运行装配会跳过被停用的工具。
       </p>
@@ -177,7 +229,11 @@ onMounted(load)
   &__heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; padding-bottom: 24px; border-bottom: 1px solid $line; h1 { font-size: clamp(28px, 3vw, 40px); font-weight: 400; margin: 10px 0; } p { color: $muted; font-size: 12px; line-height: 1.9; max-width: 720px; } }
   &__eyebrow { font-size: 9px; letter-spacing: 2px; color: #859576; }
   &__primary { background: #31533d; color: #edf4e4; border: 0; border-radius: 5px; padding: 11px 17px; font-size: 12px; white-space: nowrap; }
-  &__tabs { display: flex; gap: 18px; margin: 20px 0 14px; button { border: 0; background: none; color: $muted; font-size: 13px; padding: 6px 2px; border-bottom: 2px solid transparent; } &--active { color: $green; border-bottom-color: $green; } }
+  &__tabs { display: flex; gap: 6px; margin: 20px 0 10px; border-bottom: 1px solid $line; button { border: 0; background: none; color: $muted; font-size: 13px; padding: 10px 16px; border-bottom: 2px solid transparent; } button[aria-current='page'] { color: $green; border-bottom-color: $green; font-weight: 600; } }
+  &__section-description { margin: 0 0 16px; color: $muted; font-size: 13px; line-height: 1.7; }
+  &__filter { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 12px 14px; background: $paper; color: $muted; font-size: 12px; overflow-wrap: anywhere; }
+  &__filter a, &__table a { color: $green; text-decoration: underline; }
+  &__table td:last-child button { margin-inline-start: 8px; }
   &__table-wrap { overflow-x: auto; border: 1px solid $line; border-radius: 8px; background: #fff; }
   &__table { width: 100%; border-collapse: collapse; font-size: 12px; th { text-align: left; padding: 12px 14px; background: $paper; color: $muted; font-weight: 500; white-space: nowrap; } td { padding: 14px; border-top: 1px solid #edf0e9; vertical-align: top; } strong { font-weight: 500; } small { display: block; color: $muted; margin-top: 4px; font-size: 10px; } p { color: $muted; font-size: 11px; line-height: 1.6; margin-top: 6px; max-width: 420px; } button { border: 0; background: none; color: $green; text-decoration: underline; font-size: 12px; } }
   &__hint { color: $muted; font-size: 12px; line-height: 1.9; margin-top: 16px; }

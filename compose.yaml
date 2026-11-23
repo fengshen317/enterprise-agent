@@ -1,0 +1,113 @@
+include:
+  - ./deploy/ragflow/compose.yaml
+
+x-logging: &logging
+  driver: local
+
+x-api-build: &api-build
+  context: ./backend
+  args:
+    EA_PYPI_INDEX_URL: ${EA_PYPI_INDEX_URL:-https://pypi.org/simple}
+
+x-ragflow-client: &ragflow-client
+  EA_KNOWLEDGE_ENABLED: ${EA_KNOWLEDGE_ENABLED:-true}
+  EA_RAGFLOW_BASE_URL: ${EA_RAGFLOW_BASE_URL:-http://ragflow:80}
+  EA_RAGFLOW_API_KEY: ${EA_RAGFLOW_API_KEY:-}
+
+services:
+  db:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${EA_DATABASE_NAME:-enterprise_agent}
+      POSTGRES_USER: ${EA_DATABASE_USER:-enterprise_agent}
+      POSTGRES_PASSWORD: ${EA_DATABASE_PASSWORD:?请在 .env 中设置数据库密码}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # 通过 TCP 检查正式实例，避开首次初始化时仅监听本地套接字的临时实例。
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    logging: *logging
+
+  ragflow-init:
+    build: *api-build
+    user: "0:0"
+    command: ["python", "-m", "app.cli.ragflow_init"]
+    environment: *ragflow-client
+    volumes:
+      - ragflow_admin_state:/var/lib/ea-ragflow-admin
+      - ragflow_api_credentials:/var/lib/ea-ragflow-api
+    networks:
+      - ragflow_client
+    depends_on:
+      ragflow:
+        condition: service_started
+    logging: *logging
+
+  api:
+    build: *api-build
+    restart: unless-stopped
+    env_file: ${EA_DEPLOY_ENV_FILE:-.env}
+    environment:
+      <<: *ragflow-client
+      EA_ENVIRONMENT: production
+      EA_DATABASE_HOST: db
+      EA_DATABASE_PORT: "5432"
+      EA_DATABASE_NAME: ${EA_DATABASE_NAME:-enterprise_agent}
+      EA_DATABASE_USER: ${EA_DATABASE_USER:-enterprise_agent}
+      EA_DATABASE_PASSWORD: ${EA_DATABASE_PASSWORD:?请在 .env 中设置数据库密码}
+      EA_CORS_ORIGINS: "[]"
+      EA_AUTH_TRUSTED_ORIGINS: '["https://${EA_DEPLOY_DOMAIN:?请在 .env 中设置部署域名}"]'
+      EA_PUBLIC_APP_BASE_URL: https://${EA_DEPLOY_DOMAIN:?请在 .env 中设置部署域名}
+      EA_RAGFLOW_API_KEY_FILE: /var/lib/ea-ragflow-api/api-key
+      # 工作台通过 API Key 访问，RAGFlow 内部服务密码只给其子栈。
+      EA_RAGFLOW_SERVICE_PASSWORD: ""
+      EA_RAGFLOW_ADMIN_PASSWORD: ""
+    networks:
+      - default
+      - ragflow_client
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - api_home:/home/enterprise-agent
+      - ragflow_api_credentials:/var/lib/ea-ragflow-api:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      ragflow-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/api/health/ready', timeout=4).close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    stop_grace_period: 30s
+    logging: *logging
+
+  web:
+    build: ./frontend
+    restart: unless-stopped
+    environment:
+      EA_DEPLOY_DOMAIN: ${EA_DEPLOY_DOMAIN:?请在 .env 中设置部署域名}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    logging: *logging
+
+volumes:
+  postgres_data:
+  api_home:
+  caddy_data:
+  caddy_config:
+  ragflow_api_credentials:

@@ -19,6 +19,7 @@ class DatasetInfo:
 
     dataset_id: str
     parser_config: dict[str, Any] = field(default_factory=dict)
+    embedding_model: str = ""
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,10 @@ class RagflowClientProtocol(Protocol):
         self, name: str, parser_id: str, parse_type: int, embedding_model: str = "", language: str = ""
     ) -> DatasetInfo:
         """创建 dataset。"""
+        ...
+
+    async def dataset_embedding_model(self, dataset_id: str) -> str:
+        """读取 RAGFlow 数据集实际使用的模型。"""
         ...
 
     async def update_dataset(
@@ -195,12 +200,13 @@ class RagflowClient:
                 503,
             )
 
-    async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+    async def _request(self, method: str, path: str, *, log_details: bool = True, **kwargs: Any) -> dict[str, Any]:
         """统一处理超时、网络错误、非 JSON 和业务错误。
 
         Args:
             method: HTTP 方法。
             path: RAGFlow API 路径。
+            log_details: 是否记录上游消息，涉及模型供应商凭据时关闭。
             kwargs: httpx 请求参数。
 
         Returns:
@@ -233,11 +239,16 @@ class RagflowClient:
                     "path": path,
                     "status": response.status_code,
                     "code": code,
-                    "ragflow_message": str(payload.get("message", ""))[:300],
+                    "ragflow_message": str(payload.get("message", ""))[:300] if log_details else "",
                 },
             )
             raise ApplicationError("RAGFLOW_REJECTED", "知识库服务拒绝了本次操作，请检查配置或文档", 502)
         return payload
+
+    async def model_request(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
+        """复用已认证连接，避免模型接口的上游消息进入日志。"""
+        payload = await self._request(method, path, log_details=False, json=body)
+        return payload.get("data")
 
     async def create_dataset(
         self, name: str, parser_id: str, parse_type: int, embedding_model: str = "", language: str = ""
@@ -264,7 +275,24 @@ class RagflowClient:
         if not isinstance(data, dict) or not isinstance(data.get("id"), str):
             raise ApplicationError("RAGFLOW_INVALID_RESPONSE", "知识库服务未返回有效 dataset ID", 502)
         config = data.get("parser_config")
-        return DatasetInfo(dataset_id=data["id"], parser_config=config if isinstance(config, dict) else {})
+        embedding = data.get("embedding_model") or data.get("embd_id")
+        return DatasetInfo(
+            dataset_id=data["id"],
+            parser_config=config if isinstance(config, dict) else {},
+            embedding_model=embedding if isinstance(embedding, str) else "",
+        )
+
+    async def dataset_embedding_model(self, dataset_id: str) -> str:
+        """读取旧数据集使用的模型，避免依赖当前租户默认值。"""
+        payload = await self._request("GET", "/api/v1/datasets", params={"id": dataset_id})
+        rows = payload.get("data")
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict) and row.get("id") == dataset_id:
+                    model = row.get("embedding_model") or row.get("embd_id")
+                    if isinstance(model, str) and model:
+                        return model
+        raise ApplicationError("RAGFLOW_INVALID_RESPONSE", "无法读取原知识库的向量模型", 502)
 
     async def update_dataset(
         self,
@@ -555,8 +583,12 @@ class RagflowClient:
             "page": 1,
             "size": top_k,
         }
-        if document_ids:
+        if document_ids == []:
+            return []
+        if document_ids is not None:
             body["document_ids"] = document_ids
+            # 库级编纂产物可能融合多份源文件，受限检索只接受原始分块。
+            body["include_knowledge_compilation"] = False
         payload = await self._request("POST", "/api/v1/retrieval", json=body)
         data = payload.get("data")
         chunks = data.get("chunks") if isinstance(data, dict) else None

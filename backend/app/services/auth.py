@@ -69,6 +69,10 @@ class AuthService:
         """
         self.factory, self.settings = factory, settings
 
+    def is_system_admin(self, context: AuthContext) -> bool:
+        """以部署指定的唯一账号区分系统权限与空间角色。"""
+        return context.username == self.settings.system_admin_username.strip().lower()
+
     async def login(self, username: str, password: str, client_host: str) -> str:
         """验证凭证、失败窗口和账号版本后创建随机会话。
 
@@ -178,6 +182,7 @@ class AuthService:
             ).all()
             return SessionView(
                 user=UserView(id=context.user_id, username=context.username, display_name=context.display_name),
+                system_admin=self.is_system_admin(context),
                 workspaces=[
                     WorkspaceView(
                         id=workspace.id, slug=workspace.slug, name=workspace.name, status=workspace.status, role=role

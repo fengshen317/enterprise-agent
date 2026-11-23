@@ -79,7 +79,7 @@ describe('知识库接口', () => {
 
   it('分块、检索测试与批量重解析使用新端点', async () => {
     const page = { total: 30, offset: 0, limit: 20, chunks: [{ content: 'chunk 0', available: true }] }
-    const retrieval = { chunks: [{ content: '命中', document_id: 'doc-1', document_name: '制度.txt', similarity: 0.9, positions: [1] }] }
+    const retrieval = { effective_top_k: 5, chunks: [{ content: '命中', document_id: 'doc-1', document_name: '制度.txt', similarity: 0.9, positions: [1] }] }
     const fetcher = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(page), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify(retrieval), { status: 200 }))

@@ -1,6 +1,7 @@
 """同时启动本地前后端，并统一管理子进程生命周期。"""
 
 import os
+import platform
 import shutil
 import signal
 import socket
@@ -30,12 +31,27 @@ def check_port(port: int) -> None:
         listener.bind((HOST, port))
 
 
-def start_process(command: list[str], directory: Path) -> subprocess.Popen[bytes]:
+def backend_environment() -> dict[str, str]:
+    """选择后端进程环境，避免 WSL 和 Windows 共用不可互换的虚拟环境。
+
+    Returns:
+        保留调用者覆盖项的后端环境变量。
+    """
+    environment = os.environ.copy()
+    if sys.platform == "linux" and ("WSL_DISTRO_NAME" in environment or "microsoft" in platform.release().lower()):
+        environment.setdefault("UV_PROJECT_ENVIRONMENT", str(PROJECT_DIR / ".local" / "backend-venv-wsl"))
+    return environment
+
+
+def start_process(
+    command: list[str], directory: Path, *, environment: dict[str, str] | None = None
+) -> subprocess.Popen[bytes]:
     """为服务创建独立进程组，便于清理重载器和其子进程。
 
     Args:
         command: 固定的服务启动命令。
         directory: 服务工作目录。
+        environment: 可选的子进程环境变量。
 
     Returns:
         当前脚本拥有的服务进程。
@@ -43,6 +59,7 @@ def start_process(command: list[str], directory: Path) -> subprocess.Popen[bytes
     return subprocess.Popen(
         command,
         cwd=directory,
+        env=environment,
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
         start_new_session=sys.platform != "win32",
     )
@@ -98,7 +115,8 @@ def main() -> int:
             except OSError:
                 print(f"无法使用 {HOST}:{port}，请先停止旧服务或检查端口保留范围。", file=sys.stderr)
                 return 1
-        result = subprocess.run([uv, "sync", "--frozen"], cwd=BACKEND_DIR, check=False)
+        environment = backend_environment()
+        result = subprocess.run([uv, "sync", "--frozen"], cwd=BACKEND_DIR, env=environment, check=False)
         if result.returncode != 0:
             return result.returncode
         if not (FRONTEND_DIR / "node_modules").is_dir():
@@ -120,6 +138,7 @@ def main() -> int:
                     "--reload",
                 ],
                 BACKEND_DIR,
+                environment=environment,
             )
         )
         processes.append(start_process([npm, "run", "dev"], FRONTEND_DIR))

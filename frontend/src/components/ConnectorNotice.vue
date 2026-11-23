@@ -27,7 +27,7 @@ onUnmounted(connectors.release)
       <span>{{ item.name }}{{ connectorHealthLabel(item) }}</span>
       <RouterLink
         v-if="isAdmin"
-        :to="{ path: '/connectors', query: { connector: item.key } }"
+        :to="{ path: '/capabilities', query: { tab: 'connectors', connector: item.key } }"
       >
         {{ connectorActionLabel(item) }}
       </RouterLink>

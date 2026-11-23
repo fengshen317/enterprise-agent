@@ -1,0 +1,21 @@
+{$EA_DEPLOY_DOMAIN} {
+	@api path /api /api/*
+	handle @api {
+		# 保留 /api 前缀。Caddy 会即时转发 text/event-stream。
+		reverse_proxy api:8000
+	}
+
+	handle /assets/* {
+		root * /srv
+		header >Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+
+	handle {
+		root * /srv
+		# 客户端路由共用入口，发布后浏览器需重新检查入口以获取新资源名。
+		header Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+}

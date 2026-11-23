@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { ApiError } from '../api/client'
 import { createMember, listAudits, listMembers, updateMember, type Audit, type Member, type MemberUpdate, type Role } from '../api/admin'
 import { useAuthStore } from '../stores/auth'
-import { listConfigs, updateConfigs, type ConfigItem, type ConfigUpdate } from '../api/config'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -14,10 +13,6 @@ const audits = ref<Audit[]>([])
 const drafts = ref<Record<string, MemberUpdate>>({})
 const total = ref(0)
 const offset = ref(0)
-const configs = ref<ConfigItem[]>([])
-const configDrafts = ref<Record<string, string>>({})
-const configSaving = ref('')
-const configNotice = ref('')
 const auditOffset = ref(0)
 const query = ref('')
 const appliedQuery = ref('')
@@ -49,7 +44,6 @@ async function load(): Promise<void> {
   if (!allowed.value) return
   const token = ++revision
   loading.value = true; error.value = ''
-  configs.value = await listConfigs().catch(() => [] as ConfigItem[])
   try {
     const [page, history] = await Promise.all([listMembers(offset.value, appliedQuery.value), listAudits(auditOffset.value)])
     if (!alive || token !== revision) return
@@ -97,29 +91,6 @@ function dirty(item: Member): boolean {
 }
 async function page(delta: number): Promise<void> { offset.value = Math.max(0, offset.value + delta * PAGE_SIZE); await load() }
 async function auditPage(delta: number): Promise<void> { auditOffset.value = Math.max(0, auditOffset.value + delta * PAGE_SIZE); await load() }
-function configDraft(key: string): string {
-  return configDrafts.value[key] ?? ''
-}
-function setConfigDraft(key: string, value: string): void {
-  configDrafts.value[key] = value
-}
-async function saveConfig(keys: string[]): Promise<void> {
-  const updates: ConfigUpdate[] = keys
-    .filter(key => configDrafts.value[key] !== undefined && configDrafts.value[key] !== '')
-    .map(key => ({ key, value: configDrafts.value[key] }))
-  if (!updates.length) return
-  configSaving.value = keys.join(',')
-  configNotice.value = ''
-  try {
-    configs.value = await updateConfigs(updates)
-    configDrafts.value = {}
-    configNotice.value = '配置已保存并生效。'
-  } catch (value) {
-    configNotice.value = value instanceof Error ? value.message : '保存失败'
-  } finally {
-    configSaving.value = ''
-  }
-}
 function roleName(value: string | null): string { return value === 'admin' ? '管理员' : value === 'member' ? '普通成员' : '无' }
 function stateName(value: string | null): string { return value === 'active' ? '启用' : value === 'revoked' ? '停用' : '无' }
 function timeLabel(value: string): string { return new Date(value).toLocaleString('zh-CN') }
@@ -137,15 +108,23 @@ onBeforeUnmount(() => { alive = false; revision++; password.value = '' })
           {{ auth.activeWorkspace?.name }} · 管理当前空间的访问权限
         </p>
       </div>
-      <button
+      <div
         v-if="allowed"
-        class="admin__primary"
-        type="button"
-        :disabled="loading || creating || !!saving"
-        @click="showCreate = !showCreate"
+        class="admin__actions"
       >
-        {{ showCreate ? '收起表单' : '＋ 添加用户' }}
-      </button>
+        <RouterLink
+          class="admin__logs-link"
+          to="/admin/system-logs"
+        >系统日志</RouterLink>
+        <button
+          class="admin__primary"
+          type="button"
+          :disabled="loading || creating || !!saving"
+          @click="showCreate = !showCreate"
+        >
+          {{ showCreate ? '收起表单' : '＋ 添加用户' }}
+        </button>
+      </div>
     </header>
     <p
       v-if="!allowed"
@@ -366,99 +345,6 @@ onBeforeUnmount(() => { alive = false; revision++; password.value = '' })
           </div>
         </div>
       </section>
-      <section
-        class="admin__card"
-        aria-label="集成配置"
-      >
-        <div class="admin__audit-heading">
-          <h2>集成配置</h2><span>模型与联网搜索参数，保存即生效</span>
-        </div>
-        <p
-          v-if="configNotice"
-          class="admin__notice"
-          role="status"
-        >
-          {{ configNotice }}
-        </p>
-        <div class="admin__config-groups">
-          <div class="admin__config-group">
-            <h3>模型配置（DeepSeek）</h3>
-            <div class="admin__fields">
-              <label>API Key
-                <input
-                  type="password"
-                  :placeholder="configs.find(c => c.key === 'deepseek_api_key')?.value_masked || '未配置'"
-                  :value="configDraft('deepseek_api_key')"
-                  @input="setConfigDraft('deepseek_api_key', ($event.target as HTMLInputElement).value)"
-                />
-              </label>
-              <label>模型名称
-                <input
-                  :value="configDraft('deepseek_model') || configs.find(c => c.key === 'deepseek_model')?.value_masked"
-                  @input="setConfigDraft('deepseek_model', ($event.target as HTMLInputElement).value)"
-                />
-              </label>
-              <label>超时（秒）
-                <input
-                  type="number"
-                  :value="configDraft('model_timeout_seconds') || configs.find(c => c.key === 'model_timeout_seconds')?.value_masked"
-                  @input="setConfigDraft('model_timeout_seconds', ($event.target as HTMLInputElement).value)"
-                />
-              </label>
-              <label>最大 Token
-                <input
-                  type="number"
-                  :value="configDraft('model_max_tokens') || configs.find(c => c.key === 'model_max_tokens')?.value_masked"
-                  @input="setConfigDraft('model_max_tokens', ($event.target as HTMLInputElement).value)"
-                />
-              </label>
-            </div>
-            <button
-              type="button"
-              class="admin__primary"
-              :disabled="configSaving !== ''"
-              @click="saveConfig(['deepseek_api_key', 'deepseek_model', 'model_timeout_seconds', 'model_max_tokens'])"
-            >
-              保存模型配置
-            </button>
-          </div>
-          <div class="admin__config-group">
-            <h3>联网搜索（Tavily）</h3>
-            <div class="admin__fields">
-              <label>API Key
-                <input
-                  type="password"
-                  :placeholder="configs.find(c => c.key === 'tavily_api_key')?.value_masked || '未配置'"
-                  :value="configDraft('tavily_api_key')"
-                  @input="setConfigDraft('tavily_api_key', ($event.target as HTMLInputElement).value)"
-                />
-              </label>
-              <label>超时（秒）
-                <input
-                  type="number"
-                  :value="configDraft('web_search_timeout_seconds') || configs.find(c => c.key === 'web_search_timeout_seconds')?.value_masked"
-                  @input="setConfigDraft('web_search_timeout_seconds', ($event.target as HTMLInputElement).value)"
-                />
-              </label>
-              <label>返回条数
-                <input
-                  type="number"
-                  :value="configDraft('web_search_max_results') || configs.find(c => c.key === 'web_search_max_results')?.value_masked"
-                  @input="setConfigDraft('web_search_max_results', ($event.target as HTMLInputElement).value)"
-                />
-              </label>
-            </div>
-            <button
-              type="button"
-              class="admin__primary"
-              :disabled="configSaving !== ''"
-              @click="saveConfig(['tavily_api_key', 'web_search_timeout_seconds', 'web_search_max_results'])"
-            >
-              保存搜索配置
-            </button>
-          </div>
-        </div>
-      </section>
     </template>
   </section>
 </template>
@@ -468,6 +354,8 @@ onBeforeUnmount(() => { alive = false; revision++; password.value = '' })
 .admin {
   max-width: 1200px; margin: 0 auto; padding: 40px clamp(20px, 4vw, 56px) 70px;
   &__heading { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 22px; h1 { font-size: 28px; font-weight: 500; margin: 13px 0; } }
+  &__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  &__logs-link { border: 1px solid $line; border-radius: 6px; padding: 10px 15px; background: white; color: $green; text-decoration: none; &:hover { border-color: $green; } }
   &__eyebrow { color: $muted; font-size: 10px; letter-spacing: 2px; }
   &__description, &__hint, &__boundary { color: $muted; font-size: 12px; line-height: 1.9; }
   &__boundary { border-left: 2px solid $line; padding-left: 14px; margin-bottom: 26px; }
@@ -480,8 +368,6 @@ onBeforeUnmount(() => { alive = false; revision++; password.value = '' })
   &__toolbar button, &__pagination button, &__save { border: 1px solid $line; background: $paper; border-radius: 5px; padding: 8px 12px; color: $green; font-size: 12px; }
   &__table-wrap { overflow-x: auto; }
   &__table { width: 100%; border-collapse: collapse; text-align: left; th { background: $paper; color: $muted; font-size: 11px; font-weight: 400; padding: 13px 20px; white-space: nowrap; } td { padding: 17px 20px; border-bottom: 1px solid $line; font-size: 12px; white-space: nowrap; } strong { font-weight: 500; } small { display: block; color: $muted; margin-top: 7px; } }
-  &__config-groups { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 16px; }
-  &__config-group { h3 { font-size: 13px; color: $green; margin-bottom: 12px; } button { margin-top: 14px; } }
   &__pagination { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 16px 20px; color: $muted; font-size: 11px; div { display: flex; gap: 8px; } }
   &__error, &__notice { padding: 12px 16px; border-radius: 5px; font-size: 12px; line-height: 1.8; }
   &__error { background: #faeee6; color: #934b40; }

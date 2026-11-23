@@ -2,10 +2,12 @@
 
 import asyncio
 import json
+from base64 import b64encode
 from collections.abc import AsyncIterator
 from importlib import import_module
 from typing import TYPE_CHECKING, Protocol
 
+from app.agents.llm import create_llm, validate_llm
 from app.core.config import Settings
 from app.core.errors import ApplicationError
 
@@ -25,6 +27,7 @@ def load_agent_sdk() -> None:
         "langchain_core.messages",
         "langchain_core.tools",
         "langchain_deepseek",
+        "langchain_openai",
     ):
         import_module(module)
 
@@ -62,7 +65,7 @@ class StreamProvider(Protocol):
 
 
 class DeepSeekProvider:
-    """通过 Deep Agents 图调用 DeepSeek 官方模型。"""
+    """通过 Deep Agents 图调用部署配置的问答模型。"""
 
     def __init__(
         self,
@@ -87,14 +90,16 @@ class DeepSeekProvider:
 
     def validate(self) -> None:
         """缺少凭证时明确拒绝生成，仍允许查看已有历史。"""
-        if not self.settings.deepseek_api_key.get_secret_value().strip():
-            raise ApplicationError("MODEL_NOT_CONFIGURED", "请在 backend/.env 配置 EA_DEEPSEEK_API_KEY 并重启后端", 503)
+        validate_llm(self.settings)
 
-    async def stream(self, history: ChatHistory) -> AsyncIterator[str]:
+    async def stream(
+        self, history: ChatHistory, *, images: tuple[tuple[str, bytes], ...] = ()
+    ) -> AsyncIterator[str]:
         """每次运行建立独立图，不跨对话共享可变状态。
 
         Args:
             history: 由业务消息重建的上下文。
+            images: 本轮用户消息关联的已鉴权图片原件。
 
         Yields:
             主模型生成的可展示正文。
@@ -110,9 +115,8 @@ class DeepSeekProvider:
         from langchain.agents.middleware import ModelRequest, ModelResponse, wrap_model_call, wrap_tool_call
         from langchain.agents.middleware.types import InputAgentState
         from langchain.tools.tool_node import ToolCallRequest
-        from langchain_core.messages import AIMessage, ToolMessage
+        from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
         from langchain_core.tools import BaseTool, StructuredTool
-        from langchain_deepseek import ChatDeepSeek
         from langgraph.types import Command
 
         from app.capabilities.prompts import BASE_SYSTEM_PROMPT
@@ -184,7 +188,17 @@ class DeepSeekProvider:
 
             async def invoke_model() -> ModelResponse:
                 """将单次模型动作作为重试边界，避免重放已完成工具。"""
-                characters = sum(len(str(message.content)) for message in request.messages)
+                # 内联图片有独立的字节和数量限制，不能把 base64 算进文本预算。
+                characters = 0
+                for message in request.messages:
+                    value = message.content
+                    if isinstance(value, list):
+                        characters += sum(
+                            len(str(part)) for part in value
+                            if not isinstance(part, dict) or part.get("type") != "image_url"
+                        )
+                    else:
+                        characters += len(value)
                 if request.system_message is not None:
                     characters += len(str(request.system_message.content))
                 if characters > self.settings.model_context_characters:
@@ -205,16 +219,7 @@ class DeepSeekProvider:
                             raise ApplicationError("TOOL_NOT_ALLOWED", "当前工具未获授权", 403)
             return response
 
-        model = ChatDeepSeek(
-            streaming=True,
-            model=self.settings.deepseek_model,
-            api_key=self.settings.deepseek_api_key,
-            base_url="https://api.deepseek.com",
-            max_tokens=self.settings.model_max_tokens,
-            timeout=self.settings.model_timeout_seconds,
-            max_retries=0,
-            extra_body={"thinking": {"type": "disabled"}},
-        )
+        model = create_llm(self.settings, streaming=True, vision=bool(images))
         try:
             agent = create_deep_agent(
                 model=model,
@@ -222,7 +227,20 @@ class DeepSeekProvider:
                 system_prompt=system_prompt,
                 middleware=[authorized_model, authorized_tool],
             )
-            state: InputAgentState = {"messages": [{"role": role, "content": content} for role, content in history]}
+            messages: list[dict[str, Any]] = [{"role": role, "content": content} for role, content in history]
+            if images:
+                messages[-1]["content"] = [
+                    {"type": "text", "text": history[-1][1]},
+                    *[
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime};base64,{b64encode(data).decode('ascii')}"},
+                        }
+                        for mime, data in images
+                    ],
+                ]
+            input_messages: list[AnyMessage | dict[str, Any]] = list(messages)
+            state: InputAgentState = {"messages": input_messages}
             # 完整动作提交后再发布正文，避免失败请求的半段正文与重试结果重复拼接。
             async for update in agent.astream(state, stream_mode="updates", config={"recursion_limit": 40}):
                 node = update.get("model") if isinstance(update, dict) else None
@@ -252,17 +270,7 @@ class DeepSeekProvider:
             摘要正文，不包含推理或工具结果。
         """
         await asyncio.to_thread(load_agent_sdk)
-        from langchain_deepseek import ChatDeepSeek
-
-        model = ChatDeepSeek(
-            model=self.settings.deepseek_model,
-            api_key=self.settings.deepseek_api_key,
-            base_url="https://api.deepseek.com",
-            max_tokens=min(4096, max(512, max_characters * 2)),
-            timeout=self.settings.model_timeout_seconds,
-            max_retries=0,
-            extra_body={"thinking": {"type": "disabled"}},
-        )
+        model = create_llm(self.settings, max_tokens=min(4096, max(512, max_characters * 2)))
         try:
             response = await model.ainvoke(
                 [

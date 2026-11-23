@@ -366,6 +366,36 @@ async def test_due_claim_advances_schedule_and_skips_disabled(schedules: tuple[F
     assert await app.state.schedule_runtime.run_due_once() is False
 
 
+async def test_calendar_skips_backlog_on_holiday_and_resumes_known_year(
+    schedules: tuple[FastAPI, AsyncClient],
+) -> None:
+    """休市日不会补跑，补齐公告后任务自动回到到期队列。"""
+    app, client = schedules
+    conversation_id = await new_conversation(client)
+    created = await client.post("/api/schedules", json=schedule_body(conversation_id, calendar_mode="cn_a_share"))
+    assert created.status_code == 201, created.text
+    schedule_id = UUID(created.json()["id"])
+    store = app.state.schedule_runtime.store
+    async with app.state.database.session_factory.begin() as session:
+        await session.execute(
+            update(ScheduledTask).where(ScheduledTask.id == schedule_id).values(
+                next_run_at=datetime(2026, 9, 30, 1, tzinfo=UTC), calendar_waiting_year=None
+            )
+        )
+    assert await store.claim_due(datetime(2026, 10, 1, 1, tzinfo=UTC)) is None
+    item = (await client.get(f"/api/schedules/{schedule_id}")).json()
+    assert datetime.fromisoformat(item["next_run_at"]) == datetime(2026, 10, 8, 1, tzinfo=UTC)
+    async with app.state.database.session_factory.begin() as session:
+        await session.execute(
+            update(ScheduledTask).where(ScheduledTask.id == schedule_id).values(
+                next_run_at=None, calendar_waiting_year=2026
+            )
+        )
+    assert await store.claim_due(datetime(2026, 10, 8, 0, tzinfo=UTC)) is None
+    claimed = await store.claim_due(datetime(2026, 10, 8, 1, tzinfo=UTC))
+    assert claimed is not None and claimed.schedule_id == schedule_id
+
+
 async def test_schedule_hidden_from_other_user(schedules: tuple[FastAPI, AsyncClient]) -> None:
     """定时任务按用户隔离，其他用户不能读取、修改或触发。"""
     app, client = schedules

@@ -12,7 +12,7 @@
 - 入站文本进入该用户当前空间的固定对话，并调用现有 `ChatRuntime.create_run`。生成过程中发 typing；超过 `EA_CHANNEL_PROGRESS_AFTER_SECONDS`（默认 10 秒）按当前工具发一句进度，相同内容按 `EA_CHANNEL_PROGRESS_INTERVAL_SECONDS` 节流。结束后把 Markdown 收成纯文本，超长时只发开头并附上 `EA_PUBLIC_APP_BASE_URL` 下的网页对话链接。
 - 指令：`/new` 新对话，`/ws <slug>` 切换空间（必须是有效成员），`/agent` 列出或切换 Agent，`/help` 查看说明。扫码确认时还没有 `context_token`，欢迎说明在用户第一条微信消息时发出。
 - 写操作审批会在 24 小时窗口内推送工具名和参数预览。`write` 可以回复 `同意 CODE` / `拒绝 CODE 原因`；只有一项时也可以只回复 `同意`、`1`、`拒绝` 或 `2`（可带原因）。多项时列出确认码。`delete` 和 `external` 只在网页确认，微信里不会代为决定。
-- 不是这条微信消息触发的普通工作台运行结束后，沿用 24 小时窗口主动推送。Cron `schedule_` / 手动 `manual_` 只有对应定时任务显式开启 `push_to_wechat` 才推送；任务级关闭不是投递错误。窗口外不发送并在 `channel_messages` 记下原因。绑定页显示「推送可用至 …」或「推送已暂停」，并列出这些未推送记录。窗口剩余不足 `EA_CHANNEL_WINDOW_REMINDER_HOURS`（默认 2 小时）时，每个窗口提醒一次「回复任意内容可继续接收推送」。网页里的回答始终保留。
+- 普通网页问答的成功或失败结果仅保留在网页，不自动转发到微信；微信入站问答由原消息处理链路回复。Cron `schedule_` / 手动 `manual_` 只有对应定时任务显式开启 `push_to_wechat` 才推送；任务级关闭不是投递错误。窗口外不发送并在 `channel_messages` 记下原因。绑定页显示「推送可用至 …」或「推送已暂停」，并列出这些未推送记录。窗口剩余不足 `EA_CHANNEL_WINDOW_REMINDER_HOURS`（默认 2 小时）时，每个窗口提醒一次「回复任意内容可继续接收推送」。网页里的回答始终保留。
 - 定时结果发送成功后，微信后续入站会切到该任务的固定 Web 对话，避免结果在原对话、回复却落到独立“微信对话”。只有实际发送成功才切换；失败、窗口外或任务关闭时保持原上下文。多条任务连续推送时，以最后一条成功推送为当前上下文，`/new` 可重新开始普通微信对话。
 - `getUpdates` 的 `ret` 或 `errcode` 为 `-14` 时，该账号暂停 `EA_ILINK_SESSION_PAUSE_SECONDS`（默认 3600 秒）后再轮询。这是当前官方 `monitor.ts` + `session-guard.ts` 的行为。
 

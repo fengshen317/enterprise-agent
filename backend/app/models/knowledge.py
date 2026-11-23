@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     Float,
@@ -17,6 +18,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -25,7 +27,7 @@ from app.models.base import Base
 
 
 class KnowledgeBase(Base):
-    """一个应用知识库对应一个 RAGFlow dataset。"""
+    """一个应用知识库可包含共享和受限两个数据集。"""
 
     __tablename__ = "knowledge_bases"
     __table_args__ = (
@@ -56,6 +58,7 @@ class KnowledgeBase(Base):
     visibility: Mapped[str] = mapped_column(String(16), default="workspace", server_default="workspace")
     status: Mapped[str] = mapped_column(String(20), default="creating", server_default="creating")
     ragflow_dataset_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    restricted_dataset_id: Mapped[str | None] = mapped_column(String(64), unique=True)
     embedding_model: Mapped[str] = mapped_column(String(200), default="", server_default="")
     parser_id: Mapped[str] = mapped_column(String(64), default="general", server_default="general")
     parse_type: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
@@ -85,6 +88,8 @@ class KnowledgeDocument(Base):
             name="fk_knowledge_documents_kb_workspace",
             ondelete="CASCADE",
         ),
+        UniqueConstraint("id", "workspace_id", name="uq_knowledge_documents_id_workspace"),
+        Index("ix_knowledge_documents_restricted_kb", "kb_id", postgresql_where=text("restricted")),
         Index("ix_knowledge_documents_kb_created", "kb_id", "created_at", "id"),
         Index("ix_knowledge_documents_workspace_status", "workspace_id", "status", "updated_at"),
     )
@@ -92,6 +97,7 @@ class KnowledgeDocument(Base):
     kb_id: Mapped[UUID] = mapped_column()
     workspace_id: Mapped[UUID] = mapped_column()
     uploaded_by_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
+    restricted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     ragflow_document_id: Mapped[str | None] = mapped_column(String(64), unique=True)
     name: Mapped[str] = mapped_column(String(255))
     mime: Mapped[str] = mapped_column(String(100), default="application/octet-stream")
@@ -107,3 +113,28 @@ class KnowledgeDocument(Base):
     token_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+
+class KnowledgeDocumentGrant(Base):
+    """受限文档的显式读取授权，授权人与文档必须属于同一空间。"""
+
+    __tablename__ = "knowledge_document_grants"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["document_id", "workspace_id"],
+            ["knowledge_documents.id", "knowledge_documents.workspace_id"],
+            name="fk_knowledge_document_grants_document",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "user_id"],
+            ["workspace_memberships.workspace_id", "workspace_memberships.user_id"],
+            name="fk_knowledge_document_grants_membership",
+            ondelete="CASCADE",
+        ),
+        Index("ix_knowledge_document_grants_member", "workspace_id", "user_id", "document_id"),
+    )
+    document_id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(primary_key=True)
+    workspace_id: Mapped[UUID] = mapped_column()

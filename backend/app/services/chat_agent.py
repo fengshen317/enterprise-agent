@@ -20,6 +20,7 @@ from app.core.errors import ApplicationError
 from app.models.tool_call import ToolCall
 from app.schemas.chat_agent import CHILD_TOOL, DELEGATE_TOOL, PLAN_TOOL, DelegateArgs, DelegatedTask, PlanArgs
 from app.services.knowledge import KnowledgeService
+from app.services.system_logs import emit_system_log
 from app.services.task_retry import classify_error, retry_delay
 from app.services.tools import ToolExecutor
 
@@ -237,6 +238,16 @@ class ChatAgentExecutor(ToolExecutor):
                             "error_code": decision.code,
                             "next_retry_at": (datetime.now(UTC) + timedelta(seconds=delay)).isoformat(),
                         },
+                    )
+                    emit_system_log(
+                        component="model",
+                        event="model_retry",
+                        outcome="warning",
+                        run_id=self.run_id,
+                        tool_call_id=identifier,
+                        tool_name="model_request",
+                        error_code=decision.code,
+                        details={"attempt": attempt, "max_attempts": self.settings.task_retry_attempts},
                     )
                     await asyncio.sleep(delay)
         except asyncio.CancelledError:

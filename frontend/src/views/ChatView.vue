@@ -1,23 +1,34 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { ApiError } from '../api/client'
 import { listAgents, type Agent } from '../api/agents'
 import type { Approval } from '../api/approvals'
 import AgentSelector from '../components/chat/AgentSelector.vue'
+import AnswerMessage from '../components/chat/AnswerMessage.vue'
 import ApprovalCard from '../components/chat/ApprovalCard.vue'
 import CapabilityDrawer from '../components/chat/CapabilityDrawer.vue'
-import ChunkSourceCard, { type SourceChunk } from '../components/chat/ChunkSourceCard.vue'
+import ChatComposer from '../components/chat/ChatComposer.vue'
+import ChatFileCard from '../components/chat/ChatFileCard.vue'
+import type { SourceChunk } from '../components/chat/ChunkSourceCard.vue'
+import SourceDrawer from '../components/chat/SourceDrawer.vue'
 import MarkdownBody from '../components/MarkdownBody.vue'
-import ToolCallList from '../components/ToolCallList.vue'
-import { bindConversationAgent, cancelRun, createConversation, createRun, getMessages, getRun, isActive, listConversations, watchRun, type Conversation, type Message, type Run, type Snapshot } from '../api/chat'
+import { bindConversationAgent, cancelRun, createConversation, createRun, createRunWithFiles, getMessages, getRun, isActive, listConversations, watchRun, type Conversation, type Message, type Run, type Snapshot } from '../api/chat'
+import { attachmentAccept, attachmentOnlyQuestion, chatAttachmentUrl, isAttachmentImage, maxAttachmentBytes, maxAttachmentCount, maxTotalAttachmentBytes, type ChatAttachment } from '../api/chatAttachments'
+import { getMaterial, materialFileUrl } from '../api/materials'
+import { useAuthStore } from '../stores/auth'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 const conversations = ref<Conversation[]>([])
 const agents = ref<Agent[]>([])
 const messages = ref<Message[]>([])
 const input = ref('')
+interface DraftFile { key: string; filename: string; size: number; preview?: string; file?: File; savedId?: string }
+const fileDraft = shallowRef<DraftFile[]>([])
+const fileDrafts = new Map<string, DraftFile[]>()
+const fileExtensions = new Set(attachmentAccept.split(','))
 const run = ref<Run | null>(null)
 const approval = ref<Approval | null>(null)
 const selectedAgentId = ref<string | null>(null)
@@ -25,22 +36,112 @@ const drawerOpen = ref(false)
 const loading = ref(false)
 const submitting = ref(false)
 const stopping = ref(false)
+const switchingAgent = ref(false)
 const error = ref('')
 const connection = ref('')
 const more = ref(false)
 const transcript = ref<HTMLElement | null>(null)
+const progressTarget = ref<HTMLElement | null>(null)
+const composer = ref<InstanceType<typeof ChatComposer> | null>(null)
 const currentId = computed(() => typeof route.params.conversationId === 'string' ? route.params.conversationId : '')
+const draftScope = computed(() => auth.session?.user.id && auth.selectedWorkspaceId
+  ? [auth.session.user.id, auth.selectedWorkspaceId] : null)
+const draftKey = computed(() => getDraftKey(currentId.value))
+const fileDraftKey = computed(() => draftKey.value || currentId.value)
+const sendModeKey = computed(() => auth.session?.user.id ? 'ea-chat-send-mode:' + auth.session.user.id : '')
+const sendMode = ref<'enter' | 'modifier'>('enter')
+const draftFallback = new Map<string, string>()
 const active = computed(() => run.value !== null && isActive(run.value))
 const title = computed(() => conversations.value.find(item => item.id === currentId.value)?.title ?? '新对话')
 const currentAgent = computed(() => agents.value.find(item => item.id === selectedAgentId.value) ?? null)
+const retryable = computed(() => run.value?.status === 'failed' || run.value?.status === 'cancelled')
 const prompts = computed(() => currentAgent.value?.starter_prompts.length
   ? currentAgent.value.starter_prompts
   : ['请帮我制定一个学习企业级 Agent 开发的实践计划', '查询最近七天的运行统计', '检索知识库并给出带来源的结论'])
 const statuses: Record<string, string> = { pending: '等待生成', running: '正在生成', completed: '已完成', failed: '生成失败', cancelled: '已停止' }
 let dispose: (() => void) | null = null
 let revision = 0
-let pending: { conversationId: string; content: string; key: string } | null = null
+let pending: { conversationId: string; content: string; fileKeys: string; key: string } | null = null
 let alive = true
+
+function getDraftKey(id: string): string {
+  return draftScope.value ? 'ea-chat-draft:' + JSON.stringify([...draftScope.value, id]) : ''
+}
+
+function getDraft(key: string): string {
+  if (!key) return ''
+  const fallback = draftFallback.get(key)
+  if (fallback !== undefined) return fallback
+  try { return sessionStorage.getItem(key) ?? '' }
+  catch { return '' }
+}
+
+function writeDraft(value: string, key = draftKey.value): void {
+  if (key === draftKey.value) input.value = value
+  if (!key) return
+  try {
+    if (value) sessionStorage.setItem(key, value)
+    else sessionStorage.removeItem(key)
+    draftFallback.delete(key)
+  } catch { draftFallback.set(key, value) }
+}
+
+function writeFileDraft(items: DraftFile[], key = fileDraftKey.value): void {
+  if (key === fileDraftKey.value) fileDraft.value = items
+  if (items.length) fileDrafts.set(key, items)
+  else fileDrafts.delete(key)
+}
+
+function releaseFile(item: DraftFile): void {
+  if (item.file && item.preview) URL.revokeObjectURL(item.preview)
+}
+
+function fitsFileDraft(size: number, items: DraftFile[]): boolean {
+  if (items.length < maxAttachmentCount && items.reduce((total, item) => total + item.size, size) <= maxTotalAttachmentBytes) return true
+  error.value = '每条消息最多 4 个附件，合计最多 16 MB'
+  return false
+}
+
+function addFiles(files: File[]): void {
+  if (submitting.value || loading.value) return
+  error.value = ''
+  const items = [...fileDraft.value]
+  for (const file of files) {
+    const extension = file.name.slice(file.name.lastIndexOf('.')).toLowerCase()
+    if (!fileExtensions.has(extension)) { error.value = `暂不支持「${file.name}」的格式`; continue }
+    if (!file.size || file.size > maxAttachmentBytes) { error.value = '附件不能为空，单个文件最多 8 MB'; continue }
+    if (!fitsFileDraft(file.size, items)) break
+    if (items.some(item => item.file?.name === file.name && item.size === file.size
+      && item.file.lastModified === file.lastModified)) continue
+    const preview = isAttachmentImage(file.type) && typeof URL.createObjectURL === 'function'
+      ? URL.createObjectURL(file) : undefined
+    items.push({ key: crypto.randomUUID(), filename: file.name, size: file.size, file, preview })
+  }
+  writeFileDraft(items)
+}
+
+function removeFile(item: DraftFile): void {
+  if (submitting.value) return
+  releaseFile(item)
+  writeFileDraft(fileDraft.value.filter(entry => entry.key !== item.key))
+}
+
+function reuseFile(item: ChatAttachment, conversationId?: string): void {
+  if (submitting.value || (conversationId !== undefined && currentId.value !== conversationId)
+    || fileDraft.value.some(entry => entry.savedId === item.id)) return
+  if (!fitsFileDraft(item.size_bytes, fileDraft.value)) return
+  error.value = ''
+  writeFileDraft([...fileDraft.value, {
+    key: item.id, savedId: item.id, filename: item.filename, size: item.size_bytes,
+    preview: isAttachmentImage(item.media_type) ? materialFileUrl(item.id) : undefined,
+  }])
+}
+
+function setSendMode(mode: 'enter' | 'modifier'): void {
+  sendMode.value = mode
+  if (!sendModeKey.value) return
+  try { localStorage.setItem(sendModeKey.value, mode) } catch { return }
+}
 
 function showError(value: unknown): void {
   error.value = value instanceof Error ? value.message : '操作失败，请重试'
@@ -61,7 +162,7 @@ async function loadAgents(): Promise<void> {
   } catch (value) { showError(value) }
 }
 async function switchAgent(value: string | null): Promise<void> {
-  if (active.value) return
+  if (active.value || loading.value || submitting.value || switchingAgent.value) return
   if (!currentId.value) {
     selectedAgentId.value = value
     if (value) localStorage.setItem('ea-last-agent', value)
@@ -70,33 +171,60 @@ async function switchAgent(value: string | null): Promise<void> {
   }
   if (selectedAgentId.value === value) return
   if (messages.value.length && !confirm('切换后仅影响后续回答，已有消息保留。继续切换？')) return
+  const id = currentId.value
+  switchingAgent.value = true
   try {
-    const conversation = await bindConversationAgent(currentId.value, value)
+    const conversation = await bindConversationAgent(id, value)
+    if (!alive) return
     const index = conversations.value.findIndex(item => item.id === conversation.id)
     if (index >= 0) conversations.value[index] = conversation
+    if (id !== currentId.value) return
     selectedAgentId.value = value
     if (value) localStorage.setItem('ea-last-agent', value)
     else localStorage.removeItem('ea-last-agent')
-  } catch (value) { showError(value) }
+  } catch (value) { if (alive && id === currentId.value) showError(value) }
+  finally { switchingAgent.value = false }
 }
 async function applyDecision(updated: Approval): Promise<void> {
+  if (run.value?.id !== updated.run_id || approval.value?.id !== updated.id) return
   approval.value = updated
   await reconnect()
 }
-function usePrompt(text: string): void { input.value = text }
-const sourceChunks = ref<SourceChunk[]>([])
-function handleAutoChunks(chunks: SourceChunk[]): void { sourceChunks.value = chunks }
-function handleCite(index: number): void {
-  const el = document.getElementById('source-' + index)
-  if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.style.outline = '2px solid #18775c'; setTimeout(() => { el.style.outline = '' }, 2000) }
+function usePrompt(text: string): void {
+  writeDraft(text)
+  void composer.value?.focus()
+}
+const sourceSelection = ref<{ chunks: SourceChunk[]; index: number | null } | null>(null)
+let sourceTrigger: HTMLElement | null = null
+function closeSources(restoreFocus = true): void {
+  sourceSelection.value = null
+  if (restoreFocus && sourceTrigger?.isConnected) sourceTrigger.focus({ preventScroll: true })
+  sourceTrigger = null
+}
+function openSources(chunks: SourceChunk[], index: number | null, trigger: HTMLElement): void {
+  drawerOpen.value = false
+  sourceTrigger = trigger
+  sourceSelection.value = { chunks, index }
+}
+function toggleCapabilities(): void {
+  closeSources(false)
+  drawerOpen.value = !drawerOpen.value
+}
+function followUp(message: Message): void {
+  if (input.value.trim() || loading.value || submitting.value || switchingAgent.value) return
+  const excerpt = message.content.replace(/\s+/g, ' ').trim()
+  const limit = 180
+  if (!excerpt) return
+  usePrompt('关于这条回答「' + excerpt.slice(0, limit) + (excerpt.length > limit ? '…' : '') + '」，我想追问：')
 }
 async function scrollToEnd(): Promise<void> {
   await nextTick()
-  if (transcript.value) transcript.value.scrollTop = transcript.value.scrollHeight
+  if (transcript.value && !sourceSelection.value) transcript.value.scrollTop = transcript.value.scrollHeight
 }
 function applySnapshot(snapshot: Snapshot): void {
   if (snapshot.run.conversation_id !== currentId.value) return
   run.value = snapshot.run
+  connection.value = ''
   approval.value = snapshot.approval ?? null
   const index = messages.value.findIndex(item => item.id === snapshot.message.id)
   if (index < 0) messages.value.push(snapshot.message)
@@ -121,6 +249,7 @@ async function reconnect(): Promise<void> {
 }
 async function loadConversation(): Promise<void> {
   const token = ++revision
+  closeSources(false)
   dispose?.(); dispose = null
   run.value = null; approval.value = null; messages.value = []; error.value = ''; connection.value = ''; pending = null
   const currentConversation = conversations.value.find(item => item.id === currentId.value)
@@ -158,57 +287,119 @@ async function loadConversation(): Promise<void> {
   finally { if (token === revision && alive) loading.value = false }
 }
 async function send(): Promise<void> {
-  if (submitting.value || loading.value || active.value || !input.value.trim()) return
+  if (submitting.value || loading.value || stopping.value || switchingAgent.value || active.value
+    || (!input.value.trim() && !fileDraft.value.length) || input.value === '/') return
   submitting.value = true; error.value = ''; connection.value = ''
-  const content = input.value
+  const original = input.value
+  const content = original.trim() ? original : attachmentOnlyQuestion
+  const attachments = fileDraft.value
+  const fileKeys = attachments.map(item => item.key).join(',')
+  let submissionKey = draftKey.value
+  let uploadKey = fileDraftKey.value
+  let id = currentId.value
   try {
-    let id = currentId.value
     if (!id) {
       const conversation = await createConversation('新对话', selectedAgentId.value)
+      if (!alive || id !== currentId.value || submissionKey !== draftKey.value) return
       conversations.value.unshift(conversation)
-      if (selectedAgentId.value) localStorage.setItem('ea-last-agent', selectedAgentId.value)
-      await router.replace('/chat/' + conversation.id)
+      const nextKey = getDraftKey(conversation.id)
+      if (await router.replace('/chat/' + conversation.id) || !alive || currentId.value !== conversation.id || draftKey.value !== nextKey) return
+      writeDraft(original, nextKey)
+      if (submissionKey && submissionKey !== nextKey) writeDraft('', submissionKey)
+      submissionKey = nextKey
+      const migratedUploadKey = nextKey || conversation.id
+      writeFileDraft(attachments, migratedUploadKey)
+      if (uploadKey !== migratedUploadKey) writeFileDraft([], uploadKey)
+      uploadKey = migratedUploadKey
+      id = conversation.id
       // 等路由触发的历史加载完成，再向该对话提交，避免旧请求覆盖新消息。
       await nextTick()
-      while (loading.value && alive) await new Promise(resolve => setTimeout(resolve, 20))
-      id = conversation.id
+      while (loading.value && alive && currentId.value === id && draftKey.value === submissionKey) {
+        await new Promise(resolve => setTimeout(resolve, 20))
+      }
     }
-    if (!pending || pending.conversationId !== id || pending.content !== content) pending = { conversationId: id, content, key: crypto.randomUUID() }
-    const snapshot = await createRun(id, content, pending.key)
-    pending = null
-    input.value = ''
-    if (currentId.value === id && alive) {
+    if (!alive || currentId.value !== id || draftKey.value !== submissionKey) return
+    if (!pending || pending.conversationId !== id || pending.content !== content || pending.fileKeys !== fileKeys) {
+      pending = { conversationId: id, content, fileKeys, key: crypto.randomUUID() }
+    }
+    const attempt = pending
+    const files = attachments.flatMap(item => item.file ? [item.file] : [])
+    const refs = attachments.flatMap(item => item.savedId ? [item.savedId] : [])
+    const snapshot = files.length ? await createRunWithFiles(id, content, attempt.key, files, refs)
+      : refs.length ? await createRun(id, content, attempt.key, refs) : await createRun(id, content, attempt.key)
+    if (pending === attempt) pending = null
+    if (submissionKey ? getDraft(submissionKey) === original : currentId.value === id && input.value === original) writeDraft('', submissionKey)
+    if (alive && fileDrafts.get(uploadKey) === attachments) {
+      attachments.forEach(releaseFile)
+      writeFileDraft([], uploadKey)
+    }
+    if (currentId.value === id && draftKey.value === submissionKey && alive) {
       await loadConversation()
+      if (!alive || currentId.value !== id || draftKey.value !== submissionKey) return
       applySnapshot(snapshot)
       await reconnect()
       await refreshList()
     }
-  } catch (value) { showError(value) }
+  } catch (value) { if (alive && currentId.value === id && draftKey.value === submissionKey) showError(value) }
   finally { submitting.value = false }
 }
-async function stop(): Promise<void> {
-  if (!run.value || stopping.value) return
+async function stop(): Promise<boolean> {
+  const target = run.value
+  if (!target || !active.value || stopping.value) return false
+  const context = draftKey.value
   stopping.value = true; error.value = ''
-  try { applySnapshot(await cancelRun(run.value.id)) } catch (value) { showError(value) }
+  try {
+    const snapshot = await cancelRun(target.id)
+    if (!alive || draftKey.value !== context || run.value?.id !== target.id) return false
+    applySnapshot(snapshot)
+    return !isActive(snapshot.run)
+  } catch (value) {
+    if (alive && draftKey.value === context && run.value?.id === target.id) showError(value)
+    return false
+  }
   finally { stopping.value = false }
 }
-async function retry(): Promise<void> {
+function retry(): void {
+  if (!retryable.value || input.value.trim() || fileDraft.value.length || submitting.value) return
   const previous = [...messages.value].reverse().find(message => message.role === 'user')
-  if (!previous || active.value) return
-  input.value = previous.content
-  await send()
+  if (previous) {
+    usePrompt(previous.content)
+    for (const item of previous.attachments ?? []) reuseFile(item, previous.conversation_id)
+  }
 }
 async function supplement(): Promise<void> {
-  await stop()
-  if (!active.value) await send()
+  if (await stop()) await send()
 }
-function keydown(event: KeyboardEvent): void {
-  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); void send() }
-}
+watch(draftKey, key => { input.value = getDraft(key) }, { immediate: true, flush: 'sync' })
+watch(fileDraftKey, key => { fileDraft.value = fileDrafts.get(key) ?? [] }, { immediate: true, flush: 'sync' })
+watch(sendModeKey, key => {
+  try { sendMode.value = key && localStorage.getItem(key) === 'modifier' ? 'modifier' : 'enter' }
+  catch { sendMode.value = 'enter' }
+}, { immediate: true })
 watch(currentId, loadConversation, { immediate: true })
+watch(() => route.query.material, async (id) => {
+  if (typeof id !== 'string' || !id) return
+  const context = fileDraftKey.value
+  try {
+    const item = await getMaterial(id)
+    if (!alive || fileDraftKey.value !== context || route.query.material !== id) return
+    reuseFile(item)
+    void composer.value?.focus()
+  } catch (value) {
+    if (alive && fileDraftKey.value === context && route.query.material === id) showError(value)
+  } finally {
+    if (alive && fileDraftKey.value === context && route.query.material === id) {
+      await router.replace({ query: { ...route.query, material: undefined } })
+    }
+  }
+}, { immediate: true })
 void refreshList().catch(showError)
 void loadAgents()
-onBeforeUnmount(() => { alive = false; revision++; dispose?.() })
+onBeforeUnmount(() => {
+  alive = false; revision++; dispose?.()
+  for (const items of fileDrafts.values()) items.forEach(releaseFile)
+  fileDrafts.clear()
+})
 </script>
 
 <template>
@@ -262,22 +453,12 @@ onBeforeUnmount(() => { alive = false; revision++; dispose?.() })
     >
       <div class="chat__top">
         <div><span class="chat__eyebrow">SEQUENCE / CONVERSATION</span><h1>{{ title }}</h1></div>
-        <div class="chat__agent-bar">
-          <AgentSelector
-            :agents="agents"
-            :model-value="selectedAgentId"
-            :disabled="active"
-            :current="currentAgent"
-            @update:model-value="switchAgent"
-          />
-          <button
-            type="button"
-            class="chat__capabilities"
-            @click="drawerOpen = !drawerOpen"
-          >
-            能力 {{ currentAgent?.tools.length ?? 0 }}
-          </button>
-          <span class="chat__model">{{ currentAgent?.model || 'DeepSeek' }}</span>
+        <div class="chat__top-actions">
+          <span
+            v-if="run || currentAgent"
+            class="chat__model"
+          >{{ run?.model ?? currentAgent?.model }}</span>
+          <div ref="progressTarget" />
         </div>
       </div>
       <div class="chat__stage">
@@ -302,6 +483,7 @@ onBeforeUnmount(() => { alive = false; revision++; dispose?.() })
                 v-for="prompt in prompts"
                 :key="prompt"
                 type="button"
+                :disabled="Boolean(input.trim())"
                 @click="usePrompt(prompt)"
               >
                 {{ prompt }} ↗
@@ -314,26 +496,67 @@ onBeforeUnmount(() => { alive = false; revision++; dispose?.() })
             class="chat__message"
             :class="'chat__message--' + message.role"
           >
-            <div class="chat__speaker">
-              {{ message.role === 'user' ? '你' : '序列' }}<span v-if="message.status === 'streaming'">正在思考与生成</span><span v-else-if="message.status === 'interrupted'">部分回答 · 未完成</span>
+            <template v-if="message.role === 'user'">
+              <div class="chat__speaker">
+                你
+              </div>
+              <MarkdownBody
+                class="chat__body"
+                :content="message.content"
+              />
+            </template>
+            <AnswerMessage
+              v-else
+              :message="message"
+              :run="run && run.id === message.run_id ? run : undefined"
+              :progress-target="run && run.id === message.run_id ? progressTarget : null"
+              :status-label="run && run.id === message.run_id ? statuses[run.status] : undefined"
+              :follow-up-disabled="loading || submitting || switchingAgent || Boolean(input.trim())"
+              @sources="openSources"
+              @follow-up="followUp(message)"
+            >
+              <template
+                v-if="retryable && run?.id === message.run_id"
+                #actions
+              >
+                <button
+                  type="button"
+                  :disabled="submitting || loading || Boolean(input.trim()) || !!fileDraft.length"
+                  :title="input.trim() || fileDraft.length ? '请先处理当前草稿' : '将原问题和附件带回草稿'"
+                  @click="retry"
+                >
+                  编辑后重试
+                </button>
+              </template>
+            </AnswerMessage>
+            <div
+              v-if="message.attachments?.length"
+              class="chat__files"
+              :aria-label="message.role === 'assistant' ? '生成的文件' : '消息附件'"
+            >
+              <ChatFileCard
+                v-for="item in message.attachments"
+                :key="item.id"
+                :filename="item.filename"
+                :size="item.size_bytes"
+                :preview="isAttachmentImage(item.media_type) ? chatAttachmentUrl(message.conversation_id, item.id) : undefined"
+                :download="chatAttachmentUrl(message.conversation_id, item.id, true)"
+                :note="item.text_truncated ? '已读取部分文字' : !item.text_available && !isAttachmentImage(item.media_type) ? '未提取到文字' : undefined"
+              >
+                <RouterLink
+                  v-if="message.role === 'assistant'"
+                  :to="'/materials/' + item.id"
+                >查看材料</RouterLink>
+                <button
+                  type="button"
+                  :disabled="submitting || loading || fileDraft.some(entry => entry.savedId === item.id)"
+                  :aria-label="'再次附加 ' + item.filename"
+                  @click="reuseFile(item, message.conversation_id); composer?.focus()"
+                >
+                  再次附加
+                </button>
+              </ChatFileCard>
             </div>
-            <MarkdownBody
-              class="chat__body"
-              :content="message.content || (message.status === 'streaming' ? '正在处理；规划与执行情况见下方…' : '本次未生成正文')"
-              :citations="message.role === 'assistant'"
-              @cite="handleCite"
-            />
-            <ChunkSourceCard
-              v-if="message.role === 'assistant' && sourceChunks.length"
-              :chunks="sourceChunks"
-              :collapsible="true"
-            />
-            <ToolCallList
-              v-if="message.run_id"
-              :run-id="message.run_id"
-              :message-status="message.status"
-              @auto-chunks="handleAutoChunks"
-            />
           </article>
         </div>
         <CapabilityDrawer
@@ -341,10 +564,17 @@ onBeforeUnmount(() => { alive = false; revision++; dispose?.() })
           :open="drawerOpen"
           @close="drawerOpen = false"
         />
+        <SourceDrawer
+          v-if="sourceSelection"
+          :chunks="sourceSelection.chunks"
+          :index="sourceSelection.index"
+          @close="closeSources()"
+        />
       </div>
       <div class="chat__composer">
         <ApprovalCard
-          v-if="approval && run"
+          v-if="approval?.status === 'pending' && run"
+          :key="approval.id"
           :approval="approval"
           :run-id="run.id"
           @decided="applyDecision"
@@ -357,19 +587,11 @@ onBeforeUnmount(() => { alive = false; revision++; dispose?.() })
           {{ error }}
         </div>
         <div
-          v-if="run"
+          v-if="run?.error_message"
           class="chat__run"
           role="status"
         >
-          <span>{{ statuses[run.status] }}<template v-if="run.error_message"> · {{ run.error_message }}</template></span><button
-            v-if="run.status === 'failed' || run.status === 'cancelled'"
-            type="button"
-            class="chat__link"
-            :disabled="submitting"
-            @click="retry"
-          >
-            重试本次请求
-          </button><code>{{ run.id }}</code>
+          {{ statuses[run.status] }} · {{ run.error_message }}
         </div>
         <div
           v-if="connection"
@@ -383,49 +605,73 @@ onBeforeUnmount(() => { alive = false; revision++; dispose?.() })
             重新连接
           </button>
         </div>
-        <form
-          class="chat__form"
-          @submit.prevent="send"
+        <ChatComposer
+          ref="composer"
+          :model-value="input"
+          :context-key="draftKey || currentId"
+          :active="active"
+          :loading="loading || switchingAgent"
+          :submitting="submitting"
+          :stopping="stopping"
+          :send-mode="sendMode"
+          :attachment-count="fileDraft.length"
+          @update:model-value="writeDraft"
+          @update:send-mode="setSendMode"
+          @send="send"
+          @stop="stop"
+          @supplement="supplement"
+          @attach="addFiles"
         >
-          <label
-            class="chat__sr-only"
-            for="question"
-          >输入问题</label><textarea
-            id="question"
-            v-model="input"
-            placeholder="输入问题或任务目标，也可以补充要求…"
-            maxlength="20000"
-            :disabled="loading || submitting"
-            rows="3"
-            @keydown="keydown"
-          />
-          <div class="chat__actions">
-            <span>Enter 发送 · Shift + Enter 换行</span><button
-              v-if="active"
+          <template #attachments>
+            <div
+              v-if="fileDraft.length"
+              class="chat__files chat__files--draft"
+              aria-label="待发送附件"
+            >
+              <ChatFileCard
+                v-for="item in fileDraft"
+                :key="item.key"
+                :filename="item.filename"
+                :size="item.size"
+                :preview="item.preview"
+                :note="submitting ? '提交中…' : undefined"
+              >
+                <button
+                  type="button"
+                  :disabled="submitting"
+                  :aria-label="'移除 ' + item.filename"
+                  @click="removeFile(item)"
+                >
+                  移除
+                </button>
+              </ChatFileCard>
+            </div>
+          </template>
+          <template #tools="{ close }">
+            <RouterLink
+              class="chat__material-link"
+              to="/materials"
+              @click="close()"
+            >
+              我的材料 ↗
+            </RouterLink>
+            <AgentSelector
+              :agents="agents"
+              :model-value="selectedAgentId"
+              :disabled="active || loading || submitting || switchingAgent"
+              :current="currentAgent"
+              @update:model-value="switchAgent"
+            />
+            <button
               type="button"
-              class="chat__stop"
-              :disabled="stopping"
-              @click="stop"
+              class="chat__capabilities"
+              :aria-expanded="drawerOpen"
+              @click="toggleCapabilities(); close()"
             >
-              {{ stopping ? '正在停止…' : '■ 停止生成' }}
-            </button><button
-              v-if="active && input.trim()"
-              type="button"
-              class="chat__send"
-              :disabled="stopping || submitting"
-              @click="supplement"
-            >
-              停止并补充要求
-            </button><button
-              v-if="!active"
-              type="submit"
-              class="chat__send"
-              :disabled="!input.trim() || loading || submitting"
-            >
-              {{ submitting ? '正在提交…' : '发送 ↑' }}
+              查看能力
             </button>
-          </div>
-        </form>
+          </template>
+        </ChatComposer>
         <p class="chat__disclaimer">
           回答由 AI 生成，请核实重要信息。对话保存在本地数据库。
         </p>
@@ -445,31 +691,32 @@ onBeforeUnmount(() => { alive = false; revision++; dispose?.() })
   &__local { margin-top: auto; color: #87927e; font-size: 10px; padding: 20px 8px 0; }
   &__workspace { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
   &__top { padding: 25px 7%; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid $line; h1 { font-size: 17px; font-weight: 500; margin-top: 9px; overflow-wrap: anywhere; } }
-  &__agent-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-  &__capabilities { border: 1px solid #cbd7be; background: #eef2e7; color: $green; border-radius: 20px; padding: 7px 11px; font-size: 11px; }
+  &__top-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 10px; }
+  &__top-actions > :empty { display: none; }
   &__stage { flex: 1; display: flex; min-height: 0; min-width: 0; }
   &__eyebrow { font-size: 9px; letter-spacing: 2px; color: #859576; }
   &__model { font-size: 10px; color: $green; border: 1px solid #cbd7be; border-radius: 20px; padding: 7px 12px; }
-  &__transcript { flex: 1; overflow-y: auto; padding: 25px max(24px, 9%); scroll-behavior: smooth; }
+  &__transcript { flex: 1; min-width: 0; overflow-y: auto; padding: 25px clamp(22px, 5vw, 84px); scroll-behavior: smooth; }
   &__welcome { padding: 30px 0 40px; h2 { font-size: clamp(25px, 3vw, 40px); font-weight: 400; line-height: 1.6; letter-spacing: -1px; margin: 20px 0; } p { line-height: 2; color: $muted; font-size: 12px; } }
   &__prompts { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 26px; button { background: #eef2e7; border: 1px solid $line; border-radius: 6px; padding: 11px 15px; color: #516b42; font-size: 12px; text-align: left; } }
   &__symbol { font-size: 48px; color: #718e57; }
-  &__message { padding: 22px 0 30px; border-bottom: 1px solid #e5eadf; margin-bottom: 10px; &--user .chat__body { background: #eaf0e1; padding: 15px 18px; border-radius: 8px; } }
+  &__message { max-width: 920px; margin: 0 auto 10px; padding: 22px 0 26px; border-bottom: 1px solid #e5eadf; &--user .chat__body { background: #eaf0e1; padding: 15px 18px; border-radius: 8px; } }
+  &__files {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(min(235px, 100%), 1fr)); gap: 7px; margin-top: 8px;
+    &--draft { margin: 0 0 8px; max-height: 125px; overflow-y: auto; }
+  }
+  &__material-link { padding: 8px; color: $green; font-size: 12px; }
   &__speaker { font-size: 12px; color: $green; margin-bottom: 13px; display: flex; align-items: center; gap: 16px; span { font-size: 10px; color: $muted; } }
   &__body { overflow-wrap: anywhere; font-size: 14px; line-height: 1.95; }
   &__composer { padding: 15px max(24px, 7%) 18px; background: $paper; }
-  &__form { background: white; border: 1px solid #c7d5bc; border-radius: 10px; box-shadow: 0 5px 20px #24391c06; padding: 14px; &:focus-within { border-color: #76925f; } textarea { display: block; width: 100%; border: 0; outline: 0; resize: vertical; max-height: 220px; min-height: 55px; font: inherit; color: $ink; line-height: 1.8; background: transparent; } }
-  &__actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding-top: 12px; span { font-size: 10px; color: #8b9683; } }
-  &__send, &__stop { background: #31533d; color: #edf4e4; border: 0; border-radius: 6px; padding: 10px 18px; font-size: 12px; }
-  &__stop { background: #f2eadc; color: #7a613f; }
   &__disclaimer { text-align: center; color: #8b9683; font-size: 10px; margin-top: 10px; }
   &__error { color: #8b493c; background: #faf0e8; border: 1px solid #e8d7c7; padding: 10px 12px; border-radius: 6px; font-size: 12px; margin-bottom: 10px; overflow-wrap: anywhere; }
-  &__run { display: flex; justify-content: space-between; gap: 12px; color: #748067; font-size: 10px; margin-bottom: 8px; flex-wrap: wrap; code { font-size: 9px; } }
+  &__run { color: #8b493c; font-size: 12px; margin-bottom: 8px; overflow-wrap: anywhere; }
   &__connection, &__hint { font-size: 12px; color: $muted; line-height: 1.9; }
   &__link { background: none; border: 0; color: $green; text-decoration: underline; padding: 5px; font-size: 12px; }
-  &__sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 }
 @media (max-width: 1100px) { .chat { grid-template-columns: 180px minmax(0, 1fr); &__top { padding: 22px; } } }
-@media (max-width: 760px) { .chat { grid-template-columns: minmax(0, 1fr); height: auto; min-height: calc(100dvh - 170px); &__history { max-height: 190px; border-right: 0; gap: 10px; padding: 14px; nav { display: flex; overflow-x: auto; } } &__conversation { max-width: 180px; flex-shrink: 0; } &__history-heading, &__local { display: none; } &__transcript { min-height: 250px; max-height: 60dvh; } &__welcome { padding: 0; } &__actions span { font-size: 9px; } } }
+@media (max-width: 760px) { .chat { grid-template-columns: minmax(0, 1fr); height: auto; min-height: calc(100dvh - 170px); &__history { max-height: 190px; border-right: 0; gap: 10px; padding: 14px; nav { display: flex; overflow-x: auto; } } &__conversation { max-width: 180px; flex-shrink: 0; } &__history-heading, &__local { display: none; } &__transcript { min-height: 250px; max-height: 60dvh; } &__welcome { padding: 0; } &__composer { padding-inline: 14px; } } }
+@media (max-width: 540px) { .chat { &__top { gap: 12px; } &__top-actions { flex: 0 0 auto; flex-direction: column; align-items: flex-end; } } }
 @media (prefers-reduced-motion: reduce) { .chat__transcript { scroll-behavior: auto; } }
 </style>

@@ -35,3 +35,17 @@ it('拒绝只提交决策，不执行工具', async () => {
   expect(api.decideApproval).toHaveBeenCalledWith('r1', 'ap1', 'reject')
   wrapper.unmount()
 })
+
+it('展示完整技能正文和结构化权限预览，并保留新增字段', () => {
+  const wrapper = mount(ApprovalCard, { props: { runId: 'r1', approval: {
+    ...approval, tool_name: 'publish_private_skill', args_preview: {
+      version: 2, content_md: '# 复核步骤', knowledge_scope: { mode: 'selected', kb_ids: ['kb1'] },
+      tool_keys: [], visibility: 'private', extra_field: false,
+    },
+  } } })
+  for (const text of ['发布私有技能版本', '技能正文', '# 复核步骤', 'kb1', '仅自己可见', 'extra_field', '否']) {
+    expect(wrapper.text()).toContain(text)
+  }
+  expect(wrapper.text()).not.toContain('[object Object]')
+  wrapper.unmount()
+})

@@ -10,13 +10,32 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.agents.context_types import ContextMessage, ContextState
 from app.core.errors import ApplicationError
 from app.models.approval import Approval, ApprovalEvent
-from app.models.conversation import Conversation, Message, Run
+from app.models.conversation import ChatAttachment, Conversation, Message, Run
 from app.models.identity import User, Workspace, WorkspaceMembership
+from app.models.schedule import ScheduledTask
 from app.models.tool_call import ToolCall
 from app.schemas.approval import ApprovalView
 from app.schemas.auth import ResourceScope
-from app.schemas.chat import ConversationView, MessagePage, MessageView, RunCreate, RunSnapshot, RunView
+from app.schemas.chat import (
+    MAX_CHAT_ATTACHMENTS,
+    ChatAttachmentView,
+    ConversationView,
+    MessagePage,
+    MessageView,
+    RunCreate,
+    RunSnapshot,
+    RunView,
+)
 from app.services.auth import owned_conversations, require_membership
+from app.services.chat_attachments import (
+    ATTACHMENT_ONLY_QUESTION,
+    CHAT_VISION_MODEL,
+    IMAGE_MIME,
+    PreparedAttachment,
+    attachment_context,
+    attachment_identifier,
+)
+from app.services.materials import MaterialStore, attachment_view, personal_materials
 
 ACTIVE = ("pending", "running")
 
@@ -47,15 +66,33 @@ class ChatStore:
         """
         async with self.factory.begin() as session:
             await require_membership(session, scope, write=True)
-            conversation = Conversation(
-                title=title,
-                workspace_id=scope.workspace_id,
-                created_by_user_id=scope.user_id,
-                agent_profile_id=agent_profile_id,
-            )
-            session.add(conversation)
-            await session.flush()
+            conversation = await self.create_conversation_in_session(session, title, scope, agent_profile_id)
             return ConversationView.model_validate(conversation)
+
+    @staticmethod
+    async def create_conversation_in_session(
+        session: AsyncSession, title: str, scope: ResourceScope, agent_profile_id: UUID | None
+    ) -> Conversation:
+        """让调用方在同一事务内提交对话及依赖它的业务记录。
+
+        Args:
+            session: 调用方已完成成员和目标 Agent 鉴权的事务。
+            title: 已校验的对话标题。
+            scope: 可信用户与工作空间。
+            agent_profile_id: 可选绑定的 Agent。
+
+        Returns:
+            已分配标识、尚未提交的对话。
+        """
+        conversation = Conversation(
+            title=title,
+            workspace_id=scope.workspace_id,
+            created_by_user_id=scope.user_id,
+            agent_profile_id=agent_profile_id,
+        )
+        session.add(conversation)
+        await session.flush()
+        return conversation
 
     async def list_conversations(self, offset: int, limit: int, scope: ResourceScope) -> list[ConversationView]:
         """按稳定顺序列出对话。
@@ -118,6 +155,8 @@ class ChatStore:
         *,
         agent_profile_id: UUID | None = None,
         agent_snapshot: dict[str, object] | None = None,
+        uploads: list[PreparedAttachment] | None = None,
+        image_model: str = CHAT_VISION_MODEL,
     ) -> RunSnapshot:
         """锁定对话，原子分配序号并创建输入、运行和回复占位。
 
@@ -128,10 +167,16 @@ class ChatStore:
             scope: 服务端身份范围。
             agent_profile_id: 提交时绑定的 Agent。
             agent_snapshot: 提交时固定的能力快照。
+            uploads: 已校验、等待随消息提交的原件。
+            image_model: 有图片附件时记录的模型标识。
 
         Returns:
             新运行或同键同内容的已有运行。
         """
+        files = uploads or []
+        ids = [*body.attachment_ids, *(item.view.id for item in files)]
+        if len(ids) > MAX_CHAT_ATTACHMENTS or len(set(ids)) != len(ids):
+            raise ApplicationError("CHAT_ATTACHMENTS_INVALID", "每条消息最多 4 个附件，且不能重复", 422)
         async with self.factory.begin() as session:
             await require_membership(session, scope, write=True)
             conversation = await session.scalar(
@@ -144,12 +189,19 @@ class ChatStore:
             )
             if existing is not None:
                 original = await session.scalar(
-                    select(Message.content).where(
+                    select(Message).where(
                         Message.conversation_id == conversation_id, Message.sequence == existing.input_sequence
                     )
                 )
-                if original != body.content:
-                    raise ApplicationError("IDEMPOTENCY_CONFLICT", "同一幂等键不能提交不同问题", 409)
+                original_ids = [item["id"] for item in original.attachments] if original is not None else []
+                requested_ids = [str(value) for value in ids]
+                if files and requested_ids != original_ids:
+                    # 旧附件用来源对话生成标识，升级后仍可重试当时的上传请求。
+                    requested_ids = [str(value) for value in body.attachment_ids] + [
+                        str(attachment_identifier(conversation_id, item.view.filename, item.data)) for item in files
+                    ]
+                if original is None or original.content != body.content or requested_ids != original_ids:
+                    raise ApplicationError("IDEMPOTENCY_CONFLICT", "同一幂等键不能提交不同问题或附件", 409)
                 return await self._snapshot(session, existing)
             if conversation.status != "active":
                 raise ApplicationError("CONVERSATION_ARCHIVED", "归档对话不能继续生成", 409)
@@ -160,13 +212,16 @@ class ChatStore:
                 is not None
             ):
                 raise ApplicationError("RUN_IN_PROGRESS", "当前对话正在生成，请等待或停止后重试", 409)
+            rows = await MaterialStore.persist(session, scope, ids, files, conversation_id) if ids else []
+            attachments = [attachment_view(row) for row in rows]
+            vision = any(view.media_type in IMAGE_MIME.values() for view in attachments)
             sequence = conversation.next_message_sequence
             run = Run(
                 id=uuid4(),
                 conversation_id=conversation_id,
                 idempotency_key=body.idempotency_key,
                 input_sequence=sequence,
-                model=model,
+                model=image_model if vision else model,
                 agent_profile_id=agent_profile_id,
                 agent_snapshot=agent_snapshot or {},
             )
@@ -181,6 +236,7 @@ class ChatStore:
                         role="user",
                         status="completed",
                         content=body.content,
+                        attachments=[item.model_dump(mode="json") for item in attachments],
                     ),
                     Message(
                         conversation_id=conversation_id,
@@ -195,9 +251,27 @@ class ChatStore:
             conversation.next_message_sequence += 2
             conversation.updated_at = datetime.now(UTC)
             if sequence == 1 and conversation.title == "新对话":
-                conversation.title = body.content.strip()[:40]
+                conversation.title = (
+                    attachments[0].filename[:40]
+                    if attachments and body.content == ATTACHMENT_ONLY_QUESTION else body.content.strip()[:40]
+                )
             await session.flush()
             return await self._snapshot(session, run)
+
+    async def attachment(self, scope: ResourceScope, conversation_id: UUID, attachment_id: UUID) -> ChatAttachment:
+        """返回本人当前空间中的原件，归档对话仍可查看文件。"""
+        async with self.factory() as session:
+            await require_membership(session, scope)
+            if await session.scalar(owned_conversations(scope).where(Conversation.id == conversation_id)) is None:
+                raise ApplicationError("CONVERSATION_NOT_FOUND", "对话不存在", 404)
+            reference = select(Message.id).where(
+                Message.conversation_id == conversation_id,
+                Message.attachments.contains([{"id": str(attachment_id)}]),
+            ).exists()
+            row = await session.scalar(personal_materials(scope).where(ChatAttachment.id == attachment_id, reference))
+            if row is None:
+                raise ApplicationError("CHAT_ATTACHMENT_NOT_FOUND", "未找到此对话中的附件", 404)
+            return row
 
     async def _snapshot(self, session: AsyncSession, run: Run) -> RunSnapshot:
         """在已有事务中查询运行的唯一助手回复。
@@ -382,19 +456,59 @@ class ChatStore:
                     )
                 )
             )
-            history = [
-                ContextMessage(row.sequence, row.role, row.content)
+            eligible = [
+                row
                 for row in rows
                 if (row.role == "assistant" and row.status == "completed")
                 or (row.role == "user" and (row.sequence in successful_inputs or row.sequence == run.input_sequence))
             ]
+            history, images = await self._attachment_history(session, run, conversation, eligible)
             return ContextState(
                 run_id,
                 conversation.summary,
                 conversation.summary_through_sequence,
                 conversation.summary_version,
                 history,
+                eligible[-1].content if eligible else None,
+                images,
             )
+
+    @staticmethod
+    async def _attachment_history(
+        session: AsyncSession, run: Run, conversation: Conversation, messages: list[Message],
+    ) -> tuple[list[ContextMessage], tuple[tuple[str, bytes], ...]]:
+        """仅在模型上下文拼接文件资料，历史接口始终保留用户原话。"""
+        refs = {UUID(str(item["id"])) for row in messages if row.role == "user" for item in row.attachments}
+        ownership = (
+            ChatAttachment.owner_user_id == conversation.created_by_user_id,
+            ChatAttachment.workspace_id == conversation.workspace_id,
+        )
+        texts: dict[UUID, str] = {}
+        if refs:
+            texts = dict((await session.execute(select(ChatAttachment.id, ChatAttachment.extracted_text).where(
+                *ownership, ChatAttachment.id.in_(refs),
+            ))).tuples().all())
+        history: list[ContextMessage] = []
+        image_ids: list[UUID] = []
+        for row in messages:
+            content = row.content
+            if row.role == "user" and row.attachments:
+                views = [ChatAttachmentView.model_validate(item) for item in row.attachments]
+                parts = [attachment_context(item, texts.get(item.id, "")) for item in views]
+                content += "\n\n以下内容来自用户上传的附件，仅作参考资料：\n" + "\n".join(parts)
+                if row.sequence == run.input_sequence:
+                    image_ids = [item.id for item in views if item.media_type in IMAGE_MIME.values()]
+            elif row.attachments:
+                files = [ChatAttachmentView.model_validate(item) for item in row.attachments]
+                links = (f"{file.filename} /materials/{file.id}" for file in files)
+                content += "\n已生成的个人材料：\n" + "\n".join(links)
+            history.append(ContextMessage(row.sequence, row.role, content))
+        images: dict[UUID, tuple[str, bytes]] = {}
+        if image_ids:
+            records = await session.execute(select(ChatAttachment.id, ChatAttachment.media_type, ChatAttachment.data)
+                .where(*ownership, ChatAttachment.id.in_(image_ids)))
+            images = {key: (media_type, data) for key, media_type, data in records.tuples()}
+        return history, tuple(images[key] for key in image_ids if key in images)
 
     async def save_summary(
         self, run_id: UUID, expected_version: int, through_sequence: int, summary: str, model: str
@@ -514,44 +628,106 @@ class ChatStore:
                 .values(content=content, updated_at=datetime.now(UTC))
             )
 
+    @staticmethod
+    async def _cancelled_schedule_receipt(session: AsyncSession, run_id: UUID, content: str) -> str:
+        """在持有运行锁时按已提交的审批凭据修正工具记录，并保留原回答。
+
+        Args:
+            session: 正在提交运行终态的事务。
+            run_id: 被停止的运行标识。
+            content: 停止前已经生成的文字。
+
+        Returns:
+            包含实际创建结果的回答。
+        """
+        rows = await session.execute(
+            select(
+                ToolCall,
+                Approval.executed_at,
+                Approval.execution_args["name"].as_string(),
+                ScheduledTask.conversation_id,
+            )
+            .join(Approval, Approval.tool_call_id == ToolCall.id)
+            .outerjoin(ScheduledTask, ScheduledTask.id == ToolCall.id)
+            .where(
+                ToolCall.run_id == run_id,
+                Approval.tool_name == "create_scheduled_task",
+                Approval.status == "executed",
+                Approval.execution_args.is_not(None),
+            )
+            .with_for_update(of=ToolCall)
+        )
+        for call, executed_at, name, conversation_id in rows:
+            if call.status != "completed" or conversation_id is None:
+                # 已有的成功审计保留原字段；恢复时补齐可供前端识别的业务结果。
+                result = json.loads(call.result) if call.status == "completed" and call.result else {}
+                result.update(schedule_id=str(call.id), name=name)
+                if conversation_id is None:
+                    result["schedule_deleted"] = True
+                else:
+                    result["conversation_id"] = str(conversation_id)
+                call.status, call.error_code, call.finished_at = "completed", None, executed_at
+                call.result = json.dumps(result, ensure_ascii=False)
+            url = f"/schedules?schedule={call.id}"
+            if conversation_id is None:
+                receipt = "停止回答前已创建定时任务，该任务现已删除。"
+            elif url not in content:
+                receipt = f"停止回答前已创建定时任务。[查看定时任务]({url})"
+            else:
+                continue
+            content = f"{content}\n\n{receipt}" if content else receipt
+        return content
+
     async def finish(
-        self, run_id: UUID, content: str, status: str, code: str | None = None, error: str | None = None
-    ) -> None:
+        self, run_id: UUID, content: str | None, status: str, code: str | None = None, error: str | None = None
+    ) -> tuple[str, str | None] | None:
         """以锁保护终态，取消请求先提交时优先收敛为取消。
 
         Args:
             run_id: 运行标识。
-            content: 已收到的正文。
+            content: 已收到的正文；重启恢复时传入空值以保留已保存文字。
             status: 目标终态。
             code: 安全错误码。
             error: 安全错误说明。
+
+        Returns:
+            实际提交的终态及错误码，运行已结束时为空。
         """
         async with self.factory.begin() as session:
             run = await session.scalar(select(Run).where(Run.id == run_id).with_for_update())
             if run is None or run.status not in ACTIVE:
-                return
+                return None
             if run.cancel_requested_at is not None:
                 status, code, error = "cancelled", None, None
             now = datetime.now(UTC)
             run.status, run.finished_at = status, now
             run.error_code, run.error_message = code, error
-            await session.execute(
-                update(Message)
-                .where(Message.run_id == run_id)
-                .values(content=content, status="completed" if status == "completed" else "interrupted", updated_at=now)
-            )
+            message = await session.scalar(select(Message).where(Message.run_id == run_id).with_for_update())
+            if message is not None:
+                if content is not None:
+                    message.content = content
+                if status == "cancelled":
+                    message.content = await self._cancelled_schedule_receipt(session, run_id, message.content)
+                message.status = "completed" if status == "completed" else "interrupted"
+                message.updated_at = now
             await session.execute(
                 update(Conversation).where(Conversation.id == run.conversation_id).values(updated_at=now)
             )
-            pending = list(
-                await session.scalars(
-                    select(Approval).where(Approval.run_id == run_id, Approval.status == "pending").with_for_update()
-                )
+            unfinished = Approval.status == "pending"
+            if status != "completed":
+                unfinished |= (Approval.status == "approved") & Approval.execution_args.is_not(None)
+            approvals = await session.scalars(
+                select(Approval).where(Approval.run_id == run_id, unfinished).with_for_update()
             )
-            for approval in pending:
-                approval.status = "cancelled"
+            for approval in approvals:
+                if approval.status == "pending" and code == "PROCESS_RESTARTED":
+                    approval.status = "expired"
+                elif status == "cancelled" or approval.status == "pending":
+                    approval.status = "cancelled"
+                else:
+                    approval.status = "failed"
                 approval.updated_at = now
-                session.add(ApprovalEvent(approval_id=approval.id, action="cancelled", actor_role="system"))
+                session.add(ApprovalEvent(approval_id=approval.id, action=approval.status, actor_role="system"))
             await session.execute(
                 update(ToolCall)
                 .where(ToolCall.run_id == run_id, ToolCall.status.in_(("running", "awaiting_approval")))
@@ -561,6 +737,7 @@ class ChatStore:
                     finished_at=now,
                 )
             )
+        return status, code
 
     async def cancel(self, run_id: UUID) -> RunSnapshot:
         """幂等记录停止请求，实际终态由执行器提交。
@@ -576,38 +753,58 @@ class ChatStore:
             if run is None:
                 raise ApplicationError("RUN_NOT_FOUND", "运行不存在", 404)
             if run.status in ACTIVE and run.cancel_requested_at is None:
-                run.cancel_requested_at = datetime.now(UTC)
+                now = datetime.now(UTC)
+                run.cancel_requested_at = now
+                # 与创建事务按同一把运行锁排序，防止迟到的工具异常把用户停止记作执行失败。
+                stopped = await session.execute(
+                    update(Approval)
+                    .where(
+                        Approval.run_id == run_id,
+                        Approval.execution_args.is_not(None),
+                        Approval.tool_name == "create_scheduled_task",
+                        Approval.status.in_(("pending", "approved")),
+                    )
+                    .values(status="cancelled", updated_at=now)
+                    .returning(Approval.id, Approval.tool_call_id)
+                )
+                for approval_id, call_id in stopped:
+                    session.add(ApprovalEvent(approval_id=approval_id, action="cancelled", actor_role="system"))
+                    await session.execute(
+                        update(ToolCall)
+                        .where(ToolCall.id == call_id, ToolCall.status.in_(("running", "awaiting_approval")))
+                        .values(status="cancelled", error_code="TOOL_CANCELLED", finished_at=now)
+                    )
             return await self._snapshot(session, run)
+
+    async def recoverable_schedules(self, run_id: UUID | None = None) -> list[tuple[UUID, UUID]]:
+        """选择具备完整审批快照的本地创建操作。
+
+        Args:
+            run_id: 停机时按单个运行检查，启动时检查全部运行。
+
+        Returns:
+            需要恢复的运行和工具调用标识对。
+        """
+        query = (
+            select(Approval.run_id, Approval.tool_call_id)
+            .join(Run, Run.id == Approval.run_id)
+            .where(
+                Run.status == "running",
+                Run.cancel_requested_at.is_(None),
+                Approval.tool_name == "create_scheduled_task",
+                Approval.execution_args.is_not(None),
+                Approval.status.in_(("approved", "executed")),
+            )
+        )
+        if run_id is not None:
+            query = query.where(Run.id == run_id)
+        async with self.factory() as session:
+            return list((await session.execute(query)).tuples())
 
     async def recover(self) -> None:
         """本机单执行进程获得数据库锁后收敛上次遗留运行。"""
-        async with self.factory.begin() as session:
+        async with self.factory() as session:
             ids = list(await session.scalars(select(Run.id).where(Run.status.in_(ACTIVE))))
-            if not ids:
-                return
-            now = datetime.now(UTC)
-            await session.execute(
-                update(ToolCall)
-                .where(ToolCall.status.in_(("running", "awaiting_approval")))
-                .values(status="failed", error_code="PROCESS_RESTARTED", finished_at=now)
-            )
-            pending = list(
-                await session.scalars(select(Approval).where(Approval.status == "pending").with_for_update())
-            )
-            for approval in pending:
-                approval.status = "expired"
-                approval.updated_at = now
-                session.add(ApprovalEvent(approval_id=approval.id, action="expired", actor_role="system"))
-            await session.execute(
-                update(Run)
-                .where(Run.id.in_(ids))
-                .values(
-                    status="failed",
-                    finished_at=now,
-                    error_code="PROCESS_RESTARTED",
-                    error_message="服务重启中断了生成，请重新提交问题",
-                )
-            )
-            await session.execute(
-                update(Message).where(Message.run_id.in_(ids)).values(status="interrupted", updated_at=now)
-            )
+        for run_id in ids:
+            # 与在线停止共用运行锁，保留已落库的取消请求以及创建任务的业务事实。
+            await self.finish(run_id, None, "failed", "PROCESS_RESTARTED", "服务重启中断了生成，请重新提交问题")

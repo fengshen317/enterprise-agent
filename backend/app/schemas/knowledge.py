@@ -12,6 +12,8 @@ PARSER_COMPONENT = "Parser:HipSignsRhyme"
 EXTRACTOR_COMPONENT = "Extractor:AutoExtractDefault"
 ALLOWED_PARSER_IDS = ("general", "manual")
 KNOWLEDGE_TOOL = "search_knowledge_base"
+MAX_RESTRICTED_DOCUMENTS = 50
+MAX_DOCUMENT_READERS = 50
 
 
 def component_key(config: dict[str, Any], exact: str, prefix: str) -> str:
@@ -241,6 +243,7 @@ class KnowledgeBaseView(BaseModel):
     visibility: str
     status: str
     error_code: str | None
+    can_manage: bool = False
     parser_settings: ParserSettings
     parser_id: str
     embedding_model: str
@@ -255,6 +258,7 @@ class KnowledgeDocumentView(BaseModel):
 
     id: UUID
     kb_id: UUID
+    restricted: bool = False
     name: str
     mime: str
     size: int
@@ -267,6 +271,21 @@ class KnowledgeDocumentView(BaseModel):
     token_count: int
     created_at: datetime
     updated_at: datetime
+
+
+class DocumentReaders(BaseModel):
+    """受限文档的完整读取名单；空名单关闭所有内容访问。"""
+
+    model_config = ConfigDict(extra="forbid")
+    user_ids: list[UUID] = Field(max_length=MAX_DOCUMENT_READERS)
+
+
+class KnowledgeAccessMember(BaseModel):
+    """成员选择器只公开授权所需的账号标识与名称。"""
+
+    id: UUID
+    username: str
+    display_name: str
 
 
 class DocumentParseInput(BaseModel):
@@ -347,4 +366,5 @@ class RetrievalTestChunk(BaseModel):
 class RetrievalTestResult(BaseModel):
     """检索测试结果。"""
 
+    effective_top_k: int = Field(ge=1, le=50)
     chunks: list[RetrievalTestChunk]

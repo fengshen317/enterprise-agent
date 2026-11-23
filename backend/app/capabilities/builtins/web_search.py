@@ -85,7 +85,8 @@ def web_search_spec(settings: Settings) -> ToolSpec:
         if not api_key:
             raise ApplicationError("WEB_SEARCH_NOT_CONFIGURED", "联网搜索未配置 API Key", 503)
         results = await _tavily_search(
-            api_key, arguments.query, arguments.max_results, settings.web_search_timeout_seconds
+            api_key, arguments.query, min(arguments.max_results, settings.web_search_max_results),
+            settings.web_search_timeout_seconds,
         )
         # 清洗结果，只保留安全字段。
         clean = []

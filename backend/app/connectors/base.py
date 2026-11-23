@@ -68,16 +68,18 @@ class ToolPolicyOverride:
 class ConnectorError(Exception):
     """连接器执行异常，含分类错误码。"""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, *, diagnostics: dict[str, str | int] | None = None) -> None:
         """保存分类错误码。
 
         Args:
             code: 稳定错误码。
             message: 人类可读的错误描述。
+            diagnostics: 供诊断白名单筛选的固定阶段和数字状态。
         """
         super().__init__(message)
         self.code = code
         self.message = message
+        self.diagnostics = diagnostics or {}
 
 
 def health_failure(code: str) -> ConnectorStatusInfo:

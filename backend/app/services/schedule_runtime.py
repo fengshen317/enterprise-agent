@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from datetime import UTC, datetime
+from time import perf_counter
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -16,6 +17,7 @@ from app.schemas.auth import ResourceScope
 from app.schemas.chat import RunCreate, RunSnapshot
 from app.services.chat_runtime import ChatRuntime
 from app.services.schedule_store import ClaimedSchedule, ScheduleStore
+from app.services.system_logs import emit_system_log, system_log_context
 
 logger = logging.getLogger(__name__)
 SCHEDULE_LOCK = 782341917
@@ -126,6 +128,8 @@ class ScheduleRuntime:
             claimed: 已推进下一次触发的任务快照。
         """
         scope = ResourceScope(claimed.owner_user_id, claimed.workspace_id)
+        started = perf_counter()
+        error_code: str | None = None
         key = f"schedule_{claimed.schedule_id.hex}_{claimed.scheduled_for.strftime('%Y%m%d%H%M%S')}"
         try:
             self.chat_runtime.provider.validate()
@@ -136,30 +140,45 @@ class ScheduleRuntime:
             )
             await self.store.record_started(claimed.schedule_id, snapshot.run.id, datetime.now(UTC))
             if snapshot.run.status == "pending":
-                self.chat_runtime.schedule(snapshot.run.id, f"schedule-{claimed.schedule_id.hex[:8]}")
+                self.chat_runtime.schedule(snapshot.run.id, f"schedule-{claimed.schedule_id.hex[:8]}", scheduled=True)
             logger.info(
                 "schedule_run_started",
                 extra={"schedule_id": str(claimed.schedule_id), "run_id": str(snapshot.run.id)},
             )
         except ApplicationError as exc:
+            error_code = exc.code
             await self.store.record_skipped(claimed.schedule_id, datetime.now(UTC), exc.code)
             logger.warning(
                 "schedule_run_skipped",
                 extra={"schedule_id": str(claimed.schedule_id), "error_code": exc.code},
             )
         except Exception as exc:
+            error_code = "SCHEDULE_EXECUTION_FAILED"
             await self.store.record_skipped(claimed.schedule_id, datetime.now(UTC), "SCHEDULE_EXECUTION_FAILED")
             logger.error(
                 "schedule_run_failed",
                 extra={"schedule_id": str(claimed.schedule_id), "error_type": type(exc).__name__},
             )
+        if error_code is not None:
+            with system_log_context(
+                recorder=self.chat_runtime.log_recorder, workspace_id=scope.workspace_id, request_id=None, run_id=None
+            ):
+                emit_system_log(
+                    component="schedule",
+                    event="schedule_finished",
+                    outcome="warning" if error_code == "RUN_IN_PROGRESS" else "error",
+                    task_execution_id=uuid4(),
+                    error_code=error_code,
+                    duration_ms=round((perf_counter() - started) * 1000, 2),
+                )
 
-    async def run_now(self, scope: ResourceScope, schedule_id: UUID) -> RunSnapshot:
+    async def run_now(self, scope: ResourceScope, schedule_id: UUID, *, request_id: str | None = None) -> RunSnapshot:
         """手动触发一次，不改变原定 Cron 的下一次时间。
 
         Args:
             scope: 已验证的当前用户和空间。
             schedule_id: 定时任务标识。
+            request_id: 手动触发的可信 HTTP 请求编号。
 
         Returns:
             新建运行快照。
@@ -179,7 +198,7 @@ class ScheduleRuntime:
         )
         await self.store.record_started(schedule_id, snapshot.run.id, datetime.now(UTC))
         if snapshot.run.status == "pending":
-            self.chat_runtime.schedule(snapshot.run.id, f"manual-{schedule_id.hex[:8]}")
+            self.chat_runtime.schedule(snapshot.run.id, request_id or f"manual-{schedule_id.hex[:8]}", scheduled=True)
         return snapshot
 
     async def close(self) -> None:

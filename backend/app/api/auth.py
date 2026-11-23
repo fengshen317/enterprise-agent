@@ -54,6 +54,16 @@ async def get_identity(
 IdentityDependency = Annotated[AuthContext, Depends(get_identity)]
 
 
+async def get_system_admin(request: Request, identity: IdentityDependency) -> AuthContext:
+    """校验部署级权限，与当前工作空间角色无关。"""
+    if not auth_service(request).is_system_admin(identity):
+        raise ApplicationError("SYSTEM_ADMIN_REQUIRED", "只有系统管理员可以管理部署配置", 403)
+    return identity
+
+
+SystemAdminDependency = Annotated[AuthContext, Depends(get_system_admin)]
+
+
 async def get_scope(
     request: Request,
     identity: IdentityDependency,
@@ -80,7 +90,10 @@ async def get_scope(
     except ValueError as exc:
         raise ApplicationError("WORKSPACE_REQUIRED", "请选择工作空间", 400) from exc
     write = request.method == "POST" and not request.url.path.endswith("/cancel")
-    return await auth_service(request).scope(identity, selected_id, write)
+    scope = await auth_service(request).scope(identity, selected_id, write)
+    # 只有通过成员校验的空间才能归档 HTTP 诊断。
+    request.state.diagnostic_workspace_id = scope.workspace_id
+    return scope
 
 
 ScopeDependency = Annotated[ResourceScope, Depends(get_scope)]

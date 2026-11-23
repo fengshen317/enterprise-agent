@@ -5,6 +5,7 @@ const CONNECTOR_TEST_TIMEOUT_MS = 65_000
 const CONNECTOR_AUTH_TIMEOUT_MS = 90_000
 const CONNECTOR_QR_POLL_TIMEOUT_MS = 12_000
 const HOLDINGS_SYNC_TIMEOUT_MS = 30_000
+const IMA_ACCOUNT_CHECK_TIMEOUT_MS = 20_000
 
 export type ConnectorKind = 'cli' | 'mcp' | 'api'
 export type ConnectorStatus = 'disabled' | 'connected' | 'degraded' | 'error'
@@ -61,6 +62,63 @@ export interface ConnectorDetail extends ConnectorHealth {
   config_values: Record<string, string>
   tools: ConnectorToolView[]
   can_view_holdings?: boolean
+  personal_account?: PersonalAccount | null
+}
+
+export interface PersonalAccount {
+  bound: boolean
+  guide_url: string
+  fields: { key: string; label: string; secret: boolean }[]
+}
+
+export interface ImaProbeResult {
+  status: 'success' | 'error'
+  error_code: string | null
+  diagnostic_id: string | null
+}
+
+export interface ImaAccountCheckResult {
+  knowledge_base: ImaProbeResult
+  notes: ImaProbeResult
+}
+
+export function isPersonalConnector(key?: string): boolean {
+  return key === 'qq_mail' || key === 'ima' || key === 'tencent_news'
+}
+
+function parsePersonalAccount(value: unknown): PersonalAccount {
+  if (!record(value) || typeof value.bound !== 'boolean' || typeof value.guide_url !== 'string'
+    || !value.guide_url.startsWith('https://') || !Array.isArray(value.fields)
+    || !value.fields.every(field => record(field) && typeof field.key === 'string'
+      && typeof field.label === 'string' && typeof field.secret === 'boolean')) return invalid()
+  return value as unknown as PersonalAccount
+}
+
+export async function savePersonalAccount(key: string, credentials: Record<string, string>): Promise<PersonalAccount> {
+  return parsePersonalAccount(await requestJson('/api/connectors/' + encodeURIComponent(key) + '/my-account', {
+    method: 'PUT', body: JSON.stringify({ credentials }),
+  }))
+}
+
+export async function removePersonalAccount(key: string): Promise<PersonalAccount> {
+  return parsePersonalAccount(await requestJson('/api/connectors/' + encodeURIComponent(key) + '/my-account', {
+    method: 'DELETE',
+  }))
+}
+
+function parseImaProbe(value: unknown): ImaProbeResult {
+  if (!record(value) || (value.status !== 'success' && value.status !== 'error')
+    || (value.status === 'success' ? value.error_code !== null : typeof value.error_code !== 'string')
+    || (value.diagnostic_id !== null && typeof value.diagnostic_id !== 'string')) return invalid()
+  return value as unknown as ImaProbeResult
+}
+
+export async function checkImaAccount(): Promise<ImaAccountCheckResult> {
+  const body = await requestJson('/api/connectors/ima/my-account/check', {
+    method: 'POST', cache: 'no-store',
+  }, IMA_ACCOUNT_CHECK_TIMEOUT_MS)
+  if (!record(body)) return invalid()
+  return { knowledge_base: parseImaProbe(body.knowledge_base), notes: parseImaProbe(body.notes) }
 }
 
 export interface YangJiBaoHolding {
@@ -109,6 +167,7 @@ function parseView(value: unknown): ConnectorView {
 function parseDetail(value: unknown): ConnectorDetail {
   if (!record(value) || typeof value.key !== 'string' || typeof value.name !== 'string'
     || !Array.isArray(value.config_fields) || !Array.isArray(value.tools)) return invalid()
+  if (value.personal_account != null) parsePersonalAccount(value.personal_account)
   return value as unknown as ConnectorDetail
 }
 
@@ -224,8 +283,9 @@ export async function getConnectorAuthStatus(key: string): Promise<AuthResult> {
   return body as unknown as AuthResult
 }
 
-export function connectorHealthLabel(connector: ConnectorHealth & { enabled: boolean; status: ConnectorStatus }): string {
+export function connectorHealthLabel(connector: ConnectorHealth & { enabled: boolean; status: ConnectorStatus; key?: string }): string {
   if (!connector.enabled) return '未启用'
+  if (isPersonalConnector(connector.key)) return '按个人账号连接'
   if (connector.auth_action === 'configure') return '需要配置'
   if (connector.auth_action === 'authorize' || connector.auth_status === 'required') return '需要授权'
   if (connector.last_error_code === 'timeout' || connector.last_error_code === 'check_failed'

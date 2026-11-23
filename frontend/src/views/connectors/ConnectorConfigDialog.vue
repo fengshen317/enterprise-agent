@@ -5,6 +5,7 @@ import { ApiError } from '../../api/client'
 import { useAuthStore } from '../../stores/auth'
 import { useConnectorsStore } from '../../stores/connectors'
 import YangJiBaoHoldings from './YangJiBaoHoldings.vue'
+import PersonalConnectorAccount from './PersonalConnectorAccount.vue'
 import {
   getConnector,
   updateConnectorConfig,
@@ -320,11 +321,20 @@ onUnmounted(() => { stopped = true; stop() })
           >
             {{ changingEnabled ? '正在更新…' : detail.enabled ? '停用连接器' : '启用连接器' }}
           </button>
-          <p v-if="!isAdmin">
+          <p v-if="!isAdmin && (!detail.personal_account || !detail.enabled)">
             请联系管理员配置或授权连接器
           </p>
         </div>
 
+        <PersonalConnectorAccount
+          v-if="detail.personal_account"
+          :key="store.scope + detail.key"
+          class="connector-dialog__section"
+          :connector-key="detail.key"
+          :account="detail.personal_account"
+          :enabled="detail.enabled"
+          @updated="detail.personal_account = $event"
+        />
         <YangJiBaoHoldings
           v-if="isYangJiBao && detail.enabled && detail.can_view_holdings && !authenticating"
           :key="store.scope"
@@ -506,6 +516,7 @@ onUnmounted(() => { stopped = true; stop() })
 }
 
 .connector-dialog {
+  --connector-dialog-gutter: clamp(1rem, 5vw, 1.5rem);
   width: 480px;
   max-width: 100vw;
   height: 100vh;
@@ -519,7 +530,7 @@ onUnmounted(() => { stopped = true; stop() })
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 1.25rem 1.5rem;
+    padding: 1.25rem var(--connector-dialog-gutter);
     border-bottom: 1px solid #eee;
 
     h2 {
@@ -546,8 +557,9 @@ onUnmounted(() => { stopped = true; stop() })
 
   &__status {
     display: flex;
-    gap: 1rem;
-    padding: 0.75rem 1.5rem;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    padding: 0.75rem var(--connector-dialog-gutter);
     font-size: 0.85rem;
     color: #666;
     border-bottom: 1px solid #f0f0f0;
@@ -558,7 +570,7 @@ onUnmounted(() => { stopped = true; stop() })
   }
 
   &__section {
-    padding: 1rem 1.5rem;
+    padding: 1rem var(--connector-dialog-gutter);
 
     h3 {
       margin: 0 0 0.75rem;
@@ -630,7 +642,7 @@ onUnmounted(() => { stopped = true; stop() })
   }
 
   &__test-result {
-    margin: 0.75rem 1.5rem;
+    margin: 0.75rem var(--connector-dialog-gutter);
     padding: 0.75rem 1rem;
     border-radius: 8px;
     background: #f8f9fa;
@@ -641,7 +653,7 @@ onUnmounted(() => { stopped = true; stop() })
   }
 
   &__auth-result {
-    margin: 0.75rem 1.5rem;
+    margin: 0.75rem var(--connector-dialog-gutter);
     padding: 0.75rem 1rem;
     border-radius: 8px;
     background: #eaf4ff;
@@ -686,7 +698,7 @@ onUnmounted(() => { stopped = true; stop() })
   }
 
   &__error {
-    margin: 0.5rem 1.5rem;
+    margin: 0.5rem var(--connector-dialog-gutter);
     color: #c0392b;
     font-size: 0.85rem;
   }
@@ -695,7 +707,7 @@ onUnmounted(() => { stopped = true; stop() })
     display: flex;
     justify-content: flex-end;
     gap: 0.75rem;
-    padding: 1.25rem 1.5rem;
+    padding: 1.25rem var(--connector-dialog-gutter);
     margin-top: auto;
     border-top: 1px solid #eee;
   }

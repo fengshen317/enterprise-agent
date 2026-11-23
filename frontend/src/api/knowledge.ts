@@ -1,6 +1,12 @@
 import { API_BASE_URL, ApiError, getWorkspaceId, requestForm, requestJson } from './client'
 
 export type KnowledgeVisibility = 'workspace' | 'private'
+export interface KnowledgeAccessMember {
+  id: string
+  username: string
+  display_name: string
+}
+export const maxDocumentReaders = 50
 export type PdfParseMethod = 'deepdoc' | 'mineru'
 export interface ParserSettings {
   chunk_token_size: number
@@ -17,6 +23,7 @@ export interface KnowledgeBase {
   name: string
   description: string
   visibility: KnowledgeVisibility
+  can_manage?: boolean
   status: string
   error_code: string | null
   parser_settings: ParserSettings
@@ -39,6 +46,7 @@ export interface KnowledgeBaseInput {
 export interface KnowledgeDocument {
   id: string
   kb_id: string
+  restricted?: boolean
   name: string
   mime: string
   size: number
@@ -75,6 +83,7 @@ export interface RetrievalTestChunk {
   positions: unknown[]
 }
 export interface RetrievalTestResult {
+  effective_top_k: number
   chunks: RetrievalTestChunk[]
 }
 
@@ -105,7 +114,8 @@ function parseChunkPage(value: unknown): KnowledgeChunkPage {
 }
 
 function parseRetrieval(value: unknown): RetrievalTestResult {
-  if (!record(value) || !Array.isArray(value.chunks) || !value.chunks.every(item => record(item) && typeof item.content === 'string' && typeof item.document_id === 'string' && typeof item.document_name === 'string' && nullableNumber(item.similarity) && Array.isArray(item.positions))) return invalid()
+  if (!record(value) || typeof value.effective_top_k !== 'number' || !Number.isInteger(value.effective_top_k)
+    || value.effective_top_k < 1 || value.effective_top_k > 50 || !Array.isArray(value.chunks) || !value.chunks.every(item => record(item) && typeof item.content === 'string' && typeof item.document_id === 'string' && typeof item.document_name === 'string' && nullableNumber(item.similarity) && Array.isArray(item.positions))) return invalid()
   return value as unknown as RetrievalTestResult
 }
 
@@ -137,9 +147,34 @@ export async function listKnowledgeDocuments(kbId: string): Promise<KnowledgeDoc
   return body.map(parseDocument)
 }
 
-export async function uploadKnowledgeDocument(kbId: string, file: File): Promise<KnowledgeDocument> {
+export async function listKnowledgeAccessMembers(kbId: string, query: string, offset: number, limit: number): Promise<KnowledgeAccessMember[]> {
+  const search = new URLSearchParams({ q: query, offset: String(offset), limit: String(limit) })
+  const body = await requestJson('/api/knowledge-bases/' + encodeURIComponent(kbId) + '/access-members?' + search.toString())
+  if (!Array.isArray(body) || !body.every(item => record(item)
+    && typeof item.id === 'string' && typeof item.username === 'string' && typeof item.display_name === 'string')) return invalid()
+  return body as KnowledgeAccessMember[]
+}
+
+function parseReaders(body: unknown): string[] {
+  if (!record(body) || !Array.isArray(body.user_ids) || !body.user_ids.every(id => typeof id === 'string')) return invalid()
+  return body.user_ids as string[]
+}
+
+export async function getKnowledgeDocumentReaders(id: string): Promise<string[]> {
+  return parseReaders(await requestJson('/api/knowledge-documents/' + encodeURIComponent(id) + '/readers'))
+}
+
+export async function setKnowledgeDocumentReaders(id: string, userIds: string[]): Promise<string[]> {
+  return parseReaders(await requestJson('/api/knowledge-documents/' + encodeURIComponent(id) + '/readers', {
+    method: 'POST',
+    body: JSON.stringify({ user_ids: userIds }),
+  }))
+}
+
+export async function uploadKnowledgeDocument(kbId: string, file: File, readers?: string[]): Promise<KnowledgeDocument> {
   const form = new FormData()
   form.append('file', file)
+  if (readers) form.append('readers', JSON.stringify({ user_ids: readers }))
   return parseDocument(await requestForm('/api/knowledge-bases/' + encodeURIComponent(kbId) + '/documents', form))
 }
 

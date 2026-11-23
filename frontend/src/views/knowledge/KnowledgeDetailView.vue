@@ -107,6 +107,7 @@ onBeforeUnmount(() => { alive = false; revision++ })
     <template v-else-if="kb">
       <DocumentsTab
         v-if="tab === 'documents'"
+        :key="kb.id"
         :kb="kb"
         @changed="loadBase"
       />

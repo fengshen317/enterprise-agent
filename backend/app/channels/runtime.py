@@ -299,6 +299,7 @@ class ChannelRuntime:
             AgentGateway(agent_service),
             MembershipGateway(database.session_factory),
             ApprovalGateway(approval_service),
+            log_recorder=chat_runtime.log_recorder,
         )
         self.closing = False
         self._supervisor: asyncio.Task[None] | None = None
@@ -357,7 +358,7 @@ class ChannelRuntime:
             logger.warning("wechat_reminder_failed", extra={"account_id": str(account.id)})
 
     async def on_run_finished(self, run_id: UUID) -> None:
-        """把不是微信当场触发的运行结果推回微信。
+        """仅把明确开启微信推送的定时任务结果推回微信。
 
         Args:
             run_id: 已结束的运行。
@@ -368,7 +369,7 @@ class ChannelRuntime:
         if delivery is None or delivery.status not in {"completed", "failed"}:
             return
         scheduled = delivery.idempotency_key.startswith(("schedule_", "manual_"))
-        if scheduled and (delivery.schedule_id is None or not delivery.push_to_wechat):
+        if not scheduled or delivery.schedule_id is None or not delivery.push_to_wechat:
             return
         account = await self.repo.account_for_user(delivery.user_id)
         if account is None:
@@ -431,7 +432,9 @@ class ChannelRuntime:
                 f"回复「同意 {code}」或「拒绝 {code} 原因」。只有这一项时也可以只回复「同意」或「拒绝」。"
             )
         # 不把 run_id 写进出站去重，避免和这条运行的最终回复互相挡住。
-        await self.handler.send_text(account, peer.peer_id, peer.context_token, text, run_id=None)
+        await self.handler.send_text(
+            account, peer.peer_id, peer.context_token, text, run_id=None, workspace_id=notice.workspace_id
+        )
 
     def _enabled(self) -> bool:
         """渠道是否配置完成。

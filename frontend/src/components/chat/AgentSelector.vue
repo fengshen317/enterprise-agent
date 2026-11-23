@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import type { Agent } from '../../api/agents'
 
-defineProps<{ agents: Agent[]; modelValue: string | null; disabled?: boolean; current: Agent | null }>()
+const props = defineProps<{ agents: Agent[]; modelValue: string | null; disabled?: boolean; current: Agent | null }>()
 const emit = defineEmits<{ 'update:modelValue': [value: string | null] }>()
 function change(event: Event): void {
-  const value = (event.target as HTMLSelectElement).value
+  const select = event.target as HTMLSelectElement
+  const value = select.value
+  select.value = props.modelValue ?? ''
   emit('update:modelValue', value || null)
 }
 </script>
@@ -17,6 +19,7 @@ function change(event: Event): void {
       :value="modelValue ?? ''"
       :disabled="disabled"
       aria-label="选择 Agent"
+      :title="disabled ? '读取、提交或生成期间不能切换 Agent' : undefined"
       @change="change"
     >
       <option value="">序列助手（内置）</option>
@@ -28,20 +31,16 @@ function change(event: Event): void {
         {{ item.name }}{{ item.visibility === 'private' ? '（私有）' : '' }}
       </option>
     </select>
-    <span
-      v-if="disabled"
-      class="agent-select__hint"
-    >生成中不能切换</span>
   </label>
 </template>
 
 <style scoped lang="scss">
 @use '../../styles/variables' as *;
 .agent-select {
-  display: flex; align-items: center; gap: 8px; border: 1px solid #cbd7be; background: #f4f7ee;
-  border-radius: 20px; padding: 5px 10px 5px 8px; min-width: 0;
+  display: flex; align-items: center; gap: 6px; border: 1px solid $line; background: #f4f7ef;
+  border-radius: 7px; padding: 0 7px; min-width: 0;
   &__icon { font-size: 15px; color: $green; }
-  &__control { border: 0; background: transparent; font: inherit; font-size: 12px; color: $ink; max-width: 210px; outline: 0; }
-  &__hint { font-size: 10px; color: $muted; white-space: nowrap; }
+  &__control { border: 0; background: transparent; font: inherit; font-size: 12px; color: $ink; min-height: 32px; max-width: min(210px, 60vw); }
 }
+@media (max-width: 760px) { .agent-select__control { min-height: 38px; } }
 </style>

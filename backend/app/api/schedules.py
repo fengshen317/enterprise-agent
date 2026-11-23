@@ -7,7 +7,7 @@ from fastapi import APIRouter, Query, Request, Response
 
 from app.api.auth import ScopeDependency
 from app.schemas.chat import RunSnapshot
-from app.schemas.schedule import ScheduleInput, ScheduleView, ScheduleWeChatPushInput
+from app.schemas.schedule import ScheduleEnabledInput, ScheduleInput, ScheduleView, ScheduleWeChatPushInput
 from app.services.schedule_runtime import ScheduleRuntime
 
 router = APIRouter(prefix="/api/schedules", tags=["定时问答"])
@@ -47,6 +47,21 @@ async def listing(
     return await runtime(request).store.list(scope, offset, limit)
 
 
+@router.get("/{schedule_id}", response_model=ScheduleView)
+async def detail(schedule_id: UUID, request: Request, scope: ScopeDependency) -> ScheduleView:
+    """按标识打开本人任务，使对话中的任务链接不依赖列表分页。
+
+    Args:
+        schedule_id: 定时任务标识。
+        request: 当前请求。
+        scope: 已验证用户和空间。
+
+    Returns:
+        当前用户可见的任务详情。
+    """
+    return await runtime(request).store.get(scope, schedule_id)
+
+
 @router.post("", response_model=ScheduleView, status_code=201)
 async def create(body: ScheduleInput, request: Request, scope: ScopeDependency) -> ScheduleView:
     """创建定时任务，结果写入指定对话。
@@ -67,7 +82,7 @@ async def create(body: ScheduleInput, request: Request, scope: ScopeDependency) 
 
 @router.post("/{schedule_id}", response_model=ScheduleView)
 async def update(schedule_id: UUID, body: ScheduleInput, request: Request, scope: ScopeDependency) -> ScheduleView:
-    """完整更新定时任务；启用时重新计算下一次触发。
+    """完整更新定时任务；时间规则变化时重新计算触发计划。
 
     Args:
         schedule_id: 定时任务标识。
@@ -121,6 +136,17 @@ async def set_wechat_push(
     return await runtime(request).store.set_wechat_push(scope, schedule_id, body.push_to_wechat)
 
 
+@router.post("/{schedule_id}/enabled", response_model=ScheduleView)
+async def set_enabled(
+    schedule_id: UUID, body: ScheduleEnabledInput, request: Request, scope: ScopeDependency
+) -> ScheduleView:
+    """只修改启用状态，并在重新启用时计算下一次触发。"""
+    executor = runtime(request)
+    view = await executor.store.set_enabled(scope, schedule_id, body.enabled)
+    executor.poke()
+    return view
+
+
 @router.post("/{schedule_id}/run", response_model=RunSnapshot, status_code=202)
 async def run_now(schedule_id: UUID, request: Request, scope: ScopeDependency) -> RunSnapshot:
     """立即触发一次，不改变原定 Cron 的下一次时间。
@@ -133,4 +159,6 @@ async def run_now(schedule_id: UUID, request: Request, scope: ScopeDependency) -
     Returns:
         新创建的运行快照。
     """
-    return await runtime(request).run_now(scope, schedule_id)
+    snapshot = await runtime(request).run_now(scope, schedule_id, request_id=request.state.request_id)
+    request.state.diagnostic_run_id = snapshot.run.id
+    return snapshot

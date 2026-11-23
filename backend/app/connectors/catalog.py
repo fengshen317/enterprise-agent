@@ -315,7 +315,20 @@ YANGJIBAO = BuiltinConnector(
 )
 
 
-BUILTIN_CONNECTORS: tuple[BuiltinConnector, ...] = (TMEET, TAVILY, FUND_MARKET, YANGJIBAO)
+QQ_MAIL = BuiltinConnector("qq_mail", "api", "QQ 邮箱", "搜索和阅读本人 QQ 收件箱，协助起草回复。", "✉️")
+IMA = BuiltinConnector("ima", "api", "ima 知识库", "查找本人 ima 知识库、资料和笔记。", "📚")
+TENCENT_NEWS = BuiltinConnector(
+    "tencent_news", "cli", "腾讯新闻", "按主题搜索新闻、获取热点，用于问答和定时简报。", "📰"
+)
+PERSONAL_CONNECTORS = {item.key: item for item in (QQ_MAIL, IMA, TENCENT_NEWS)}
+
+BUILTIN_CONNECTORS: tuple[BuiltinConnector, ...] = (
+    TMEET,
+    TAVILY,
+    FUND_MARKET,
+    YANGJIBAO,
+    *PERSONAL_CONNECTORS.values(),
+)
 
 
 def get_builtin(key: str) -> BuiltinConnector | None:

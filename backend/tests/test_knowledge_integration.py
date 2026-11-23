@@ -19,9 +19,9 @@ from app.core.config import Settings
 from app.core.errors import ApplicationError
 from app.main import create_app
 from app.models.identity import Workspace, WorkspaceMembership
-from app.models.knowledge import KnowledgeDocument
+from app.models.knowledge import KnowledgeBase, KnowledgeDocument
 from app.schemas.chat import RunCreate
-from app.schemas.knowledge import CHUNKER_COMPONENT, KNOWLEDGE_TOOL
+from app.schemas.knowledge import CHUNKER_COMPONENT, KNOWLEDGE_TOOL, KnowledgeSearchArgs
 from app.services.ragflow import ChunkInfo, ChunkPage, DatasetInfo, DocumentFile, DocumentInfo, RetrievedChunk
 from app.services.tools import ToolExecutor
 from tests.auth_helpers import add_identity, cleanup_identities
@@ -72,6 +72,8 @@ class FakeRagflow:
         self.parse_calls: list[tuple[str, list[str]]] = []
         self.last_retrieve: tuple[list[str], str, int, float] | None = None
         self.download_size_override: int | None = None
+        self.retrieval_calls: list[tuple[list[str], list[str] | None]] = []
+        self.ignore_document_filter = False
 
     @staticmethod
     def default_config() -> dict[str, object]:
@@ -107,8 +109,14 @@ class FakeRagflow:
         """
         dataset_id = "ds-" + uuid4().hex
         config = self.default_config()
-        self.datasets[dataset_id] = {"name": name, "parser_config": config, "docs": {}}
+        self.datasets[dataset_id] = {
+            "name": name, "parser_config": config, "docs": {}, "embedding_model": embedding_model or "original-model"
+        }
         return DatasetInfo(dataset_id=dataset_id, parser_config=config)
+
+    async def dataset_embedding_model(self, dataset_id: str) -> str:
+        """模拟从已有数据集读取模型。"""
+        return str(self.datasets[dataset_id]["embedding_model"])
 
     async def update_dataset(
         self,
@@ -312,6 +320,7 @@ class FakeRagflow:
             检索片段。
         """
         self.last_retrieve = (list(dataset_ids), question, top_k, threshold)
+        self.retrieval_calls.append((list(dataset_ids), document_ids))
         chunks: list[RetrievedChunk] = []
         for dataset_id in dataset_ids:
             dataset = self.datasets.get(dataset_id)
@@ -320,7 +329,7 @@ class FakeRagflow:
             docs = dataset["docs"]
             assert isinstance(docs, dict)
             for document_id, item in docs.items():
-                if document_ids and document_id not in document_ids:
+                if document_ids and document_id not in document_ids and not self.ignore_document_filter:
                     continue
                 if not isinstance(item, dict):
                     continue
@@ -643,6 +652,7 @@ async def test_retrieval_test_returns_similarity_and_sources(
         json={"query": "年假制度", "top_k": 3, "threshold": 0.55},
     )
     assert response.status_code == 200, response.text
+    assert response.json()["effective_top_k"] == 3
     chunks = response.json()["chunks"]
     assert chunks[0]["document_id"] == uploaded["id"]
     assert chunks[0]["similarity"] == 0.9
@@ -710,3 +720,112 @@ async def test_upload_validation_delete_and_dataset_cleanup(
     assert removed.status_code == 204
     assert fake.datasets == {}
     assert (await client.get("/api/knowledge-bases")).json() == []
+
+
+
+async def test_restricted_documents_in_shared_library(
+    knowledge_app: tuple[FastAPI, AsyncClient, FakeRagflow],
+) -> None:
+    """同库不同成员的列表、统计、问答、分块与原件按授权隔离。"""
+    app, admin, fake = knowledge_app
+    owner = app.state.test_scope
+    slug = await workspace_slug(app, owner.user_id)
+    kb = await create_kb(admin)
+    kid = UUID(str(kb["id"]))
+    base = f"/api/knowledge-bases/{kid}"
+    await upload_document(admin, str(kid), "共享制度.txt")
+    async with (
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as reader,
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as observer,
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as outsider,
+    ):
+        reader_scope = await add_identity(app, reader, workspace=slug)
+        await add_identity(app, observer, workspace=slug, role="admin")
+        outside_scope = await add_identity(app, outsider, role="admin")
+        file = {"file": ("底价.txt", b"QA-SECRET", "text/plain")}
+        empty = await admin.post(base + "/documents", files=file, data={"readers": ""})
+        assert empty.status_code == 422
+        invalid = await admin.post(base + "/documents", files=file, data={
+            "readers": json.dumps({"user_ids": [str(owner.user_id), str(outside_scope.user_id)]})
+        })
+        assert invalid.status_code == 422
+        members = await admin.get(base + "/access-members")
+        assert str(reader_scope.user_id) in {m["id"] for m in members.json()}
+        assert str(outside_scope.user_id) not in {m["id"] for m in members.json()}
+        assert (await reader.get(base + "/access-members")).status_code == 403
+
+        async def restricted_upload(name: str, users: list[UUID]) -> str:
+            """通过上传路由设置初始授权，返回本地文档标识。"""
+            r = await admin.post(base + "/documents", files={"file": (name, b"QA-SECRET", "text/plain")}, data={
+                "readers": json.dumps({"user_ids": [str(user) for user in users]})
+            })
+            assert r.status_code == 201, r.text
+            assert r.json()["restricted"] is True
+            return str(r.json()["id"])
+
+        doc_id = await restricted_upload("底价.txt", [owner.user_id, reader_scope.user_id])
+        await restricted_upload("其他受限资料.txt", [owner.user_id])
+        path = f"/api/knowledge-documents/{doc_id}"
+        async with app.state.database.session_factory() as session:
+            local = await session.get(KnowledgeBase, kid)
+            doc = await session.get(KnowledgeDocument, UUID(doc_id))
+            assert local is not None and doc is not None
+            assert local.ragflow_dataset_id and local.restricted_dataset_id and doc.ragflow_document_id
+            assert local.ragflow_dataset_id != local.restricted_dataset_id
+            shared_id, restricted_id, remote_id = (
+                local.ragflow_dataset_id, local.restricted_dataset_id, doc.ragflow_document_id
+            )
+            assert local.embedding_model == "original-model"
+            assert fake.datasets[shared_id]["embedding_model"] == fake.datasets[restricted_id]["embedding_model"]
+        assert len(fake.datasets) == 2
+        assert (await reader.get(path + "/file")).content == b"QA-SECRET"
+        assert (await reader.get(path + "/chunks")).status_code == 200
+        assert (await reader.get(path)).status_code == 200
+        assert (await reader.post(path + "/readers", json={"user_ids": []})).status_code == 403
+        assert (await outsider.get(path + "/file")).status_code == 404
+        assert (await observer.get(path + "/file")).status_code == 404
+        assert (await observer.get(path + "/chunks")).status_code == 404
+        assert (await observer.get(path)).status_code == 404
+        assert (await observer.get(base)).json()["document_count"] == 1
+        assert [d["name"] for d in (await observer.get(base + "/documents")).json()] == ["共享制度.txt"]
+
+        # 即使远端忽略文档过滤，也不能把同一受限数据集的其他正文送给 Agent。
+        fake.ignore_document_filter = True
+        executor = await executor_for(app, reader, reader_scope)
+        fake.retrieval_calls.clear()
+        result = json.loads(await executor.invoke(KNOWLEDGE_TOOL, {"query": "底价"}))
+        assert result["ok"] is True
+        assert {c["document_name"] for c in result["data"]["chunks"]} == {"共享制度.txt", "底价.txt"}
+        assert fake.retrieval_calls == [([shared_id], None), ([restricted_id], [remote_id])]
+
+        grant = await admin.post(path + "/readers", json={"user_ids": [str(owner.user_id)]})
+        assert grant.status_code == 200
+        assert (await reader.get(path + "/file")).status_code == 404
+        fake.retrieval_calls.clear()
+        retry = await reader.post(base + "/retrieval-test", json={"query": "底价"})
+        assert [c["document_name"] for c in retry.json()["chunks"]] == ["共享制度.txt"]
+        assert fake.retrieval_calls == [([shared_id], None)]
+    deleted = await admin.post(base + "/delete")
+    assert deleted.status_code == 204 and fake.datasets == {}
+
+
+async def test_retrieval_includes_readable_libraries_after_twentieth(
+    knowledge_app: tuple[FastAPI, AsyncClient, FakeRagflow],
+) -> None:
+    """覆盖超过单次请求容量的授权库，并验证私有库从未进入请求。"""
+    app, admin, fake = knowledge_app
+    scope = app.state.test_scope
+    ids = [UUID(str((await create_kb(admin, name=f"制度库 {i + 1}"))["id"])) for i in range(21)]
+    selected = max(ids)
+    await upload_document(admin, str(selected), "唯一相关文档.txt")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as member:
+        member_scope = await add_identity(app, member, workspace=await workspace_slug(app, scope.user_id))
+        hidden = await create_kb(member, "同名私有制度", "private")
+        await upload_document(member, str(hidden["id"]), "私有文档.txt")
+        service = app.state.knowledge_service
+        fake.retrieval_calls.clear()
+        result = await service.retrieve(scope, KnowledgeSearchArgs(query="唯一相关"))
+        assert [row.document_name for row in result.chunks] == ["唯一相关文档.txt"]
+        assert [len(batch) for batch, _ in fake.retrieval_calls] == [20, 1]
+        assert all(doc_ids is None for _, doc_ids in fake.retrieval_calls)
+        assert member_scope.user_id != scope.user_id

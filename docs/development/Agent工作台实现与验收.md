@@ -8,8 +8,9 @@
 - 每个对话选择 Agent；生成中不能切换；切换只影响后续运行。
 - 能力绑定：内置工具、已发布技能版本、知识库范围。
 - 技能：Markdown/SOP 创建、草稿版本、发布、版本历史、归档；常驻与按需加载。
-- 工具目录包含运行统计、知识库、定时任务查询/创建/启停及已配置连接器工具；空间管理员可按策略启停。
+- 工具目录包含运行统计、知识库、定时任务查询、创建、修改和启停，以及已配置的连接器工具。空间管理员可按策略启停。
 - 运行快照：`runs.agent_snapshot` 固定 Agent 版本、工具版本、技能版本和知识库范围。
+- Run 领取后先恢复能力，再生成上下文摘要、检索资料和调用模型。旧 Run 的快照为 `{}` 时，按对话绑定的 Agent 装配。非空快照缺少 Agent 名称或指令时，Run 以 `AGENT_ASSEMBLY_FAILED` 结束。装配过程中的权限错误保留原错误码，其他未预期异常向用户返回装配失败提示。
 - 写操作审批：`approvals` + `approval_events`；只允许 Run owner 决策；超时、取消、重启均收敛。
 - 前端：`/agents`、`/agents/:agentId`、`/capabilities`、`/capabilities/skills/:skillId`；ChatView 增加 Agent 选择、能力抽屉、全局审批卡；工具记录支持审批/拒绝/过期状态。
 - 审计：`tool_calls` 增加工具版本、风险、审批标记和参数摘要；运行轨迹接口返回脱敏快照、工具调用和审批链。
@@ -62,7 +63,10 @@
 | `get_my_run_stats` | read | never | 5s | 4 | 运行统计 |
 | `search_knowledge_base` | read | never | RAGFlow+5s | 3 | 知识库检索 |
 | `list_knowledge_bases` | read | never | 5s | 2 | 知识库目录 |
-| `create_scheduled_task` | write | always | 5s | 1 | 创建定时任务，固定当前对话 |
+| `create_private_skill` | write | always | 按配置 | 1 | 保存本人的私有 Markdown 技能草稿，返回技能 ID 和第一版版本号 |
+| `publish_private_skill` | write | always | 按配置 | 1 | 查看待发布版本的实际正文，批准后发布本人的私有草稿 |
+| `create_private_agent` | write | always | 按配置 | 1 | 创建本人的私有 Agent，可绑定业务工具和指定的已发布技能版本 |
+| `create_scheduled_task` | write | always | 5s | 1 | 省略 Agent 时沿用当前对话，指定本人私有 Agent 时为任务建立专用对话 |
 | `list_scheduled_tasks` | read | never | 按配置 | 2 | 列出本人当前空间任务并标出当前对话任务 |
 | `set_scheduled_task_enabled` | write | always | 按配置 | 1 | 真实启用或停用本人任务 |
 | `update_plan` / `delegate_tasks` | system | never | 2s / Run 超时 | 12 / 6 | 仅主 Agent |
@@ -134,7 +138,22 @@ GET      /api/runs/{id}/trace
 2. 打开 `/capabilities`：确认工具目录包含定时任务查询、创建和启停工具；创建并发布一个技能。
 3. 打开 `/agents`：新建私有 Agent，绑定只读工具和技能，保存。
 4. 打开 `/chat`：新建对话选择该 Agent，发送问题；点“能力”查看工具/技能/知识库范围。
-5. 让 Agent 创建定时任务（需绑定 `create_scheduled_task`）：输入“请创建一个每天 9 点执行的定时任务，总结本周运行情况”。在输入框上方批准或拒绝；批准后到 `/schedules` 确认任务存在。
-6. 内置助手输入“列出我的定时任务”，确认会调用 `list_scheduled_tasks`；再输入“停掉这个任务”，应出现 `set_scheduled_task_enabled` 审批，批准后 `/schedules` 中任务真实停用。
+5. 在启用定时问答的环境，用默认助手输入“请创建一个每天 9 点执行的定时任务，总结本周运行情况”。批准后点击创建结果查看任务。自定义 Agent 需要绑定 `create_scheduled_task`。
+6. 在内置助手对话中列出任务，再要求“把这个任务改到沪深 A 股交易日 14:30”。确认先用 `get_scheduled_task` 读取任务，在 `update_scheduled_task` 审批卡核对变更，批准后回到 `/schedules` 验证任务 ID 不变、时间和日期筛选已更新。启停任务也需要审批。
 7. 生成中尝试切换 Agent，应提示不能切换；刷新页面后执行轨迹和审批链仍可读。
 8. 重启后端：如果存在 pending 审批，确认审批过期、Run 失败码 `PROCESS_RESTARTED`，且没有产生定时任务。
+
+## 从聊天保存流程并安排运行
+
+在默认助手输入“把刚才的运行日报流程保存成我的助手，每天北京时间九点运行”。完整流程有四次独立审批，用户仅要求保存草稿时只需第一次。
+
+1. 保存私有技能。审批卡展示实际 Markdown、工具和知识库范围，成功结果可打开技能详情。
+2. 发布该技能版本。后端按登录账号重新读取私有草稿的真实正文，批准后再次验证归属和版本。
+3. 创建私有 Agent。模型使用发布结果里的技能 ID 和版本号，明确绑定所需业务工具。后端固定不可变的技能版本，继承当前运行的知识库和规划、委派范围。结果可打开 Agent 详情。
+4. 创建定时问答。模型传入上一步返回的 Agent ID。用户核对时区、运行时间、目标助手和推送开关。成功后从任务详情点击“运行一次”，即可查看新助手的真实回答和执行记录。
+
+每步单独提交。拒绝后续操作时，已经批准创建的草稿、版本或助手会保留。工作空间策略可停用单项工具，等待审批时撤权会阻止该写入。子 Agent 只获得只读工具。上述流程复用现有模型、权限及表结构。
+
+2026-11-19 验收使用独立 PostgreSQL 测试库。真实 DeepSeek 从一句日报需求出发，依次请求保存草稿、发布指定版本、创建助手和创建定时任务。测试客户端逐次批准。通过“运行一次”触发已保存的每天 9 点任务，确认使用新助手、绑定的技能版本和实际运行统计工具。临时测试账号及其对象在验收后清理。
+
+可在 backend 目录执行 `uv run pytest --no-cov tests/test_chat_authoring_integration.py tests/test_approvals_integration.py` 复验审批、拒绝、撤权及版本固定。该组回归使用可控模型传输，另行发布第二版后仍验证任务使用已绑定的第一版。

@@ -2,18 +2,14 @@
 import { computed } from 'vue'
 import { renderMarkdown, renderCitations } from '../utils/markdown'
 
-const props = defineProps<{ content: string; citations?: boolean }>()
-const emit = defineEmits<{ cite: [index: number] }>()
-const html = computed(() => {
-  const rendered = renderMarkdown(props.content)
-  return props.citations ? renderCitations(rendered) : rendered
-})
+defineOptions({ inheritAttrs: false })
+const props = defineProps<{ content: string; citationIndices?: number[] }>()
+const emit = defineEmits<{ cite: [index: number, trigger: HTMLElement, cited: number[]] }>()
+const sanitized = computed(() => renderMarkdown(props.content))
+const rendered = computed(() => renderCitations(sanitized.value, props.citationIndices ?? []))
 function handleClick(event: MouseEvent): void {
-  const target = (event.target as HTMLElement).closest('sup[data-cite]')
-  if (target) {
-    const n = parseInt(target.getAttribute('data-cite') ?? '0', 10)
-    if (n > 0) emit('cite', n)
-  }
+  const target = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-cite]')
+  if (target) emit('cite', Number(target.dataset.cite), target, rendered.value.cited)
 }
 </script>
 
@@ -21,8 +17,13 @@ function handleClick(event: MouseEvent): void {
   <!-- eslint-disable vue/no-v-html -- 内容已由 DOMPurify 白名单清洗 -->
   <div
     class="markdown-body"
+    v-bind="$attrs"
     @click="handleClick"
-    v-html="html"
+    v-html="rendered.html"
+  />
+  <slot
+    name="after"
+    :cited="rendered.cited"
   />
 </template>
 
@@ -51,5 +52,7 @@ function handleClick(event: MouseEvent): void {
   :deep(a) { color: $green; text-decoration: underline; }
   :deep(hr) { border: 0; border-top: 1px solid $line; margin: 18px 0; }
   :deep(strong) { font-weight: 600; }
+  :deep(.citation) { margin-inline: 2px; border: 0; border-radius: 4px; padding: 0 4px; color: $green; background: #e6efe5; font-size: 0.8em; }
+  :deep(.citation:hover) { background: #d4e7d7; }
 }
 </style>

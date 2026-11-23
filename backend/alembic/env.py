@@ -14,12 +14,13 @@ from app.models.base import Base
 from app.models.channel import ChannelAccount, ChannelApprovalCode, ChannelBindSession, ChannelMessage, ChannelPeer
 from app.models.config import IntegrationConfig
 from app.models.connector import Connector
-from app.models.conversation import Conversation, Message, Run
+from app.models.conversation import ChatAttachment, Conversation, Message, Run
 from app.models.identity import AuthSession, LoginLimit, User, Workspace, WorkspaceMembership
 from app.models.knowledge import KnowledgeBase, KnowledgeDocument
 from app.models.schedule import ScheduledTask
 from app.models.skill import Skill, SkillVersion
 from app.models.system import SystemMetadata
+from app.models.system_log import SystemLogEvent
 from app.models.task import Task, TaskAction, TaskActionAttempt, TaskEvent, TaskPlan, TaskRun, TaskStep, TaskStepAttempt
 from app.models.tool_call import ToolCall
 
@@ -28,8 +29,10 @@ assert all(
     model.__table__.metadata is Base.metadata
     for model in (
         SystemMetadata,
+        SystemLogEvent,
         AdminAudit,
         Conversation,
+        ChatAttachment,
         Message,
         Run,
         User,

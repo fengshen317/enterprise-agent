@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -17,6 +18,7 @@ from app.capabilities.spec import AgentAssembly, ToolContext, ToolSpec
 from app.connectors.base import ConnectorError
 from app.core.config import Settings
 from app.core.errors import ApplicationError
+from app.models.agent import WorkspaceToolPolicy
 from app.models.conversation import Conversation, Run
 from app.models.tool_call import ToolCall
 from app.schemas.auth import ResourceScope
@@ -26,6 +28,7 @@ from app.services.agent_assembler import AgentAssembler
 from app.services.auth import require_membership
 from app.services.knowledge import KnowledgeService
 from app.services.read_tools import query_run_stats
+from app.services.system_logs import emit_system_log
 
 if TYPE_CHECKING:
     from app.services.approvals import ApprovalService
@@ -41,6 +44,21 @@ CONNECTOR_ERRORS = {
     "auth_failed": ("CONNECTOR_NOT_LOGGED_IN", "连接器认证已失效，请在连接器页面完成授权或更新凭证"),
     "network_error": ("CONNECTOR_NETWORK_ERROR", "连接器网络异常，请检查网络后重试"),
     "missing_api_key": ("CONNECTOR_NOT_LOGGED_IN", "连接器缺少 API Key，请在连接器页面配置凭证"),
+    "not_configured": ("CONNECTOR_NOT_CONFIGURED", "连接器缺少运行依赖，请联系管理员"),
+    "not_found": ("CONNECTOR_RECORD_NOT_FOUND", "来源已失效，请重新搜索"),
+    "invalid_arguments": ("TOOL_INVALID_ARGUMENTS", "请检查工具查询参数"),
+    "upstream_error": ("CONNECTOR_UPSTREAM_ERROR", "上游服务未能完成请求"),
+}
+CONNECTOR_PHASES = {
+    "invalid_arguments": "request_validation",
+    "invalid_output": "response_validation",
+    "not_logged_in": "auth",
+    "permission_denied": "auth",
+    "auth_failed": "auth",
+    "missing_api_key": "auth",
+    "timeout": "transport",
+    "network_error": "transport",
+    "upstream_error": "upstream_business",
 }
 
 
@@ -194,6 +212,7 @@ class ToolExecutor:
         days: int | None = None,
         *,
         from_statuses: tuple[str, ...] = ("running", "awaiting_approval"),
+        diagnostics: Mapping[str, object] | None = None,
     ) -> None:
         """只更新当前运行的审计，成功提交前再次检查权限。
 
@@ -204,21 +223,44 @@ class ToolExecutor:
             error_code: 安全错误码。
             days: 旧运行统计字段。
             from_statuses: 允许迁移的起始状态。
+            diagnostics: 从适配器取得的有界诊断字段。
         """
         async with self.factory.begin() as session:
             if status == "completed":
                 await self._scope(session)
-            await session.execute(
-                update(ToolCall)
-                .where(
-                    ToolCall.id == identifier,
-                    ToolCall.run_id == self.run_id,
-                    ToolCall.status.in_(from_statuses),
+            now = datetime.now(UTC)
+            row = (
+                await session.execute(
+                    update(ToolCall)
+                    .where(
+                        ToolCall.id == identifier,
+                        ToolCall.run_id == self.run_id,
+                        ToolCall.status.in_(from_statuses),
+                    )
+                    .values(status=status, days=days, result=result, error_code=error_code, finished_at=now)
+                    .returning(ToolCall.tool_name, ToolCall.created_at)
                 )
-                .values(status=status, days=days, result=result, error_code=error_code, finished_at=datetime.now(UTC))
-            )
+            ).one_or_none()
+        if row is None:
+            return
+        tool_name, created_at = row
+        spec = self.assembly.tool_map.get(tool_name)
+        connector_key = spec.connector_key if spec is not None else None
+        is_model = tool_name == "model_request"
+        emit_system_log(
+            component="model" if is_model else "connector" if connector_key is not None else "tool",
+            event="model_finished" if is_model else "tool_finished",
+            outcome="success" if status == "completed" else "error" if status == "failed" else "warning",
+            run_id=self.run_id,
+            tool_call_id=identifier,
+            connector_key=connector_key,
+            tool_name=tool_name,
+            error_code=error_code,
+            duration_ms=max(0.0, round((now - created_at).total_seconds() * 1000, 2)),
+            details=diagnostics,
+        )
 
-    def _context(self, scope: ResourceScope, conversation_id: UUID) -> ToolContext:
+    def _context(self, scope: ResourceScope, conversation_id: UUID, tool_call_id: UUID | None = None) -> ToolContext:
         """构造单次调用的可信上下文。
 
         Args:
@@ -235,6 +277,7 @@ class ToolExecutor:
             run_id=self.run_id,
             conversation_id=conversation_id,
             scope=scope,
+            tool_call_id=tool_call_id,
             knowledge_service=self.knowledge_service,
             schedule_store=self.schedule_store,
             assembly=self.assembly,
@@ -315,9 +358,18 @@ class ToolExecutor:
             async with asyncio.timeout(spec.timeout_seconds):
                 async with self.factory() as session:
                     scope, conversation_id = await self._scope_row(session)
+                    if approval_approved:
+                        # 管理员可能在成员查看审批卡期间停用了工具。
+                        enabled = await session.scalar(
+                            select(WorkspaceToolPolicy.enabled).filter_by(
+                                workspace_id=scope.workspace_id, tool_key=name
+                            )
+                        )
+                        if enabled is False:
+                            raise ApplicationError("TOOL_NOT_ALLOWED", "当前空间已停用此工具", 403)
                 if not spec.allows_user(scope.user_id):
                     raise ApplicationError("TOOL_NOT_ALLOWED", "当前工具未获授权", 403)
-                result = await spec.handler(self._context(scope, conversation_id), arguments)
+                result = await spec.handler(self._context(scope, conversation_id, identifier), arguments)
             audit = spec.audit(arguments, result)
             raw_days = getattr(arguments, "days", None)
             days = raw_days if isinstance(raw_days, int) else None
@@ -326,6 +378,9 @@ class ToolExecutor:
                 await self.approval_service.mark_executed(identifier)
             return self._envelope(True, identifier, spec.risk, result)
         except asyncio.CancelledError:
+            # 停机和用户取消都会中断协程，由运行终态决定批准记录是否可恢复。
+            if approval_approved and name == "create_scheduled_task":
+                raise
             if approval_approved and self.approval_service is not None:
                 await self.approval_service.mark_failed(identifier)
             raw_days = getattr(arguments, "days", None)
@@ -336,13 +391,17 @@ class ToolExecutor:
             if approval_approved and self.approval_service is not None:
                 await self.approval_service.mark_failed(identifier)
             error_message: str | None = None
+            diagnostics: Mapping[str, object] | None = None
             if isinstance(exc, ConnectorError):
                 # 仅公开白名单分类和固定提示，CLI stderr 可能含账号信息或凭证。
                 code, error_message = CONNECTOR_ERRORS.get(exc.code, ("TOOL_EXECUTION_FAILED", None))
+                diagnostics = exc.diagnostics or {"phase": CONNECTOR_PHASES.get(exc.code)}
             elif isinstance(exc, ValidationError):
                 code = "TOOL_INVALID_ARGUMENTS"
+                diagnostics = {"phase": "request_validation"}
             elif isinstance(exc, TimeoutError):
                 code = "TOOL_TIMEOUT"
+                diagnostics = {"phase": "transport"}
             elif isinstance(exc, ApplicationError):
                 code = exc.code
             else:
@@ -356,6 +415,7 @@ class ToolExecutor:
                 code,
                 days,
                 from_statuses=("running", "awaiting_approval"),
+                diagnostics=diagnostics,
             )
             if code in ACCESS_CODES:
                 raise ApplicationError("ACCESS_REVOKED", "工具执行权限已失效", 403) from exc

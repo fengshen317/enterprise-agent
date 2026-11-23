@@ -183,7 +183,7 @@ class SkillService:
         """
         async with self.factory.begin() as session:
             role = await self._role(session, scope)
-            skill = await self._readable(session, scope, skill_id)
+            skill = await self._readable(session, scope, skill_id, lock=True)
             if not self._can_manage(skill, scope, role):
                 raise ApplicationError("SKILL_ACCESS_DENIED", "无权修改该技能", 403)
             if body.key != skill.key:
@@ -202,13 +202,16 @@ class SkillService:
             await session.flush()
             return await self._view(session, skill, scope, role, include_content=True)
 
-    async def publish_skill(self, scope: ResourceScope, skill_id: UUID, version: int) -> SkillView:
+    async def publish_skill(
+        self, scope: ResourceScope, skill_id: UUID, version: int, *, private_draft_only: bool = False
+    ) -> SkillView:
         """发布指定版本，使新 Agent 可以绑定。
 
         Args:
             scope: 可信用户和空间。
             skill_id: 技能标识。
             version: 目标版本号。
+            private_draft_only: 对话审批只允许发布本人私有技能的当前草稿。
 
         Returns:
             发布后的技能。
@@ -218,7 +221,11 @@ class SkillService:
         """
         async with self.factory.begin() as session:
             role = await self._role(session, scope)
-            skill = await self._readable(session, scope, skill_id)
+            skill = await self._readable(session, scope, skill_id, lock=True)
+            if private_draft_only and (skill.visibility != "private" or skill.owner_user_id != scope.user_id):
+                raise ApplicationError("SKILL_ACCESS_DENIED", "仅可发布本人的私有技能", 403)
+            if private_draft_only and (skill.status != "draft" or skill.current_version != version):
+                raise ApplicationError("SKILL_VERSION_CONFLICT", "指定版本已不是当前草稿", 409)
             if not self._can_manage(skill, scope, role):
                 raise ApplicationError("SKILL_ACCESS_DENIED", "无权发布该技能", 403)
             row = await session.scalar(
@@ -247,7 +254,7 @@ class SkillService:
         """
         async with self.factory.begin() as session:
             role = await self._role(session, scope)
-            skill = await self._readable(session, scope, skill_id)
+            skill = await self._readable(session, scope, skill_id, lock=True)
             if not self._can_manage(skill, scope, role):
                 raise ApplicationError("SKILL_ACCESS_DENIED", "无权归档该技能", 403)
             skill.status = "archived"
@@ -290,13 +297,16 @@ class SkillService:
                 for row in rows
             ]
 
-    async def _readable(self, session: AsyncSession, scope: ResourceScope, skill_id: UUID) -> Skill:
+    async def _readable(
+        self, session: AsyncSession, scope: ResourceScope, skill_id: UUID, *, lock: bool = False
+    ) -> Skill:
         """读取技能并应用 visible 规则。
 
         Args:
             session: 当前事务。
             scope: 当前用户和空间。
             skill_id: 技能标识。
+            lock: 修改前串行化版本及可见性检查。
 
         Returns:
             技能记录。
@@ -304,13 +314,12 @@ class SkillService:
         Raises:
             ApplicationError: 不存在或不可读。
         """
-        skill = await session.scalar(
-            select(Skill).where(
-                Skill.id == skill_id,
-                Skill.workspace_id == scope.workspace_id,
-                or_(Skill.visibility == "workspace", Skill.owner_user_id == scope.user_id),
-            )
+        query = select(Skill).where(
+            Skill.id == skill_id,
+            Skill.workspace_id == scope.workspace_id,
+            or_(Skill.visibility == "workspace", Skill.owner_user_id == scope.user_id),
         )
+        skill = await session.scalar(query.with_for_update() if lock else query)
         if skill is None:
             raise ApplicationError("SKILL_NOT_FOUND", "技能不存在", 404)
         return skill
