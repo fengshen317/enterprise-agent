@@ -112,6 +112,7 @@ const objectLinks = computed(() => calls.value.flatMap(call => {
 function toolLabel(call: ToolCall): string {
   const names: Record<string, string> = {
     get_my_run_stats: '我的运行统计', search_knowledge_base: '知识库检索',
+    inspect_analysis_data: '检查报表数据', run_python_analysis: '运行 Python 生成报表',
     auto_knowledge_retrieval: '自动检索知识库', list_knowledge_bases: '知识库目录',
     load_skill: '加载技能',
   }
@@ -315,13 +316,13 @@ onBeforeUnmount(() => { alive = false; generation++; clearTimeout(timer); clearI
 @use '../styles/variables' as *;
 .tool-calls {
   margin: 8px 0 16px; font-size: 12px;
-  &[open] { padding: 8px 12px; border-left: 2px solid $line; background: #edf1e8; }
+  &[open] { padding: 8px 12px; border-left: 2px solid $line; background: $sidebar; }
   &__objects { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 8px 0 12px; font-size: 13px; a { color: $green; } }
   &__heading { color: $muted; cursor: pointer; padding: 3px 0; span { color: $green; } }
   &__list { padding: 0; margin: 12px 0 0; list-style: none; }
   &__item + &__item { margin-top: 14px; padding-top: 12px; border-top: 1px solid $line; }
-  &__line { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; color: $green; em { color: #9a6a35; font-style: normal; font-size: 10px; } }
-  &__status--failed, &__error { color: #934b40; }
+  &__line { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; color: $green; em { color: $log-warning; font-style: normal; font-size: 10px; } }
+  &__status--failed, &__error { color: $log-error; }
   &__result, &__hint, &__error { line-height: 1.9; margin: 8px 0 0; overflow-wrap: anywhere; }
   &__hint { color: $muted; }
   &__diagnostic {

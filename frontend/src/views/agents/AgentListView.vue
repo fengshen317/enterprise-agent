@@ -30,7 +30,6 @@ onMounted(load)
   <section class="agents">
     <header class="agents__heading">
       <div>
-        <span class="agents__eyebrow">AGENT PROFILES</span>
         <h1>智能体</h1>
         <p>为不同任务配置大脑：职责指令、工具、技能与知识库范围。每个对话可以选择一个 Agent。</p>
       </div>
@@ -115,16 +114,15 @@ onMounted(load)
 @use '../../styles/variables' as *;
 .agents {
   max-width: 1280px; margin: 0 auto; padding: 40px clamp(20px, 4vw, 56px) 70px;
-  &__heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; padding-bottom: 24px; border-bottom: 1px solid $line; h1 { font-size: clamp(28px, 3vw, 40px); font-weight: 400; margin: 10px 0; } p { color: $muted; font-size: 12px; line-height: 1.9; max-width: 680px; } }
-  &__eyebrow { font-size: 9px; letter-spacing: 2px; color: #859576; }
-  &__primary { background: #31533d; color: #edf4e4; border: 0; border-radius: 5px; padding: 11px 17px; font-size: 12px; white-space: nowrap; }
+  &__heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; padding-bottom: 24px; border-bottom: 1px solid $line; h1 { @include page-title; margin-bottom: 7px; } p { color: $muted; font-size: 12px; line-height: 1.9; max-width: 680px; } }
+  &__primary { background: $green; color: $on-green; border: 0; border-radius: $control-radius; padding: 10px 15px; font-size: 13px; font-weight: 650; white-space: nowrap; &:enabled:hover { background: $green-hover; } }
   &__hint { color: $muted; font-size: 12px; margin-top: 22px; }
-  &__empty { border: 1px dashed #cbd7be; border-radius: 8px; padding: 48px 24px; text-align: center; margin-top: 24px; span { font-size: 36px; color: #8aa071; } h2 { font-size: 20px; font-weight: 400; margin: 14px 0 8px; } p { color: $muted; font-size: 12px; } }
-  &__table-wrap { overflow-x: auto; margin-top: 24px; border: 1px solid $line; border-radius: 8px; background: #fff; }
-  &__table { width: 100%; border-collapse: collapse; font-size: 12px; th { text-align: left; padding: 12px 14px; background: $paper; color: $muted; font-weight: 500; white-space: nowrap; } td { padding: 14px; border-top: 1px solid #edf0e9; vertical-align: top; } strong { font-weight: 500; } small { display: block; color: $muted; margin-top: 5px; font-size: 11px; line-height: 1.6; } }
+  &__empty { border: 1px dashed $line; border-radius: $panel-radius; background: $surface; padding: 40px 24px; text-align: center; margin-top: 24px; span { font-size: 36px; color: $green; } h2 { font-size: 20px; font-weight: 400; margin: 14px 0 8px; } p { color: $muted; font-size: 12px; } }
+  &__table-wrap { overflow-x: auto; margin-top: 24px; border: 1px solid $line; border-radius: $panel-radius; background: $surface; }
+  &__table { width: 100%; border-collapse: collapse; font-size: 12px; th { text-align: left; padding: 12px 14px; background: $sidebar; color: $muted; font-weight: 600; white-space: nowrap; } td { padding: 14px; border-top: 1px solid $line; vertical-align: top; } tbody tr:hover, tbody tr:focus-within { background: $paper; } strong { font-weight: 600; } small { display: block; color: $muted; margin-top: 5px; font-size: 11px; line-height: 1.6; } }
   &__row-actions { white-space: nowrap; button { border: 0; background: none; color: $green; font-size: 12px; padding: 2px 7px; text-decoration: underline; } }
-  &__error { color: #8b493c; background: #faf0e8; border: 1px solid #e8d7c7; padding: 10px 12px; border-radius: 6px; font-size: 12px; margin-top: 20px; }
-  &__boundary { border-left: 2px solid #cfdcc4; padding-left: 12px; color: $muted; font-size: 11px; line-height: 1.9; margin-top: 20px; }
+  &__error { color: $log-error; background: $log-error-bg; border: 1px solid $line; padding: 10px 12px; border-radius: 6px; font-size: 12px; margin-top: 20px; }
+  &__boundary { border-left: 2px solid $line; padding-left: 12px; color: $muted; font-size: 11px; line-height: 1.9; margin-top: 20px; }
 }
 @media (max-width: 700px) { .agents__heading { align-items: flex-start; flex-direction: column; } }
 </style>

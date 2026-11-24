@@ -24,6 +24,7 @@ from app.schemas.chat import (
     RunCreate,
     RunSnapshot,
 )
+from app.schemas.report import ReportView
 from app.schemas.tools import ToolCallView
 from app.services.agents import AgentService
 from app.services.approvals import ApprovalService
@@ -227,6 +228,19 @@ async def attachment_file(
 ) -> Response:
     """只对经验证的栅格图片开放内联预览，其余文件始终下载。"""
     return attachment_response(await runtime.store.attachment(scope, conversation_id, attachment_id), download)
+
+
+@router.get("/conversations/{conversation_id}/reports/{report_id}", response_model=ReportView)
+async def conversation_report(
+    conversation_id: UUID,
+    report_id: UUID,
+    scope: ScopeDependency,
+    runtime: RuntimeDependency,
+    response: Response,
+) -> ReportView:
+    """从当前对话读取含私有源数据的报表。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await runtime.store.report(scope, conversation_id, report_id)
 
 
 @router.get("/runs/{run_id}", response_model=RunSnapshot)

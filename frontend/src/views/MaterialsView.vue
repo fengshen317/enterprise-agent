@@ -241,23 +241,24 @@ onBeforeUnmount(() => { alive = false })
   max-width: 1180px; margin: 0 auto; padding: 36px clamp(16px, 4vw, 54px) 50px;
   &__heading, &__search, &__pagination, &__row, &__detail, &__links { display: flex; align-items: center; gap: 12px; }
   &__heading { justify-content: space-between; margin-bottom: 24px; }
-  h1 { margin: 0; font-size: clamp(26px, 4vw, 39px); letter-spacing: -.04em; }
+  h1 { @include page-title; }
   h2 { margin: 0; overflow-wrap: anywhere; font-size: 17px; }
   p { color: $muted; }
   &__heading p { margin: 7px 0 0; line-height: 1.65; font-size: 14px; }
-  &__library, &__detail { border: 1px solid $line; border-radius: 10px; background: white; }
+  &__library, &__detail { border: 1px solid $line; border-radius: $panel-radius; background: $surface; }
   &__detail { padding: 18px; margin-bottom: 14px; align-items: flex-start; }
   &__detail img { max-height: 145px; max-width: min(42%, 180px); object-fit: contain; border-radius: 6px; }
-  &__search { padding: 13px 16px; border-bottom: 1px solid $line; }
-  &__search input { width: min(100%, 410px); min-width: 0; border: 1px solid $line; padding: 9px 11px; border-radius: 6px; font: inherit; font-size: 13px; color: $ink; }
+  &__search { padding: 13px 16px; border-bottom: 1px solid $line; border-radius: $panel-radius $panel-radius 0 0; background: $sidebar; }
+  &__search input { width: min(100%, 410px); min-width: 0; border: 1px solid $line; padding: 9px 11px; border-radius: 6px; font: inherit; font-size: 13px; color: $ink; background: $surface; }
   button { background: $paper; border: 1px solid $line; padding: 8px 11px; border-radius: 6px; color: $green; white-space: nowrap; font: inherit; font-size: 13px; }
+  button:enabled:hover { border-color: $green; }
   button:disabled { opacity: .55; }
-  button.materials__primary { background: $green; border-color: $green; color: white; min-height: 38px; }
+  button.materials__primary { background: $green; border-color: $green; color: $on-green; min-height: 38px; font-weight: 650; &:enabled:hover { background: $green-hover; } }
   &__list { margin: 0; padding: 0; list-style: none; }
-  &__row { padding: 13px 16px; }
+  &__row { padding: 13px 16px; &:hover, &:focus-within { background: $paper; } }
   &__row + &__row { border-top: 1px solid $line; }
   &__row time { margin-left: auto; color: $muted; font-size: 12px; white-space: nowrap; }
-  &__file-icon { display: grid; place-items: center; flex: 0 0 38px; height: 38px; border-radius: 7px; background: $paper; color: $green; }
+  &__file-icon { display: grid; place-items: center; flex: 0 0 38px; height: 38px; border-radius: 8px; background: $selection; color: $green; }
   &__info { min-width: 0; }
   &__info p { margin: 4px 0 0; font-size: 12px; }
   &__filename { color: $ink; overflow-wrap: anywhere; font-weight: 650; text-decoration: none; }
@@ -268,8 +269,8 @@ onBeforeUnmount(() => { alive = false })
   &__links { flex-wrap: wrap; margin-top: 10px; font-size: 13px; }
   &__pagination { justify-content: end; padding: 12px 16px; border-top: 1px solid $line; font-size: 13px; }
   &__empty, &__error, &__notice { padding: 12px 16px; font-size: 13px; }
-  p.materials__error { color: #934b40; background: #faeee6; }
-  p.materials__notice { color: $green; background: #eaf0e1; }
+  p.materials__error { color: $log-error; background: $log-error-bg; }
+  p.materials__notice { color: $green; background: $selection; }
   @media (max-width: 600px) { &__heading { align-items: flex-start; flex-direction: column; } &__row { flex-wrap: wrap; } }
 }
 </style>

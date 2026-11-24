@@ -17,7 +17,7 @@
     justify-content: space-between;
     gap: 20px;
     margin-bottom: 25px;
-    h1 { font-size: clamp(30px, 3.1vw, 44px); line-height: 1.16; letter-spacing: -.06em; }
+    h1 { @include page-title; }
     p { margin-top: 10px; color: $log-muted; }
   }
   &__button {
@@ -26,10 +26,10 @@
     justify-content: center;
     min-height: 36px;
     padding: 7px 12px;
-    border: 1px solid #cadbd0;
-    border-radius: 7px;
+    border: 1px solid $line;
+    border-radius: $control-radius;
     color: $ink;
-    background: white;
+    background: $surface;
     text-decoration: none;
     white-space: nowrap;
     &:hover:not(:disabled) { border-color: $green; background: $log-success-bg; }
@@ -38,8 +38,8 @@
       background: $green;
       border-color: $green;
       font-weight: 650;
-      color: white;
-      &:hover:not(:disabled) { color: $ink; }
+      color: $on-green;
+      &:hover:not(:disabled) { background: $green-hover; }
     }
   }
   &__summary {
@@ -47,8 +47,8 @@
     grid-template-columns: repeat(4, minmax(0, 1fr));
     overflow: clip;
     border: 1px solid $line;
-    border-radius: 10px;
-    background: #fbfcf8;
+    border-radius: $panel-radius;
+    background: $surface;
     margin-bottom: 23px;
   }
   &__summary-cell {
@@ -62,8 +62,8 @@
     color: $ink;
     text-align: left;
     & + & { border-left: 1px solid $line; }
-    &[aria-pressed='true'] { background: $log-success-bg; border-bottom-color: $green; }
-    &:hover { background: #edf3eb; }
+    &[aria-pressed='true'] { background: $selection; border-bottom-color: $green; }
+    &:hover { background: $sidebar; }
     &:focus-visible { outline-offset: -3px; }
     strong { font: 650 27px/1.2 $log-mono; font-variant-numeric: tabular-nums; }
   }
@@ -79,7 +79,7 @@
     &[data-outcome='error'] { color: $log-error; }
     &[data-outcome='warning'] { color: $log-warning; }
   }
-  &__list { overflow: clip; border: 1px solid $line; border-radius: 11px; background: white; }
+  &__list { overflow: clip; border: 1px solid $line; border-radius: $panel-radius; background: $surface; }
   &__list-heading {
     display: flex;
     justify-content: space-between;
@@ -97,9 +97,9 @@
     input, select {
       min-width: 0;
       min-height: 37px;
-      border: 1px solid #d7e2da;
+      border: 1px solid $line;
       border-radius: 6px;
-      background: #fcfdfb;
+      background: $surface;
       padding: 5px 9px;
       font-size: 12px;
     }
@@ -114,7 +114,7 @@
     left: 11px;
     width: 11px;
     height: 11px;
-    border: 1.5px solid #61796c;
+    border: 1.5px solid $muted;
     border-radius: 50%;
     pointer-events: none;
     &::after {
@@ -124,7 +124,7 @@
       left: 7px;
       width: 6px;
       height: 1.5px;
-      background: #61796c;
+      background: $muted;
       transform: rotate(45deg);
       transform-origin: left center;
     }
@@ -134,19 +134,19 @@
     border-collapse: collapse;
     text-align: left;
     table-layout: fixed;
-    th { padding: 10px 12px; font-size: 11px; color: #52695c; background: #edf2ea; border-block: 1px solid #e3eae1; }
+    th { padding: 10px 12px; font-size: 11px; color: $muted; background: $sidebar; border-block: 1px solid $line; }
     th:first-child, td:first-child { padding-left: 18px; }
     th:nth-child(1) { width: 113px; }
     th:nth-child(2) { width: 121px; }
     th:nth-child(4) { width: 92px; }
     th:nth-child(5) { width: 79px; }
     th:nth-child(6) { width: 142px; }
-    td { height: 57px; padding: 7px 12px; border-bottom: 1px solid #edf0eb; }
+    td { height: 57px; padding: 7px 12px; border-bottom: 1px solid $line; }
     td:last-child { padding-right: 18px; }
   }
   &__row {
     cursor: pointer;
-    &:hover, &:focus-within { background: #f1f7f1; }
+    &:hover, &:focus-within { background: $paper; }
     &:first-child[data-outcome='error'] {
       background: #fffbf6;
       &:hover, &:focus-within { background: $log-error-bg; }
@@ -167,9 +167,9 @@
     font-weight: 650;
     &:hover { color: $green; text-decoration: underline; text-underline-offset: 3px; }
   }
-  &__id { font: 11px/1.5 $log-mono; color: #52685b; white-space: nowrap; }
+  &__id { font: 11px/1.5 $log-mono; color: $muted; white-space: nowrap; }
   &__token { display: block; overflow: hidden; text-overflow: ellipsis; }
-  &__arrow { float: right; color: #6f8577; }
+  &__arrow { float: right; color: $muted; }
   &__badge {
     display: inline-flex;
     align-items: center;
@@ -218,10 +218,10 @@
     padding: 0;
     border: 0;
     color: $ink;
-    background: white;
-    box-shadow: -12px 0 40px #19382f24;
+    background: $surface;
+    box-shadow: -12px 0 40px rgba($ink, .14);
     &[open] { display: flex; flex-direction: column; }
-    &::backdrop { background: #163a2b50; }
+    &::backdrop { background: rgba($ink, .32); }
   }
   &__drawer-header {
     display: flex;
@@ -231,7 +231,7 @@
     gap: 12px;
     padding: 20px 24px 17px;
     border-bottom: 1px solid $line;
-    background: #fbfcf8;
+    background: $surface;
     h2 { font-size: 22px; line-height: 1.35; letter-spacing: -.035em; }
   }
   &__breadcrumb { margin-bottom: 6px; color: $log-muted; font-size: 12px; }
@@ -249,10 +249,10 @@
   }
   &__diagnosis {
     padding: 13px 14px;
-    border: 1px solid #ecdcd0;
+    border: 1px solid $line;
     border-radius: 8px;
-    background: #fff8f0;
-    &[data-outcome='success'] { border-color: #d8e6da; background: #f1f7ee; }
+    background: $log-error-bg;
+    &[data-outcome='success'] { border-color: $line; background: $log-success-bg; }
   }
   &__diagnosis &__error-code { margin-top: 3px; font-weight: 650; }
   dl#{&}__metrics {
@@ -269,7 +269,7 @@
     list-style: none;
     margin: 0 0 0 4px;
     padding: 0 0 0 12px;
-    border-left: 1px solid #d7e4da;
+    border-left: 1px solid $line;
     li {
       position: relative;
       padding-bottom: 12px;
@@ -281,9 +281,9 @@
         left: -16px;
         width: 7px;
         height: 7px;
-        border: 1px solid #6b967c;
+        border: 1px solid $green;
         border-radius: 50%;
-        background: white;
+        background: $surface;
       }
       &[data-outcome='error']::before { background: $log-error; border-color: $log-error; }
       &[data-outcome='warning']::before { background: $log-warning; border-color: $log-warning; }
@@ -309,7 +309,7 @@
     gap: 8px;
     padding: 12px 24px;
     border-top: 1px solid $line;
-    background: #fbfcf8;
+    background: $surface;
   }
   &__feedback { margin-right: auto; color: $green; font-size: 11px; }
   &__feedback:empty { display: none; }

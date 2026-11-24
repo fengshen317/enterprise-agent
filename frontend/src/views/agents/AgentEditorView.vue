@@ -126,7 +126,6 @@ onMounted(load)
         >
           ← 返回智能体
         </button>
-        <span class="agent-editor__eyebrow">AGENT PROFILE</span>
         <h1>{{ agentId ? form.name || 'Agent 配置' : '新建 Agent' }}</h1>
         <p>配置大脑的职责、工具、技能和知识范围。保存后即可在新建对话时选择。</p>
       </div>
@@ -366,24 +365,23 @@ onMounted(load)
 @use '../../styles/variables' as *;
 .agent-editor {
   max-width: 1180px; margin: 0 auto; padding: 40px clamp(20px, 4vw, 56px) 70px;
-  &__heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; padding-bottom: 22px; border-bottom: 1px solid $line; h1 { font-size: clamp(26px, 3vw, 38px); font-weight: 400; margin: 8px 0; } p { color: $muted; font-size: 12px; line-height: 1.9; max-width: 680px; } }
+  &__heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; padding-bottom: 22px; border-bottom: 1px solid $line; h1 { @include page-title; margin-bottom: 7px; } p { color: $muted; font-size: 12px; line-height: 1.9; max-width: 680px; } }
   &__back { border: 0; background: none; color: $green; font-size: 12px; padding: 0 0 12px; }
-  &__eyebrow { font-size: 9px; letter-spacing: 2px; color: #859576; }
-  &__primary { background: #31533d; color: #edf4e4; border: 0; border-radius: 5px; padding: 11px 18px; font-size: 12px; white-space: nowrap; }
+  &__primary { background: $green; color: $on-green; border: 0; border-radius: $control-radius; padding: 10px 15px; font-size: 13px; font-weight: 650; white-space: nowrap; &:enabled:hover { background: $green-hover; } }
   &__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 24px; }
-  &__card { border: 1px solid $line; background: #fff; border-radius: 8px; padding: 20px; h2 { font-size: 14px; color: $green; margin-bottom: 14px; font-weight: 500; } &--wide { grid-column: 1 / -1; } }
-  &__fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; label { font-size: 11px; color: $green; display: flex; flex-direction: column; gap: 6px; } input, select, textarea { border: 1px solid #d6dfd0; background: $paper; border-radius: 4px; padding: 8px; font: inherit; color: $ink; } }
+  &__card { border: 1px solid $line; background: $surface; border-radius: $panel-radius; padding: 20px; h2 { font-size: 16px; color: $ink; margin-bottom: 14px; font-weight: 500; } &--wide { grid-column: 1 / -1; } }
+  &__fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; label { font-size: 11px; color: $green; display: flex; flex-direction: column; gap: 6px; } input, select, textarea { border: 1px solid $line; background: $paper; border-radius: 4px; padding: 8px; font: inherit; color: $ink; } }
   &__wide { grid-column: 1 / -1; }
-  &__instructions { width: 100%; border: 1px solid #d6dfd0; background: $paper; border-radius: 5px; padding: 11px; font: inherit; font-size: 12px; line-height: 1.8; color: $ink; resize: vertical; }
-  &__behaviour { display: flex; gap: 20px; margin-top: 12px; font-size: 12px; color: #516b42; }
+  &__instructions { width: 100%; border: 1px solid $line; background: $paper; border-radius: 5px; padding: 11px; font: inherit; font-size: 12px; line-height: 1.8; color: $ink; resize: vertical; }
+  &__behaviour { display: flex; gap: 20px; margin-top: 12px; font-size: 12px; color: $green; }
   &__options { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 9px; }
-  &__option { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: start; gap: 9px; border: 1px solid #e0e6da; border-radius: 6px; padding: 10px; font-size: 12px; span { display: flex; flex-direction: column; gap: 4px; } small { color: $muted; font-size: 10px; line-height: 1.6; } em { color: #9a6a35; font-size: 10px; font-style: normal; text-align: right; } &--disabled { opacity: .5; } }
-  &__skill { display: flex; justify-content: space-between; align-items: center; gap: 10px; border-bottom: 1px solid #edf0e9; padding: 9px 0; font-size: 12px; label { display: flex; gap: 8px; align-items: center; } small { color: $muted; font-size: 10px; } select { border: 1px solid #d6dfd0; background: $paper; border-radius: 4px; padding: 5px; font-size: 11px; } }
+  &__option { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: start; gap: 9px; border: 1px solid $line; border-radius: 6px; padding: 10px; font-size: 12px; span { display: flex; flex-direction: column; gap: 4px; } small { color: $muted; font-size: 10px; line-height: 1.6; } em { color: $log-warning; font-size: 10px; font-style: normal; text-align: right; } &--disabled { opacity: .5; } }
+  &__skill { display: flex; justify-content: space-between; align-items: center; gap: 10px; border-bottom: 1px solid $line; padding: 9px 0; font-size: 12px; label { display: flex; gap: 8px; align-items: center; } small { color: $muted; font-size: 10px; } select { border: 1px solid $line; background: $paper; border-radius: 4px; padding: 5px; font-size: 11px; } }
   &__radio { display: block; font-size: 12px; margin: 8px 0; }
   &__kb-list { display: grid; gap: 7px; margin-top: 10px; font-size: 12px; label { display: flex; gap: 7px; align-items: center; } small { color: $muted; font-size: 10px; } }
   &__hint { color: $muted; font-size: 11px; line-height: 1.8; margin-bottom: 10px; }
-  &__error { color: #8b493c; background: #faf0e8; border: 1px solid #e8d7c7; padding: 10px 12px; border-radius: 6px; font-size: 12px; margin-top: 18px; }
-  &__notice { color: #386b4f; background: #edf4e6; border: 1px solid #d6e5c9; padding: 10px 12px; border-radius: 6px; font-size: 12px; margin-top: 18px; }
+  &__error { color: $log-error; background: $log-error-bg; border: 1px solid $line; padding: 10px 12px; border-radius: 6px; font-size: 12px; margin-top: 18px; }
+  &__notice { color: $log-success; background: $log-success-bg; border: 1px solid $line; padding: 10px 12px; border-radius: 6px; font-size: 12px; margin-top: 18px; }
 }
 @media (max-width: 800px) { .agent-editor__grid { grid-template-columns: minmax(0, 1fr); } .agent-editor__heading { flex-direction: column; align-items: flex-start; } }
 </style>

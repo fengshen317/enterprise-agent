@@ -7,7 +7,7 @@ import ConnectorConfigDialog from '../connectors/ConnectorConfigDialog.vue'
 import * as skillApi from '../../api/skills'
 import * as toolApi from '../../api/tools'
 import { useAuthStore } from '../../stores/auth'
-import { legacyConnectorsRoute } from './capabilityRoutes'
+import { legacyConnectorsRoute, legacyPluginsRoute } from './capabilityRoutes'
 import * as connectorApi from '../../api/connectors'
 
 vi.mock('../../api/tools', () => ({ listTools: vi.fn(), setToolEnabled: vi.fn() }))
@@ -42,16 +42,18 @@ beforeEach(() => {
   vi.mocked(connectorApi.listBuiltinConnectors).mockResolvedValue([])
 })
 
-function setup() {
+function setup(role: 'admin' | 'member' = 'admin') {
   const pinia = createPinia()
   const auth = useAuthStore(pinia)
-  auth.session = { user: { id: 'u1', username: 'admin', display_name: '管理员' }, csrf_token: 'csrf', expires_at: '', workspaces: [{ id: 'w1', slug: 'default', name: '测试空间', status: 'active', role: 'admin' }] }
+  auth.session = { user: { id: 'u1', username: 'tester', display_name: '测试用户' }, csrf_token: 'csrf', expires_at: '', workspaces: [{ id: 'w1', slug: 'default', name: '测试空间', status: 'active', role }] }
   auth.selectedWorkspaceId = 'w1'
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
       { path: '/capabilities', component: CapabilityCenterView },
+      { path: '/admin/plugins', component: CapabilityCenterView },
       legacyConnectorsRoute,
+      legacyPluginsRoute,
       { path: '/capabilities/skills/new', component: { template: '<div>新建技能</div>' } },
       { path: '/capabilities/skills/:skillId', component: { template: '<div>技能</div>' } },
     ],
@@ -116,5 +118,36 @@ it('连接器可筛选它提供的工具，工具来源可返回连接器配置'
   await flushPromises()
   expect(router.currentRoute.value.query).toMatchObject({ tab: 'connectors', connector: 'test' })
   expect(wrapper.find('connector-config-dialog-stub').exists()).toBe(true)
+  wrapper.unmount()
+})
+
+it('管理员可在能力中心切换插件管理，旧插件目录保留详情深链接', async () => {
+  const { pinia, router } = setup()
+  await router.push('/plugins?connector=test#catalog')
+  const wrapper = mount(RouterView, { global: { plugins: [pinia, router], stubs: { ConnectorConfigDialog: true } } })
+  await flushPromises()
+  expect(router.currentRoute.value.fullPath).toBe('/capabilities?connector=test&tab=connectors#catalog')
+  const nav = wrapper.get('[aria-label="能力分类"]')
+  expect(nav.get('[aria-current="page"]').text()).toBe('插件')
+  await nav.findAll('button').find(button => button.text() === '插件管理')!.trigger('click')
+  await flushPromises()
+  expect(router.currentRoute.value.path).toBe('/admin/plugins')
+  expect(nav.get('[aria-current="page"]').text()).toBe('插件管理')
+  expect(wrapper.findAll('h1').map(heading => heading.text())).toEqual(['能力中心'])
+  expect(wrapper.text()).toContain('启停范围为全部工作空间')
+  expect(toolApi.listTools).not.toHaveBeenCalled()
+  await nav.findAll('button').find(button => button.text() === '插件')!.trigger('click')
+  await flushPromises()
+  expect(router.currentRoute.value.fullPath).toBe('/capabilities?tab=connectors')
+  wrapper.unmount()
+})
+
+it('普通成员只看到工具、技能和插件入口', async () => {
+  const { pinia, router } = setup('member')
+  await router.push('/capabilities?tab=management')
+  const wrapper = mount(RouterView, { global: { plugins: [pinia, router] } })
+  await flushPromises()
+  expect(wrapper.findAll('.capabilities__tabs button').map(button => button.text())).toEqual(['工具', '技能', '插件'])
+  expect(wrapper.find('[aria-label="插件管理"]').exists()).toBe(false)
   wrapper.unmount()
 })

@@ -87,13 +87,17 @@ async function signIn(): Promise<void> {
 <template>
   <main class="login">
     <section class="login__story">
-      <span class="login__brand">≋ 序列</span><div>
-        <p class="login__eyebrow">
-          SEQUENCE / AGENT WORKSPACE
-        </p><h1>让想法有回应。<br />让工作有进展。</h1><p class="login__description">
-          在属于你的工作空间里，<br />连接问题、知识与下一步行动。
+      <div class="login__brand">
+        <span aria-hidden="true">≋</span>序列
+      </div>
+      <div>
+        <p class="login__story-title">
+          企业 Agent 工作台
         </p>
-      </div><span class="login__edition">本地工作台 · 从一个问题，到完整交付</span>
+        <p class="login__description">
+          在工作空间里提问、查找知识，并交给智能体完成任务。
+        </p>
+      </div>
     </section>
     <section class="login__panel">
       <form
@@ -101,10 +105,10 @@ async function signIn(): Promise<void> {
         class="login__form login__form--setup"
         @submit.prevent="submitSetup"
       >
-        <p class="login__eyebrow">
+        <p class="login__setup-label">
           首次部署
         </p>
-        <h2>创建工作台管理员</h2>
+        <h1>创建工作台管理员</h1>
         <p class="login__hint">
           验证部署口令后，创建管理员和默认工作空间。
         </p>
@@ -191,9 +195,7 @@ async function signIn(): Promise<void> {
         class="login__form"
         @submit.prevent="signIn"
       >
-        <p class="login__eyebrow">
-          欢迎回来
-        </p><h2>登录工作台</h2><p class="login__hint">
+        <h1>登录工作台</h1><p class="login__hint">
           使用管理员为你创建的账号继续。
         </p><p
           v-if="notice"
@@ -237,23 +239,60 @@ async function signIn(): Promise<void> {
 
 <style scoped lang="scss">
 @use '../styles/variables' as *;
-.login { min-height: 100dvh; display: grid; grid-template-columns: 48% 1fr;
-  &__story { background: #173b32; color: #e5eedb; padding: 55px 12%; display: flex; flex-direction: column; justify-content: space-between; min-height: 700px; }
-  &__brand { font-size: 30px; letter-spacing: 5px; }
-  &__eyebrow { font-size: 10px; letter-spacing: 2px; color: #91a983; }
-  h1 { font-weight: 400; font-size: clamp(30px, 3.6vw, 52px); line-height: 1.65; margin: 30px 0; letter-spacing: -1px; }
-  &__description { font-size: 13px; color: #b4c9ad; line-height: 2; }
-  &__edition { color: #9eb697; font-size: 10px; letter-spacing: 1px; margin-top: 50px; }
-  &__panel { display: grid; place-items: center; padding: 45px 30px; }
-  &__form { width: min(100%, 360px); h2 { font-size: 30px; font-weight: 400; margin: 18px 0 12px; } label { display: block; margin: 24px 0 10px; font-size: 12px; } input { width: 100%; font: inherit; background: white; border: 1px solid $line; border-radius: 6px; padding: 13px; color: $ink; &:focus { outline: 2px solid #92ae7a; outline-offset: 2px; } } button { margin-top: 28px; width: 100%; border: 0; background: #31533d; color: #eff5e5; border-radius: 6px; padding: 14px; } }
-  &__hint, &__footer { color: $muted; font-size: 12px; line-height: 1.9; }
-  &__footer { margin-top: 22px; font-size: 11px; }
-  &__error { color: #934b40; background: #faeee6; border-radius: 5px; padding: 10px; font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; margin-top: 15px; }
-  &__notice { color: $green; background: $paper; padding: 10px 12px; border-radius: 6px; font-size: 13px; }
+.login {
+  min-height: 100dvh;
+  display: grid;
+  grid-template-columns: minmax(0, 43fr) minmax(0, 57fr);
+
+  &__story {
+    display: grid;
+    grid-template-rows: auto 1fr;
+    align-items: center;
+    gap: 24px;
+    padding: clamp(28px, 6vw, 88px);
+    background: linear-gradient(135deg, $hero-glow, $hero 78%);
+    border-inline-end: 1px solid $line;
+  }
+  &__brand {
+    display: flex; align-items: center; gap: 9px; font-size: 18px; font-weight: 750;
+    span { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 8px; background: $green; color: $on-green; }
+  }
+  &__story-title { @include page-title; }
+  &__description { max-width: 24em; margin-top: 12px; color: $muted; font-size: 15px; line-height: 1.8; }
+  &__setup-label { color: $green; font-size: 12px; margin-bottom: 5px; }
+  &__panel { display: grid; place-items: center; padding: 36px clamp(18px, 5vw, 64px); }
+  &__form {
+    width: min(100%, 420px);
+    padding: clamp(18px, 4vw, 32px);
+    border: 1px solid $line;
+    border-radius: $panel-radius;
+    background: $surface;
+    h1 { @include page-title; font-size: clamp(23px, 2.5vw, 32px); margin-bottom: 8px; }
+    label { display: block; margin: 17px 0 6px; font-size: 13px; font-weight: 600; }
+    input { width: 100%; min-height: 42px; background: $paper; border: 1px solid $line; border-radius: $control-radius; padding: 8px 11px; }
+    button {
+      margin-top: 21px; width: 100%; min-height: 42px; border: 0; background: $green; color: $on-green;
+      border-radius: $control-radius; padding: 8px 12px; font-weight: 650;
+      &:enabled:hover { background: $green-hover; }
+    }
+  }
+  &__hint, &__footer { color: $muted; font-size: 13px; line-height: 1.65; }
+  &__footer { margin-top: 13px; font-size: 12px; }
+  &__error, &__notice { border-radius: $control-radius; padding: 9px 11px; font-size: 13px; margin-top: 13px; overflow-wrap: anywhere; }
+  &__error { color: $log-error; background: $log-error-bg; }
+  &__notice { color: $log-success; background: $log-success-bg; }
   &__form--setup { width: min(100%, 480px); fieldset { margin: 0; padding: 0; border: 0; min-width: 0; } }
   &__setup-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 14px; }
   &__setup-help { color: $muted; margin-top: 10px; font-size: 12px; line-height: 1.7; summary { color: $green; cursor: pointer; } code { display: block; padding: 8px 10px; background: $paper; color: $ink; overflow-wrap: anywhere; } }
 }
-@media (max-width: 760px) { .login { grid-template-columns: 1fr; &__story { min-height: auto; padding: 25px; h1, .login__description, .login__edition { display: none; } } &__panel { padding: 45px 24px; } } }
+@media (max-width: 760px) {
+  .login {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
+    &__story { display: block; padding: 18px; border-inline-end: 0; border-bottom: 1px solid $line; }
+    &__story > :last-child { display: none; }
+    &__panel { place-items: start center; padding-block: 24px; }
+  }
+}
 @media (max-width: 430px) { .login__setup-fields { grid-template-columns: 1fr; } }
 </style>

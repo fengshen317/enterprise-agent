@@ -68,20 +68,20 @@ const summary = computed(() => {
   margin: 10px 0;
   &__toggle {
     display: flex; justify-content: space-between; align-items: center; width: 100%;
-    background: #f2f6ee; border: 1px solid #d6e2cc; border-radius: 6px; padding: 8px 12px;
-    font-size: 11px; color: #516b42; cursor: pointer; text-align: left;
+    background: $sidebar; border: 1px solid $line; border-radius: 6px; padding: 8px 12px;
+    font-size: 11px; color: $green; cursor: pointer; text-align: left;
   }
-  &__arrow { font-size: 9px; color: #8b9683; }
+  &__arrow { font-size: 9px; color: $muted; }
   &__list { display: grid; gap: 8px; margin-top: 8px; }
   &__item {
-    border: 1px solid #e0e6da; border-radius: 6px; padding: 10px 12px; background: #fafbf8;
+    border: 1px solid $line; border-radius: 6px; padding: 10px 12px; background: $surface;
   }
   &__head {
     display: flex; justify-content: space-between; gap: 10px; font-size: 11px; color: $green; margin-bottom: 6px;
   }
-  &__score { color: #8b9683; white-space: nowrap; }
+  &__score { color: $muted; white-space: nowrap; }
   &__content {
-    font-size: 11px; line-height: 1.7; color: #555; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0;
+    font-size: 11px; line-height: 1.7; color: $muted; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0;
   }
 }
 </style>

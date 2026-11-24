@@ -145,10 +145,10 @@ onBeforeUnmount(() => { alive = false; revision++ })
 .knowledge-detail {
   max-width: 1280px; margin: 0 auto; padding: 40px clamp(20px, 4vw, 56px) 70px;
   &__back { display: inline-flex; align-items: center; min-height: 34px; color: $log-muted; font-size: 13px; text-underline-offset: 3px; &:hover { color: $green; } }
-  &__heading h1 { font-size: 30px; font-weight: 600; margin: 6px 0 12px; overflow-wrap: anywhere; }
+  &__heading h1 { @include page-title; margin: 6px 0 12px; overflow-wrap: anywhere; }
   &__description { color: $log-muted; font-size: 14px; line-height: 1.65; margin-bottom: 10px; overflow-wrap: anywhere; }
   &__meta { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; color: $log-muted; font-size: 13px; }
-  &__badge { padding: 3px 8px; border-radius: 5px; background: #e6eee4; color: $ink; font-size: 12px; }
+  &__badge { padding: 3px 8px; border-radius: 5px; background: $selection; color: $ink; font-size: 12px; }
   &__state { @include knowledge.state; }
   &__metrics {
     display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 8px 0 0; color: $log-muted; font-size: 13px;
@@ -160,32 +160,32 @@ onBeforeUnmount(() => { alive = false; revision++ })
     button {
       min-height: 44px; border: 0; border-bottom: 2px solid transparent; background: none;
       color: $log-muted; padding: 8px 14px; font-size: 13px;
-      &:hover { background: #e9efe6; color: $ink; }
+      &:hover { background: $sidebar; color: $ink; }
       &[aria-selected='true'] { color: $green; border-bottom-color: $green; font-weight: 600; }
     }
   }
-  &__error { padding: 12px 16px; border-radius: 5px; font-size: 12px; background: #faeee6; color: #934b40; }
+  &__error { padding: 12px 16px; border-radius: 5px; font-size: 12px; background: $log-error-bg; color: $log-error; }
   &__hint { color: $muted; font-size: 12px; }
 }
 @media (min-width: $knowledge-stack-width + 1px) {
   .knowledge-detail {
     padding-top: 28px;
     &__heading { @include knowledge.desktop-header; }
-    &__heading h1 { font-size: 34px; margin-bottom: 8px; }
+    &__heading h1 { margin-bottom: 8px; }
     &__overview { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
     &__identity { min-width: 0; }
     &__meta { margin-top: 12px; }
     &__metrics {
       flex: none; gap: 0; max-width: 38%;
-      div { flex-direction: column; min-width: 92px; gap: 4px; padding: 4px 18px; border-left: 1px solid #c7d7c8; }
+      div { flex-direction: column; min-width: 92px; gap: 4px; padding: 4px 18px; border-left: 1px solid $line; }
       dd { font-size: 24px; font-weight: 600; line-height: 1.2; }
     }
     &__tabs {
       width: fit-content; padding: 4px; gap: 4px; margin: 18px 0 22px;
-      border: 1px solid $knowledge-divider; border-radius: 8px; background: white;
+      border: 1px solid $knowledge-divider; border-radius: 8px; background: $surface;
       button {
         border: 0; border-radius: 5px; min-height: 38px;
-        &[aria-selected='true'] { background: $knowledge-tint; color: $ink; }
+        &[aria-selected='true'] { background: $selection; color: $green; }
       }
     }
   }

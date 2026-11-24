@@ -352,18 +352,18 @@ onBeforeUnmount(() => { alive = false; revision++ })
 @use '../../styles/knowledge';
 .knowledge-list {
   max-width: 1280px; margin: 0 auto; padding: 40px clamp(20px, 4vw, 56px) 70px;
-  &__heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 16px; h1 { font-size: 30px; font-weight: 600; margin-bottom: 6px; } }
+  &__heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 16px; h1 { @include page-title; margin-bottom: 6px; } }
   &__description, &__boundary { color: $log-muted; font-size: 13px; line-height: 1.65; }
   &__boundary { flex-basis: 100%; border-left: 2px solid $line; padding-left: 14px; }
   &__primary {
     display: inline-flex; align-items: center; gap: 6px;
-    background: $green; color: white; border: 0; border-radius: 7px; padding: 11px 17px;
+    background: $green; color: $on-green; border: 0; border-radius: 7px; padding: 11px 17px;
     &:hover:not(:disabled) { background: $ink; }
   }
-  &__form, &__card { margin: 22px 0; background: white; border: 1px solid $line; border-radius: 8px; overflow: hidden; }
+  &__form, &__card { margin: 22px 0; background: $surface; border: 1px solid $line; border-radius: $panel-radius; overflow: hidden; }
   &__form { padding: 24px; h2 { margin-bottom: 20px; font-size: 17px; font-weight: 500; } }
   &__fields { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; label { color: $green; font-size: 12px; } input, select { display: block; margin-top: 8px; width: 100%; } }
-  input, select, textarea { border: 1px solid $line; border-radius: 5px; padding: 9px 11px; background: $paper; color: $ink; font: inherit; font-size: 12px; &:focus { outline: 2px solid #92ae7a; outline-offset: 2px; } }
+  input, select, textarea { border: 1px solid $line; border-radius: 5px; padding: 9px 11px; background: $paper; color: $ink; font: inherit; font-size: 12px; &:focus { outline: 2px solid $green; outline-offset: 2px; } }
   textarea { display: block; width: 100%; margin-top: 8px; resize: vertical; }
   &__description-input { display: block; margin: 20px 0; color: $green; font-size: 12px; }
   &__actions { display: flex; gap: 10px; margin-top: 20px; button:not(.knowledge-list__primary) { border: 1px solid $line; background: $paper; border-radius: 5px; padding: 10px 16px; color: $green; } }
@@ -392,14 +392,14 @@ onBeforeUnmount(() => { alive = false; revision++ })
     button { @include knowledge.row-action; margin-top: 6px; color: $log-error; }
   }
   &__error, &__notice { padding: 12px 16px; border-radius: 5px; font-size: 12px; line-height: 1.8; margin-bottom: 18px; }
-  &__error { background: #faeee6; color: #934b40; }
-  &__notice { background: #eaf0e1; color: $green; }
+  &__error { background: $log-error-bg; color: $log-error; }
+  &__notice { background: $selection; color: $green; }
   &__empty { padding: 24px; color: $muted; font-size: 12px; }
 }
 @media (min-width: $knowledge-stack-width + 1px) {
   .knowledge-list {
     padding-top: 28px;
-    &__heading { @include knowledge.desktop-header; gap: 14px; h1 { font-size: 36px; } }
+    &__heading { @include knowledge.desktop-header; gap: 14px; }
     &__description { font-size: 14px; }
     &__boundary { border: 0; border-top: 1px solid $knowledge-divider; padding: 12px 0 0; }
     &__primary { min-height: 44px; }

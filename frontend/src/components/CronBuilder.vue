@@ -262,9 +262,9 @@ const preview = computed(() => build())
 <style scoped lang="scss">
 @use '../styles/variables' as *;
 .cron-builder {
-  margin-top: 8px; border: 1px solid $line; border-radius: 6px; background: white; padding: 14px;
+  margin-top: 8px; border: 1px solid $line; border-radius: 6px; background: $surface; padding: 14px;
   &__modes { display: flex; flex-wrap: wrap; gap: 6px; button { border: 1px solid $line; background: $paper; color: $muted; border-radius: 4px; padding: 6px 10px; font-size: 11px; } }
-  &__mode--active { border-color: $green !important; background: #eaf0e1 !important; color: $green !important; }
+  &__mode--active { border-color: $green !important; background: $selection !important; color: $green !important; }
   &__row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 13px; color: $green; font-size: 12px; input, select { width: auto; margin: 0; border: 1px solid $line; border-radius: 4px; padding: 6px 8px; background: $paper; color: $ink; font: inherit; font-size: 12px; } input[type="time"] { width: 110px; } input[type="number"] { width: 72px; } }
   &__row input[name="cronExpression"] { flex: 1; min-width: 180px; }
   &__check { display: flex; align-items: center; gap: 4px; color: $ink; input { width: auto; margin: 0; } }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { toDataURL } from 'qrcode'
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, useId, watch } from 'vue'
+import { RouterLink } from 'vue-router'
 import { ApiError } from '../../api/client'
 import { useAuthStore } from '../../stores/auth'
 import { useConnectorsStore } from '../../stores/connectors'
@@ -18,14 +19,18 @@ import {
   type AuthResult,
   type ConnectorDetail,
   type ConnectorTestResult,
+  type PersonalAccount,
 } from '../../api/connectors'
 
-const props = defineProps<{ connectorKey: string }>()
-const emit = defineEmits<{ close: [] }>()
+const props = defineProps<{ connectorKey: string; adminMode?: boolean; memberMode?: boolean }>()
+const emit = defineEmits<{ close: []; accountUpdated: [account: PersonalAccount] }>()
 const auth = useAuthStore()
 const store = useConnectorsStore()
-const isAdmin = computed(() => auth.activeWorkspace?.role === 'admin' && auth.activeWorkspace.status === 'active')
+const isAdmin = computed(() => !props.memberMode
+  && auth.activeWorkspace?.role === 'admin' && auth.activeWorkspace.status === 'active')
 const isYangJiBao = computed(() => props.connectorKey === 'yangjibao')
+const titleId = useId()
+const closeButton = ref<HTMLButtonElement | null>(null)
 
 const detail = ref<ConnectorDetail | null>(null)
 const loading = ref(false)
@@ -36,6 +41,7 @@ const authenticating = ref(false)
 const error = ref('')
 const testResult = ref<ConnectorTestResult | null>(null)
 const authResult = ref<AuthResult | null>(null)
+const accountOnly = computed(() => props.memberMode && Boolean(detail.value?.personal_account))
 const qrImage = ref('')
 const qrError = ref('')
 
@@ -99,6 +105,7 @@ async function load(): Promise<void> {
     const result = await getConnector(props.connectorKey)
     if (!current(version)) return
     detail.value = result
+    if (props.memberMode && result.personal_account) emit('accountUpdated', result.personal_account)
     configDraft.value = { ...detail.value.config_values }
     // 密钥字段初始化为空（留空表示不修改）
     for (const f of detail.value.config_fields) {
@@ -165,7 +172,7 @@ async function test(): Promise<void> {
 }
 
 async function toggleEnabled(): Promise<void> {
-  if (!detail.value || !isAdmin.value || changingEnabled.value) return
+  if (!detail.value || !isAdmin.value || props.adminMode || changingEnabled.value) return
   const version = generation
   changingEnabled.value = true
   error.value = ''
@@ -269,7 +276,16 @@ watch(() => [store.scope, props.connectorKey], () => {
   changingEnabled.value = false
   if (store.scope) void load()
 }, { flush: 'sync' })
-onMounted(load)
+function updateAccount(account: PersonalAccount): void {
+  if (!detail.value) return
+  detail.value = { ...detail.value, personal_account: account }
+  emit('accountUpdated', account)
+}
+
+onMounted(() => {
+  closeButton.value?.focus()
+  void load()
+})
 onUnmounted(() => { stopped = true; stop() })
 </script>
 
@@ -278,11 +294,21 @@ onUnmounted(() => { stopped = true; stop() })
     class="connector-dialog__overlay"
     @click.self="close"
   >
-    <div class="connector-dialog">
+    <div
+      class="connector-dialog"
+      role="dialog"
+      :aria-labelledby="titleId"
+      @keydown.esc.stop="close"
+    >
       <header class="connector-dialog__header">
-        <h2>{{ detail?.name ?? '加载中…' }}</h2>
+        <h2 :id="titleId">
+          {{ detail?.name ?? '加载中…' }}
+        </h2>
         <button
+          ref="closeButton"
           class="connector-dialog__close"
+          type="button"
+          aria-label="关闭插件详情"
           @click="close"
         >
           ✕
@@ -298,7 +324,10 @@ onUnmounted(() => { stopped = true; stop() })
 
       <template v-else-if="detail">
         <!-- 状态信息 -->
-        <div class="connector-dialog__status">
+        <div
+          v-if="!accountOnly"
+          class="connector-dialog__status"
+        >
           <span>{{ detail.kind.toUpperCase() }}</span>
           <span>工具数：{{ detail.tools.length }}</span>
           <span>{{ connectorHealthLabel(detail) }}</span>
@@ -309,11 +338,14 @@ onUnmounted(() => { stopped = true; stop() })
             {{ detail.last_error }}
           </span>
         </div>
-        <div class="connector-dialog__section">
+        <div
+          v-if="!accountOnly"
+          class="connector-dialog__section"
+        >
           <p>最近检查 {{ connectorTime(detail.last_checked_at) }}</p>
           <p>最近成功 {{ connectorTime(detail.last_success_at) }}</p>
           <button
-            v-if="isAdmin"
+            v-if="isAdmin && !adminMode"
             type="button"
             class="connector-dialog__btn connector-dialog__btn--secondary"
             :disabled="changingEnabled || authenticating || testing || saving"
@@ -322,27 +354,39 @@ onUnmounted(() => { stopped = true; stop() })
             {{ changingEnabled ? '正在更新…' : detail.enabled ? '停用连接器' : '启用连接器' }}
           </button>
           <p v-if="!isAdmin && (!detail.personal_account || !detail.enabled)">
-            请联系管理员配置或授权连接器
+            请联系管理员配置或授权插件
           </p>
         </div>
 
         <PersonalConnectorAccount
-          v-if="detail.personal_account"
+          v-if="detail.personal_account && !adminMode"
           :key="store.scope + detail.key"
           class="connector-dialog__section"
           :connector-key="detail.key"
           :account="detail.personal_account"
           :enabled="detail.enabled"
-          @updated="detail.personal_account = $event"
+          :confirm-before-unbind="memberMode"
+          @updated="updateAccount"
         />
+        <footer
+          v-if="accountOnly && detail.key === 'qq_mail' && detail.enabled && detail.personal_account?.bound"
+          class="connector-dialog__footer"
+        >
+          <RouterLink
+            class="connector-dialog__btn connector-dialog__btn--primary"
+            :to="{ path: '/chat', query: { plugin: 'qq_mail' } }"
+          >
+            去问答 ↗
+          </RouterLink>
+        </footer>
         <YangJiBaoHoldings
-          v-if="isYangJiBao && detail.enabled && detail.can_view_holdings && !authenticating"
+          v-if="!adminMode && isYangJiBao && detail.enabled && detail.can_view_holdings && !authenticating"
           :key="store.scope"
         />
 
         <!-- 配置表单 -->
         <section
-          v-if="detail.config_fields.length"
+          v-if="!memberMode && detail.config_fields.length"
           class="connector-dialog__section"
         >
           <h3>配置</h3>
@@ -388,7 +432,7 @@ onUnmounted(() => { stopped = true; stop() })
 
         <!-- 工具列表 -->
         <section
-          v-if="detail.tools.length"
+          v-if="!accountOnly && detail.tools.length"
           class="connector-dialog__section"
         >
           <h3>工具（{{ detail.tools.length }}）</h3>
@@ -506,10 +550,12 @@ onUnmounted(() => { stopped = true; stop() })
 </template>
 
 <style scoped lang="scss">
+@use '../../styles/variables' as *;
+
 .connector-dialog__overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: #10221875;
   display: flex;
   justify-content: flex-end;
   z-index: 100;
@@ -519,8 +565,8 @@ onUnmounted(() => { stopped = true; stop() })
   --connector-dialog-gutter: clamp(1rem, 5vw, 1.5rem);
   width: 480px;
   max-width: 100vw;
-  height: 100vh;
-  background: #fff;
+  height: 100dvh;
+  background: $surface;
   box-shadow: -4px 0 20px rgba(0, 0, 0, 0.15);
   display: flex;
   flex-direction: column;
@@ -531,7 +577,7 @@ onUnmounted(() => { stopped = true; stop() })
     justify-content: space-between;
     align-items: center;
     padding: 1.25rem var(--connector-dialog-gutter);
-    border-bottom: 1px solid #eee;
+    border-bottom: 1px solid $line;
 
     h2 {
       margin: 0;
@@ -544,15 +590,15 @@ onUnmounted(() => { stopped = true; stop() })
     border: none;
     font-size: 1.25rem;
     cursor: pointer;
-    color: #888;
+    color: $muted;
     padding: 0.25rem;
 
-    &:hover { color: #333; }
+    &:hover { color: $ink; }
   }
 
   &__loading {
     padding: 2rem;
-    color: #888;
+    color: $muted;
   }
 
   &__status {
@@ -561,12 +607,12 @@ onUnmounted(() => { stopped = true; stop() })
     gap: 0.5rem 1rem;
     padding: 0.75rem var(--connector-dialog-gutter);
     font-size: 0.85rem;
-    color: #666;
-    border-bottom: 1px solid #f0f0f0;
+    color: $muted;
+    border-bottom: 1px solid $line;
   }
 
   &__status-error {
-    color: #c0392b;
+    color: $log-error;
   }
 
   &__section {
@@ -588,31 +634,33 @@ onUnmounted(() => { stopped = true; stop() })
     font-size: 0.85rem;
     font-weight: 500;
     margin-bottom: 0.35rem;
-    color: #333;
+    color: $ink;
   }
 
   &__required {
-    color: #e74c3c;
+    color: $log-error;
   }
 
   &__input {
     width: 100%;
     padding: 0.55rem 0.75rem;
-    border: 1px solid #ddd;
-    border-radius: 6px;
+    border: 1px solid $line;
+    border-radius: $control-radius;
+    background: $paper;
+    color: $ink;
     font-size: 0.9rem;
     box-sizing: border-box;
 
     &:focus {
-      outline: none;
-      border-color: #3498db;
-      box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.15);
+      outline: 2px solid $green;
+      outline-offset: 2px;
+      border-color: $green;
     }
   }
 
   &__tool {
     padding: 0.65rem 0;
-    border-bottom: 1px solid #f5f5f5;
+    border-bottom: 1px solid $line;
 
     &:last-child { border-bottom: none; }
   }
@@ -631,21 +679,21 @@ onUnmounted(() => { stopped = true; stop() })
     font-size: 0.75rem;
     padding: 0.15rem 0.5rem;
     border-radius: 4px;
-    background: #f0f0f0;
-    color: #555;
+    background: $sidebar;
+    color: $muted;
   }
 
   &__tool-desc {
     margin: 0.25rem 0 0;
     font-size: 0.82rem;
-    color: #666;
+    color: $muted;
   }
 
   &__test-result {
     margin: 0.75rem var(--connector-dialog-gutter);
     padding: 0.75rem 1rem;
     border-radius: 8px;
-    background: #f8f9fa;
+    background: $paper;
     font-size: 0.85rem;
     display: flex;
     gap: 0.75rem;
@@ -656,18 +704,18 @@ onUnmounted(() => { stopped = true; stop() })
     margin: 0.75rem var(--connector-dialog-gutter);
     padding: 0.75rem 1rem;
     border-radius: 8px;
-    background: #eaf4ff;
+    background: $selection;
     font-size: 0.85rem;
 
     a {
-      color: #3498db;
+      color: $green;
       font-weight: 600;
     }
   }
 
   &__auth-output {
     margin: 0;
-    color: #555;
+    color: $muted;
     word-break: break-all;
   }
 
@@ -683,33 +731,34 @@ onUnmounted(() => { stopped = true; stop() })
 
   &__auth-ok {
     margin: 0;
-    color: #27ae60;
+    color: $log-success;
     font-weight: 600;
   }
 
   &__test-ok {
-    color: #27ae60;
+    color: $log-success;
     font-weight: 600;
   }
 
   &__test-fail {
-    color: #e74c3c;
+    color: $log-error;
     font-weight: 600;
   }
 
   &__error {
     margin: 0.5rem var(--connector-dialog-gutter);
-    color: #c0392b;
+    color: $log-error;
     font-size: 0.85rem;
   }
 
   &__footer {
     display: flex;
+    flex-wrap: wrap;
     justify-content: flex-end;
     gap: 0.75rem;
     padding: 1.25rem var(--connector-dialog-gutter);
     margin-top: auto;
-    border-top: 1px solid #eee;
+    border-top: 1px solid $line;
   }
 
   &__btn {
@@ -717,6 +766,7 @@ onUnmounted(() => { stopped = true; stop() })
     border: none;
     border-radius: 8px;
     font-size: 0.9rem;
+    text-decoration: none;
     cursor: pointer;
     transition: opacity 0.2s;
 

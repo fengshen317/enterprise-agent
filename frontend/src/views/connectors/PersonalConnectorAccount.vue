@@ -6,7 +6,12 @@ import {
 } from '../../api/connectors'
 import { copyDiagnosticId } from '../../utils/diagnosticClipboard'
 
-const props = defineProps<{ connectorKey: string; account: PersonalAccount; enabled: boolean }>()
+const props = defineProps<{
+  connectorKey: string
+  account: PersonalAccount
+  enabled: boolean
+  confirmBeforeUnbind?: boolean
+}>()
 const emit = defineEmits<{ updated: [account: PersonalAccount] }>()
 const SAVED_SECRET_PLACEHOLDER = '••••••••'
 const CHECK_LABELS = { knowledge_base: '知识库', notes: '笔记' } as const
@@ -26,6 +31,7 @@ const busy = computed(() => operation.value !== null)
 const error = ref('')
 const checkResult = ref<ImaAccountCheckResult | null>(null)
 const copyStatus = ref('')
+const confirmingUnbind = ref(false)
 const canSave = computed(() => props.enabled && props.account.fields.every(field => Boolean(draft.value[field.key]?.trim())))
 const canCheck = computed(() => props.connectorKey === 'ima' && props.enabled && props.account.bound)
 
@@ -65,6 +71,7 @@ async function update(remove: boolean): Promise<void> {
     draft.value = {}
     checkResult.value = null
     copyStatus.value = ''
+    confirmingUnbind.value = false
     emit('updated', account)
   } catch (value) {
     error.value = value instanceof Error ? value.message : '账号设置失败，请重试'
@@ -93,6 +100,12 @@ async function update(remove: boolean): Promise<void> {
         rel="noopener noreferrer"
       >获取授权凭证 ↗</a>
     </div>
+    <p
+      v-if="connectorKey === 'qq_mail' && enabled"
+      class="personal-account__hint"
+    >
+      只读访问收件箱。首次在问答中使用时验证 IMAP 授权码。
+    </p>
     <form
       v-if="enabled"
       :id="formId"
@@ -117,7 +130,7 @@ async function update(remove: boolean): Promise<void> {
         />
       </label>
       <p
-        v-if="account.bound"
+        v-if="account.bound && !confirmingUnbind"
         :id="hintId"
         class="personal-account__hint"
       >
@@ -151,10 +164,34 @@ async function update(remove: boolean): Promise<void> {
         type="button"
         class="personal-account__button"
         :disabled="busy"
-        @click="update(true)"
+        @click="confirmBeforeUnbind ? confirmingUnbind = true : update(true)"
       >
         解除绑定
       </button>
+    </div>
+    <div
+      v-if="confirmingUnbind && account.bound"
+      class="personal-account__confirmation"
+    >
+      <p>解除绑定后，问答无法继续读取此账号。</p>
+      <div class="personal-account__actions">
+        <button
+          type="button"
+          class="personal-account__button"
+          :disabled="busy"
+          @click="confirmingUnbind = false"
+        >
+          取消
+        </button>
+        <button
+          type="button"
+          class="personal-account__button personal-account__button--danger"
+          :disabled="busy"
+          @click="update(true)"
+        >
+          确认解除绑定
+        </button>
+      </div>
     </div>
     <div
       v-if="canCheck && checkResult"
@@ -229,13 +266,19 @@ async function update(remove: boolean): Promise<void> {
   &__actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.85rem; }
   &__button {
     min-height: 36px; padding: 0.45rem 0.8rem; border: 1px solid $line; border-radius: 7px;
-    background: #fff; color: $ink;
+    background: $surface; color: $ink;
     &:hover:not(:disabled) { background: $paper; }
     &:disabled { cursor: default; }
     &--primary {
       background: $green; border-color: $green; color: #fff;
       &:hover:not(:disabled) { background: $ink; }
     }
+    &--danger { color: #934b40; }
+  }
+  &__confirmation {
+    margin-top: .75rem; padding: .65rem .75rem; border: 1px solid $line; border-radius: 7px;
+    background: $paper;
+    p { margin: 0; }
   }
   &__checks { margin-top: 0.75rem; }
   &__results { display: grid; gap: 0.45rem; margin: 0; padding: 0; list-style: none; }

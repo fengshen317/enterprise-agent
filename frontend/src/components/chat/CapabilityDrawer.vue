@@ -80,11 +80,11 @@ const risks: Record<string, string> = { read: '只读', write: '写入 · 需审
 <style scoped lang="scss">
 @use '../../styles/variables' as *;
 .capability-drawer {
-  width: 300px; border-left: 1px solid $line; background: #f7f8f2; padding: 22px 20px; overflow-y: auto;
+  width: 300px; border-left: 1px solid $line; background: $surface; padding: 22px 20px; overflow-y: auto;
   &__head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; padding-bottom: 16px; border-bottom: 1px solid $line; button { border: 0; background: none; font-size: 20px; color: $muted; } h2 { font-size: 18px; margin: 7px 0 5px; font-weight: 500; } p { color: $muted; font-size: 11px; } }
-  &__eyebrow { font-size: 9px; letter-spacing: 1.6px; color: #859576; }
-  &__section { padding: 16px 0; border-bottom: 1px solid #e5eadf; h3 { font-size: 12px; color: $green; margin-bottom: 10px; } ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 9px; } li { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; line-height: 1.6; } em { color: $muted; font-style: normal; font-size: 10px; text-align: right; } }
+  &__eyebrow { font-size: 9px; letter-spacing: 1.6px; color: $muted; }
+  &__section { padding: 16px 0; border-bottom: 1px solid $line; h3 { font-size: 12px; color: $green; margin-bottom: 10px; } ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 9px; } li { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; line-height: 1.6; } em { color: $muted; font-style: normal; font-size: 10px; text-align: right; } }
   &__empty { color: $muted; font-size: 11px; line-height: 1.8; }
-  &__risk--write, &__risk--delete, &__risk--external { color: #9a6a35; }
+  &__risk--write, &__risk--delete, &__risk--external { color: $log-warning; }
 }
 </style>

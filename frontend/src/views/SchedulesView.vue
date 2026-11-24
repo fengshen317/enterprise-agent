@@ -554,7 +554,7 @@ onBeforeUnmount(() => { alive = false; revision++ })
   &__heading {
     margin-bottom: 28px;
 
-    h1 { margin: 0; font-size: clamp(27px, 4vw, 40px); letter-spacing: -.04em; }
+    h1 { @include page-title; }
   }
 
   &__description { margin: 8px 0 0; color: $muted; font-size: 14px; line-height: 1.6; }
@@ -564,13 +564,13 @@ onBeforeUnmount(() => { alive = false; revision++ })
     padding: 6px 12px;
     border: 1px solid $line;
     border-radius: 6px;
-    background: white;
+    background: $surface;
     color: $green;
     font: inherit;
     font-size: 13px;
     white-space: nowrap;
 
-    &:enabled:hover { background: $paper; }
+    &:enabled:hover { background: $paper; border-color: $green; }
     &:disabled { opacity: .55; }
   }
 
@@ -579,12 +579,13 @@ onBeforeUnmount(() => { alive = false; revision++ })
     padding-inline: 16px;
     border-color: $green;
     background: $green;
-    color: white;
+    color: $on-green;
 
-    &:enabled:hover { filter: brightness(1.08); background: $green; }
+    font-weight: 650;
+    &:enabled:hover { background: $green-hover; }
   }
 
-  &__form, &__card { margin: 0 0 22px; border: 1px solid $line; border-radius: 12px; background: white; }
+  &__form, &__card { margin: 0 0 22px; border: 1px solid $line; border-radius: $panel-radius; background: $surface; }
   &__form { padding: clamp(16px, 3vw, 25px); scroll-margin-top: 20px; }
   &__form h2 { margin: 0 0 20px; font-size: 19px; }
 
@@ -608,7 +609,7 @@ onBeforeUnmount(() => { alive = false; revision++ })
     border: 1px solid $line;
     border-radius: 6px;
     padding: 9px 10px;
-    background: white;
+    background: $surface;
     color: $ink;
     font: inherit;
     font-size: 13px;
@@ -624,6 +625,8 @@ onBeforeUnmount(() => { alive = false; revision++ })
   &__toolbar {
     padding: 13px 20px;
     border-bottom: 1px solid $line;
+    border-radius: $panel-radius $panel-radius 0 0;
+    background: $sidebar;
     font-size: 14px;
 
     strong { margin-left: 5px; color: $muted; font-size: 12px; }
@@ -670,8 +673,8 @@ onBeforeUnmount(() => { alive = false; revision++ })
     font-size: 11px;
     white-space: nowrap;
 
-    &--on { background: #e6f2e9; color: #166b51; }
-    &--waiting { background: #f9eed9; color: #785121; }
+    &--on { background: $log-success-bg; color: $log-success; }
+    &--waiting { background: $log-warning-bg; color: $log-warning; }
   }
 
   &__timing, &__details-grid {
@@ -702,7 +705,7 @@ onBeforeUnmount(() => { alive = false; revision++ })
     gap: 6px;
 
     button:first-child { background: $paper; font-weight: 600; }
-    button:last-child { color: #8d4937; }
+    button:last-child { color: $log-error; }
   }
 
   &__details {
@@ -717,8 +720,8 @@ onBeforeUnmount(() => { alive = false; revision++ })
   &__full-prompt { margin: 0; max-height: 320px; overflow: auto; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
   &__pagination { justify-content: flex-end; padding: 12px 20px; border-top: 1px solid $line; font-size: 13px; }
   &__error, &__notice { padding: 12px 16px; border-radius: 6px; font-size: 13px; line-height: 1.6; }
-  &__error { background: #faeee6; color: #934b40; }
-  &__notice { background: #eaf0e1; color: $green; }
+  &__error { background: $log-error-bg; color: $log-error; }
+  &__notice { background: $selection; color: $green; }
   &__empty { padding: 24px; color: $muted; font-size: 13px; }
 }
 

@@ -14,7 +14,7 @@ from app.models.base import Base
 from app.models.channel import ChannelAccount, ChannelApprovalCode, ChannelBindSession, ChannelMessage, ChannelPeer
 from app.models.config import IntegrationConfig
 from app.models.connector import Connector
-from app.models.conversation import ChatAttachment, Conversation, Message, Run
+from app.models.conversation import ChatAttachment, ChatReport, Conversation, Message, Run
 from app.models.identity import AuthSession, LoginLimit, User, Workspace, WorkspaceMembership
 from app.models.knowledge import KnowledgeBase, KnowledgeDocument
 from app.models.schedule import ScheduledTask
@@ -33,6 +33,7 @@ assert all(
         AdminAudit,
         Conversation,
         ChatAttachment,
+        ChatReport,
         Message,
         Run,
         User,

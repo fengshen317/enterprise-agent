@@ -31,12 +31,11 @@ onMounted(checkSystem)
 
 <template>
   <div class="overview">
-    <div class="overview__heading">
+    <header class="overview__heading">
       <div>
-        <p class="overview__eyebrow">
-          BUILD WITH PURPOSE / 01
-        </p><h1>让可靠的基础，承接每一个目标。</h1><p class="overview__description">
-          企业 Agent 工作台 · 本地问答与工程状态
+        <h1>系统概览</h1>
+        <p class="overview__description">
+          检查 API 服务、数据库连接和迁移状态。
         </p>
       </div>
       <button
@@ -46,13 +45,7 @@ onMounted(checkSystem)
       >
         {{ checking ? '检查中…' : '↻ 重新检查' }}
       </button>
-    </div>
-    <section class="overview__intro">
-      <div><span class="overview__pill">工程基础</span><h2>先把系统运行起来。<br />再让智能进入工作。</h2><p>连接应用、数据库与开发流程，为真实问答、工具使用和持续执行建立清晰边界。</p></div>
-      <div class="overview__number">
-        01<span> / 07 阶段</span>
-      </div>
-    </section>
+    </header>
     <div class="overview__section-heading">
       <h2>运行状态</h2><span>最近检查：{{ lastChecked }}</span>
     </div>
@@ -72,16 +65,5 @@ onMounted(checkSystem)
         <code v-if="item.requestId">请求标识：{{ item.requestId }}</code>
       </article>
     </div>
-    <div class="overview__section-heading">
-      <h2>从基础到交付</h2><span>按阶段推进，每一步都可验证</span>
-    </div>
-    <div class="overview__roadmap">
-      <article><span>01 / 已完成</span><h3>工程初始化</h3><p>应用骨架、配置、日志、数据库迁移与自动检查。</p></article>
-      <article><span>02 / 当前阶段</span><h3>真实问答</h3><p>真实模型、连续追问、流式回复与历史记录。</p></article>
-      <article><span>03—07 / 后续阶段</span><h3>从协作到可靠执行</h3><p>身份权限、工具知识、后台任务、审批与交付。</p></article>
-    </div>
-    <footer class="overview__footer">
-      问答工作台已接入模型与历史记录；任务与审批在后续阶段实现。问答接口已启用登录和资源归属校验。
-    </footer>
   </div>
 </template>

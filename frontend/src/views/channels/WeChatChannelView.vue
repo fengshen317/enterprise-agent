@@ -267,19 +267,47 @@ onUnmounted(stopPolling)
 <style scoped lang="scss">
 @use '../../styles/variables' as *;
 
-.wechat { max-width: 720px; display: grid; gap: 16px; }
-.wechat__header h1 { margin: 0 0 8px; font-size: 28px; }
-.wechat__header p, .wechat__help { color: $muted; margin: 0; }
-.wechat__error { color: #9d2c2c; margin: 0; }
-.wechat__list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
-.wechat__account { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 12px; border: 1px solid $line; border-radius: 8px; background: #fff; }
-.wechat__account span { display: block; color: $muted; font-size: 13px; }
-.wechat__account { flex-wrap: wrap; }
-.wechat__skipped { width: 100%; margin: 8px 0 0; padding-left: 18px; color: $muted; font-size: 13px; }
-.wechat__bind, .wechat__account button { border: 0; background: $green; color: #fff; border-radius: 6px; padding: 8px 14px; }
-.wechat__qr { display: grid; gap: 8px; padding: 16px; border: 1px dashed $line; border-radius: 8px; background: $paper; }
-.wechat__qr img { width: 220px; height: 220px; object-fit: contain; background: #fff; }
-.wechat__qr a { color: $green; width: fit-content; }
-.wechat__qr-error { color: #9d2c2c; margin: 0; }
-.wechat__help { display: grid; gap: 6px; font-size: 13px; }
+.wechat {
+  display: grid;
+  gap: 14px;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 34px clamp(16px, 4vw, 52px) 48px;
+
+  &__header { margin-bottom: 8px; }
+  &__header h1 { @include page-title; margin-bottom: 7px; }
+  &__header p, &__help { color: $muted; font-size: 13px; }
+  &__error { padding: 9px 11px; border-radius: $control-radius; color: $log-error; background: $log-error-bg; }
+  &__list, &__qr {
+    border: 1px solid $line;
+    border-radius: $panel-radius;
+    background: $surface;
+  }
+  &__list { list-style: none; padding: 0; margin: 0; }
+  &__list > li { padding: 15px 16px; }
+  &__list > li + li { border-top: 1px solid $line; }
+  &__list > li:not(.wechat__account) { color: $muted; font-size: 13px; }
+  &__account { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; align-items: center; }
+  &__account strong { color: $green; }
+  &__account span { display: block; color: $muted; font-size: 13px; overflow-wrap: anywhere; }
+  &__skipped {
+    width: 100%; margin: 0; padding: 9px 12px 9px 26px; border-radius: $control-radius;
+    background: $log-warning-bg; color: $log-warning; font-size: 13px; overflow-wrap: anywhere;
+  }
+  &__bind, &__account button { min-height: 36px; border: 1px solid $line; border-radius: $control-radius; padding: 7px 12px; }
+  &__bind {
+    justify-self: start; border-color: $green; background: $green; color: $on-green; font-weight: 650;
+    &:enabled:hover { background: $green-hover; }
+  }
+  &__account button { background: $surface; color: $log-error; &:enabled:hover { border-color: $log-error; } }
+  &__qr {
+    display: grid; gap: 8px; padding: 16px;
+    img { width: min(220px, 100%); height: auto; aspect-ratio: 1; object-fit: contain; background: #fff; }
+    a { width: fit-content; }
+    label { display: grid; gap: 6px; max-width: 15rem; }
+    input { min-width: 0; padding: 8px 10px; border: 1px solid $line; border-radius: $control-radius; background: $paper; }
+  }
+  &__qr-error { color: $log-error; }
+  &__help { display: grid; gap: 6px; padding: 12px 14px; border-radius: $panel-radius; background: $sidebar; }
+}
 </style>

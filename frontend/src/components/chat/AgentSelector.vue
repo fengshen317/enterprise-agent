@@ -37,7 +37,7 @@ function change(event: Event): void {
 <style scoped lang="scss">
 @use '../../styles/variables' as *;
 .agent-select {
-  display: flex; align-items: center; gap: 6px; border: 1px solid $line; background: #f4f7ef;
+  display: flex; align-items: center; gap: 6px; border: 1px solid $line; background: $paper;
   border-radius: 7px; padding: 0 7px; min-width: 0;
   &__icon { font-size: 15px; color: $green; }
   &__control { border: 0; background: transparent; font: inherit; font-size: 12px; color: $ink; min-height: 32px; max-width: min(210px, 60vw); }

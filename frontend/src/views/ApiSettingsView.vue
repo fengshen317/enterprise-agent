@@ -234,7 +234,7 @@ onMounted(load)
   color: $ink;
 
   h1, h2, p { margin: 0; }
-  h1 { font-size: 30px; font-weight: 550; }
+  h1 { @include page-title; }
   h2 { font-size: 18px; font-weight: 600; }
   p { color: $muted; font-size: 13px; line-height: 1.65; }
   h1 + p, h2 + p { margin-top: 7px; }
@@ -244,8 +244,8 @@ onMounted(load)
     margin: 16px 0;
     padding: clamp(18px, 3vw, 26px);
     border: 1px solid $line;
-    border-radius: 9px;
-    background: white;
+    border-radius: $panel-radius;
+    background: $surface;
   }
   &__fields {
     display: grid;
@@ -262,7 +262,7 @@ onMounted(load)
     width: 100%;
     padding: 9px 11px;
     border: 1px solid $line;
-    border-radius: 5px;
+    border-radius: $control-radius;
     background: $paper;
     color: $ink;
     font: inherit;
@@ -272,7 +272,7 @@ onMounted(load)
     border: 1px solid $green;
     border-radius: 5px;
     background: $green;
-    color: white;
+    color: $on-green;
     font: inherit;
     font-size: 13px;
   }

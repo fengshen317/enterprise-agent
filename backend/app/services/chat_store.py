@@ -26,6 +26,7 @@ from app.schemas.chat import (
     RunSnapshot,
     RunView,
 )
+from app.schemas.report import ReportView
 from app.services.auth import owned_conversations, require_membership
 from app.services.chat_attachments import (
     ATTACHMENT_ONLY_QUESTION,
@@ -36,6 +37,7 @@ from app.services.chat_attachments import (
     attachment_identifier,
 )
 from app.services.materials import MaterialStore, attachment_view, personal_materials
+from app.services.report_store import read_report, report_refs, report_view
 
 ACTIVE = ("pending", "running")
 
@@ -140,8 +142,12 @@ class ChatStore:
             active = await session.scalar(
                 select(Run.id).where(Run.conversation_id == conversation_id, Run.status.in_(ACTIVE))
             )
+            refs = await report_refs(session, [row.id for row in rows[:limit] if row.role == "assistant"])
             return MessagePage(
-                items=[MessageView.model_validate(row) for row in rows[:limit]],
+                items=[
+                    MessageView.model_validate(row).model_copy(update={"reports": refs.get(row.id, [])})
+                    for row in rows[:limit]
+                ],
                 has_more=len(rows) > limit,
                 active_run_id=active,
             )
@@ -273,6 +279,14 @@ class ChatStore:
                 raise ApplicationError("CHAT_ATTACHMENT_NOT_FOUND", "未找到此对话中的附件", 404)
             return row
 
+    async def report(self, scope: ResourceScope, conversation_id: UUID, report_id: UUID) -> ReportView:
+        """按对话所有权和当前空间成员权限读取报表。"""
+        async with self.factory() as session:
+            await require_membership(session, scope)
+            if await session.scalar(owned_conversations(scope).where(Conversation.id == conversation_id)) is None:
+                raise ApplicationError("CONVERSATION_NOT_FOUND", "对话不存在", 404)
+            return report_view(await read_report(session, conversation_id, report_id))
+
     async def _snapshot(self, session: AsyncSession, run: Run) -> RunSnapshot:
         """在已有事务中查询运行的唯一助手回复。
 
@@ -290,9 +304,10 @@ class ChatStore:
             .order_by(Approval.requested_at.desc(), Approval.id.desc())
             .limit(1)
         )
+        refs = await report_refs(session, [message.id])
         return RunSnapshot(
             run=RunView.model_validate(run),
-            message=MessageView.model_validate(message),
+            message=MessageView.model_validate(message).model_copy(update={"reports": refs.get(message.id, [])}),
             approval=self._approval_view(approval) if approval is not None else None,
         )
 
@@ -490,6 +505,7 @@ class ChatStore:
             ))).tuples().all())
         history: list[ContextMessage] = []
         image_ids: list[UUID] = []
+        report_links = await report_refs(session, [row.id for row in messages if row.role == "assistant"])
         for row in messages:
             content = row.content
             if row.role == "user" and row.attachments:
@@ -502,6 +518,10 @@ class ChatStore:
                 files = [ChatAttachmentView.model_validate(item) for item in row.attachments]
                 links = (f"{file.filename} /materials/{file.id}" for file in files)
                 content += "\n已生成的个人材料：\n" + "\n".join(links)
+            if row.id in report_links:
+                content += "\n已生成的报表：\n" + "\n".join(
+                    f"{report.title}（report_id={report.id}）" for report in report_links[row.id]
+                )
             history.append(ContextMessage(row.sequence, row.role, content))
         images: dict[UUID, tuple[str, bytes]] = {}
         if image_ids:

@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { Message, Run } from '../../api/chat'
+import { chatAttachmentUrl, isAttachmentImage, type ChatAttachment } from '../../api/chatAttachments'
 import MarkdownBody from '../MarkdownBody.vue'
 import ToolCallList from '../ToolCallList.vue'
+import ChatFileCard from './ChatFileCard.vue'
+import ChatReportCard from './ChatReportCard.vue'
 import type { SourceChunk } from './ChunkSourceCard.vue'
 
 const props = defineProps<{
@@ -11,10 +14,13 @@ const props = defineProps<{
   statusLabel?: string
   followUpDisabled: boolean
   progressTarget?: HTMLElement | null
+  reuseFilesDisabled: boolean
+  draftFileIds: ReadonlySet<string>
 }>()
 const emit = defineEmits<{
   sources: [chunks: SourceChunk[], index: number | null, trigger: HTMLElement]
   followUp: []
+  reuseFile: [file: ChatAttachment]
 }>()
 const chunks = ref<SourceChunk[]>([])
 const indices = computed(() => chunks.value.map(chunk => chunk.index))
@@ -74,9 +80,12 @@ watch(() => props.message.run_id, () => { chunks.value = [] })
     部分回答 · 未完成
   </p>
   <MarkdownBody
+    v-if="message.content || !terminal || (!message.attachments?.length && !message.reports?.length)"
     class="chat__body answer-message__body"
     :content="message.content || (terminal ? '本次未生成正文' : '正在处理…')"
     :citation-indices="indices"
+    :can-copy-code="terminal"
+    enhance-blocks
     @cite="(index, trigger, cited) => openSources(cited, index, trigger)"
   >
     <template #after="{ cited }">
@@ -90,6 +99,41 @@ watch(() => props.message.run_id, () => { chunks.value = [] })
       </button>
     </template>
   </MarkdownBody>
+  <ChatReportCard
+    v-for="report in message.reports"
+    :key="report.id"
+    :conversation-id="message.conversation_id"
+    :report-ref="report"
+  />
+  <section
+    v-if="message.attachments?.length"
+    class="answer-message__files"
+    :aria-labelledby="'generated-files-' + message.id"
+  >
+    <h3 :id="'generated-files-' + message.id">
+      生成的文件
+    </h3>
+    <ChatFileCard
+      v-for="item in message.attachments"
+      :key="item.id"
+      :filename="item.filename"
+      :size="item.size_bytes"
+      :preview="isAttachmentImage(item.media_type) ? chatAttachmentUrl(message.conversation_id, item.id) : undefined"
+      :download="chatAttachmentUrl(message.conversation_id, item.id, true)"
+      :note="item.text_truncated ? '已读取部分文字' : !item.text_available && !isAttachmentImage(item.media_type) ? '未提取到文字' : undefined"
+      show-download-action
+    >
+      <RouterLink :to="'/materials/' + item.id">查看材料</RouterLink>
+      <button
+        type="button"
+        :disabled="reuseFilesDisabled || draftFileIds.has(item.id)"
+        :aria-label="'再次附加 ' + item.filename"
+        @click="emit('reuseFile', item)"
+      >
+        再次附加
+      </button>
+    </ChatFileCard>
+  </section>
   <footer
     v-if="terminal"
     class="answer-message__footer"
@@ -102,7 +146,7 @@ watch(() => props.message.run_id, () => { chunks.value = [] })
       复制
     </button>
     <button
-      v-if="message.content"
+      v-if="message.content || message.reports?.length"
       type="button"
       :disabled="followUpDisabled"
       @click="emit('followUp')"
@@ -135,10 +179,12 @@ watch(() => props.message.run_id, () => { chunks.value = [] })
 @use '../../styles/variables' as *;
 .answer-message {
   &__heading { display: flex; align-items: center; gap: 9px; color: $ink; font-size: 14px; }
-  &__avatar { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: #dce9da; color: $green; font-size: 18px; }
+  &__avatar { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: $selection; color: $green; font-size: 18px; }
   &__body { font-size: 15px; }
-  &__notice { margin: 0 0 8px; color: #805226; font-size: 12px; }
-  &__sources { margin-top: 14px; border: 1px solid $line; border-radius: 7px; background: #e7efe4; color: $ink; padding: 6px 10px; font-size: 12px; }
+  &__notice { margin: 0 0 8px; color: $log-warning; font-size: 12px; }
+  &__sources { margin-top: 14px; border: 1px solid $line; border-radius: 7px; background: $sidebar; color: $ink; padding: 6px 10px; font-size: 12px; }
+  &__files { display: grid; gap: 6px; min-width: 0; margin-top: 14px; }
+  &__files h3 { margin: 0; color: $ink; font-size: 13px; font-weight: 600; }
   &__footer { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; margin-top: 14px; color: $muted; font-size: 12px; }
   &__footer button { border: 0; padding: 4px 0; background: none; color: $green; font: inherit; }
   &__footer :is(button:not(:disabled), summary):hover { text-decoration: underline; }

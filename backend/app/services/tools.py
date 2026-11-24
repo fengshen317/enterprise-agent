@@ -404,6 +404,8 @@ class ToolExecutor:
                 diagnostics = {"phase": "transport"}
             elif isinstance(exc, ApplicationError):
                 code = exc.code
+                if code.startswith("REPORT_"):
+                    error_message = exc.message
             else:
                 code = "TOOL_EXECUTION_FAILED"
             raw_days = getattr(arguments, "days", None)

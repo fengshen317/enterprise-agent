@@ -68,7 +68,7 @@ watch(() => [props.chunks, props.index], locate, { flush: 'post' })
   display: flex;
   flex-direction: column;
   border-left: 1px solid $line;
-  background: #fff;
+  background: $surface;
   color: $ink;
   overflow-wrap: anywhere;
 
@@ -91,7 +91,7 @@ watch(() => [props.chunks, props.index], locate, { flush: 'post' })
     max-height: 65dvh;
     border: 1px solid $line;
     border-radius: 16px 16px 0 0;
-    box-shadow: 0 -8px 28px #19382f22;
+    box-shadow: 0 -8px 28px rgba($ink, .13);
   }
 }
 </style>

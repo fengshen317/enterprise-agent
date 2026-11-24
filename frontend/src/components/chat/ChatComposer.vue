@@ -183,7 +183,7 @@ defineExpose({ focus })
       ref="editor"
       class="chat-composer__editor"
       :value="modelValue"
-      :placeholder="active ? '可以先编辑补充要求…' : '输入问题或任务目标，键入 / 查看快捷指令…'"
+      :placeholder="active ? '补充要求…' : '输入问题或任务目标，键入 / 查看快捷指令'"
       :aria-describedby="hintId"
       :maxlength="LIMIT"
       :disabled="disabled"
@@ -211,7 +211,11 @@ defineExpose({ focus })
           :disabled="disabled"
           @click="toggleTools"
         >
-          +
+          <span
+            class="chat-composer__plus-mark"
+            aria-hidden="true"
+          >+</span>
+          <span class="chat-composer__control-label">工具</span>
         </button>
         <section
           v-if="openPanel && !disabled"
@@ -253,9 +257,28 @@ defineExpose({ focus })
         :disabled="disabled || (attachmentCount ?? 0) >= maxAttachmentCount"
         @click="picker?.click()"
       >
-        <span aria-hidden="true">📎</span> 附件
+        <span
+          class="chat-composer__clip"
+          aria-hidden="true"
+        />
+        <span class="chat-composer__control-label">附件</span>
       </button>
       <div class="chat-composer__actions">
+        <select
+          class="chat-composer__send-mode"
+          :value="sendMode"
+          aria-label="选择发送快捷键"
+          :aria-describedby="hintId"
+          :title="sendMode === 'enter' ? 'Shift + Enter 换行' : 'Enter 换行'"
+          @change="changeSendMode"
+        >
+          <option value="enter">
+            Enter 发送
+          </option>
+          <option value="modifier">
+            Ctrl/⌘ + Enter 发送
+          </option>
+        </select>
         <button
           v-if="active"
           type="button"
@@ -263,7 +286,12 @@ defineExpose({ focus })
           :disabled="stopping"
           @click="emit('stop')"
         >
-          {{ stopping ? '正在停止…' : '■ 停止生成' }}
+          <span
+            v-if="!stopping"
+            class="chat-composer__stop-mark"
+            aria-hidden="true"
+          />
+          {{ stopping ? '正在停止…' : '停止生成' }}
         </button>
         <button
           v-if="active && hasDraft"
@@ -280,31 +308,26 @@ defineExpose({ focus })
           class="chat-composer__primary"
           :disabled="!hasDraft || disabled || stopping"
         >
-          {{ submitting ? '正在提交…' : '发送 ↑' }}
+          {{ submitting ? '正在提交…' : '发送' }}
+          <span
+            v-if="!submitting"
+            class="chat-composer__send-mark"
+            aria-hidden="true"
+          >↑</span>
         </button>
       </div>
     </div>
-    <div class="chat-composer__footer">
-      <select
-        class="chat-composer__send-mode"
-        :value="sendMode"
-        aria-label="选择发送快捷键"
-        @change="changeSendMode"
-      >
-        <option value="enter">
-          Enter 发送
-        </option>
-        <option value="modifier">
-          Ctrl/⌘ + Enter 发送
-        </option>
-      </select>
-      <span :id="hintId">{{ sendMode === 'enter' ? 'Shift + Enter 换行' : 'Enter 换行' }}</span>
-      <span
-        v-if="modelValue.length >= LIMIT"
-        class="chat-composer__limit"
-        role="status"
-      >已达 {{ LIMIT.toLocaleString('zh-CN') }} 字符上限</span>
-    </div>
+    <span
+      :id="hintId"
+      class="chat-composer__sr-only"
+    >{{ sendMode === 'enter' ? 'Enter 发送，Shift + Enter 换行' : 'Ctrl 或 Command + Enter 发送，Enter 换行' }}</span>
+    <p
+      v-if="modelValue.length >= LIMIT"
+      class="chat-composer__limit"
+      role="status"
+    >
+      已达 {{ LIMIT.toLocaleString('zh-CN') }} 字符上限
+    </p>
   </form>
 </template>
 
@@ -312,22 +335,22 @@ defineExpose({ focus })
 @use '../../styles/variables' as *;
 
 .chat-composer {
-  background: white;
-  border: 1px solid #c7d5bc;
-  border-radius: 12px;
-  box-shadow: 0 3px 16px #19382f08;
-  padding: 12px 14px 8px;
+  background: $surface;
+  border: 1px solid $line;
+  border-radius: 16px;
+  box-shadow: 0 4px 18px rgba($ink, .06);
+  padding: 8px;
 
-  &:focus-within { border-color: $green; }
+  &:focus-within { border-color: $green; box-shadow: 0 0 0 3px rgba($green, .09), 0 4px 18px rgba($ink, .06); }
   :is(button, select):focus-visible { outline: 2px solid $green; outline-offset: 2px; }
-  button:disabled { cursor: not-allowed; opacity: 0.6; }
+  button:disabled { opacity: 1; cursor: not-allowed; }
 
   &__editor {
     display: block;
     width: 100%;
-    min-height: 3.3em;
-    max-height: min(13em, 32dvh);
-    padding: 2px 0;
+    min-height: 3.35em;
+    max-height: max(3.35em, min(13em, 32dvh));
+    padding: 6px 8px;
     border: 0;
     outline: none;
     resize: none;
@@ -335,33 +358,67 @@ defineExpose({ focus })
     background: transparent;
     font: inherit;
     line-height: 1.65;
+    scrollbar-width: thin;
     &::placeholder { color: $muted; }
   }
 
-  &__toolbar, &__actions, &__footer { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
-  &__toolbar { justify-content: space-between; margin-top: 8px; }
+  &__toolbar, &__actions { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+  &__toolbar {
+    margin-top: 4px;
+    padding: 4px;
+    border-radius: 10px;
+    background: $paper;
+  }
   &__tools { position: relative; }
-  &__plus {
-    display: grid; place-items: center; width: 34px; height: 34px; padding: 0;
-    border-radius: 50%; border: 0; color: $ink; background: #edf2e9; font-size: 23px; line-height: 1;
-    &:hover:not(:disabled), &[aria-expanded='true'] { background: #dce9d8; }
-  }
   &__actions { margin-inline-start: auto; justify-content: flex-end; }
-  &__attachment {
-    min-height: 34px; border: 1px solid $line; border-radius: 7px; padding: 4px 9px;
-    background: white; color: $ink; font-size: 12px;
-    &:hover:not(:disabled) { background: #edf2e9; }
-  }
-  &__primary, &__secondary {
+  &__plus, &__attachment, &__primary, &__secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
     min-height: 34px;
-    padding: 5px 10px;
-    border-radius: 7px;
+    padding: 4px 9px;
+    border-radius: 8px;
     border: 1px solid transparent;
     font-size: 12px;
+    white-space: nowrap;
   }
-  &__primary { color: white; background: #31533d; &:hover:not(:disabled) { background: $ink; } }
-  &__secondary { color: $ink; background: #f4f7ef; border-color: $line; &:hover:not(:disabled) { background: #eaf0e1; } }
-  &__stop { color: #674623; background: #fbf2e5; }
+  &__plus, &__attachment {
+    color: $green;
+    background: transparent;
+    &:hover:not(:disabled), &[aria-expanded='true'] { background: $selection; }
+    &:disabled { color: $muted; }
+  }
+  &__plus-mark { font-size: 18px; line-height: 1; }
+  &__clip {
+    position: relative;
+    width: 8px;
+    height: 13px;
+    border: 1px solid currentColor;
+    border-radius: 5px;
+    transform: rotate(36deg);
+
+    &::after {
+      position: absolute;
+      content: '';
+      inset: 2px 1px 1px;
+      border: 1px solid currentColor;
+      border-top: 0;
+      border-radius: 0 0 4px 4px;
+    }
+  }
+  &__primary {
+    padding-inline: 11px;
+    color: $on-green;
+    background: $green;
+    font-weight: 650;
+    &:hover:not(:disabled) { background: $green-hover; }
+    &:disabled { background: $selection; color: $muted; }
+  }
+  &__send-mark { font-size: 16px; line-height: 1; }
+  &__secondary { color: $ink; background: $surface; border-color: $line; &:hover:not(:disabled) { background: $sidebar; } }
+  &__stop { color: $log-warning; background: $log-warning-bg; &:hover:not(:disabled) { border-color: $log-warning; } }
+  &__stop-mark { width: 7px; height: 7px; border-radius: 1px; background: currentColor; }
   &__panel {
     position: absolute;
     z-index: 2;
@@ -370,29 +427,47 @@ defineExpose({ focus })
     display: grid;
     gap: 4px;
     inline-size: 236px;
-    max-inline-size: calc(100vw - 48px);
+    max-inline-size: calc(100vw - 56px);
     max-block-size: min(320px, 47dvh);
     overflow-y: auto;
     overscroll-behavior: contain;
     padding: 8px;
-    background: white;
+    background: $surface;
     border: 1px solid $line;
     border-radius: 9px;
-    box-shadow: 0 8px 26px #19382f20;
+    box-shadow: 0 8px 26px rgba($ink, .13);
     p { padding: 6px 8px 2px; color: $muted; font-size: 11px; }
     :deep(button) { font-size: 12px; border: 0; border-radius: 5px; text-align: left; padding: 8px; color: $ink; background: transparent; }
-    :deep(button:hover:not(:disabled)) { background: #eaf0e1; }
+    :deep(button:hover:not(:disabled)) { background: $selection; }
   }
-  &__footer { margin-top: 7px; color: $muted; font-size: 11px; }
-  &__send-mode { color: $ink; background: transparent; border: 0; font: inherit; }
-  &__limit { color: #8b493c; margin-inline-start: auto; }
+  &__send-mode {
+    min-height: 34px;
+    max-inline-size: 10rem;
+    padding-inline: 4px;
+    border: 0;
+    border-radius: 8px;
+    color: $muted;
+    background: transparent;
+    font: inherit;
+    font-size: 11px;
+    &:hover { background: $sidebar; color: $ink; }
+  }
+  &__limit { margin: 5px 4px 0; color: $log-error; font-size: 12px; text-align: end; }
   &__sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 }
 
-@media (max-width: 760px) {
+@media (max-width: 480px) {
   .chat-composer {
-    &__plus { width: 40px; height: 40px; }
-    &__primary, &__secondary { min-height: 40px; }
+    &__control-label { display: none; }
+    &__plus, &__attachment { min-width: 38px; }
+    &__editor { font-size: 16px; }
+  }
+}
+
+@media (pointer: coarse) {
+  .chat-composer {
+    &__plus, &__attachment, &__primary, &__secondary, &__send-mode { min-height: 44px; }
+    &__plus, &__attachment { min-width: 44px; }
   }
 }
 </style>

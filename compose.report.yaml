@@ -1,0 +1,45 @@
+# 此覆盖文件仅在报表分析部署中启用。受信代理通过专用网络接收请求，Python 任务无网络。
+services:
+  api:
+    environment:
+      EA_REPORT_SANDBOX_BROKER_URL: http://report-broker:8090
+      EA_REPORT_SANDBOX_BROKER_TOKEN: ${EA_REPORT_SANDBOX_BROKER_TOKEN:?请设置报表执行代理令牌}
+    networks:
+      - report_runner
+    depends_on:
+      report-broker:
+        condition: service_healthy
+
+  report-broker:
+    build:
+      context: ./backend
+      dockerfile: analysis/Dockerfile
+      target: broker
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      EA_REPORT_SANDBOX_IMAGE: ${EA_REPORT_SANDBOX_IMAGE:-enterprise-agent-report-sandbox:local}
+      EA_REPORT_SANDBOX_RUNTIME: ${EA_REPORT_SANDBOX_RUNTIME:-runsc}
+      EA_REPORT_SANDBOX_BROKER_TOKEN: ${EA_REPORT_SANDBOX_BROKER_TOKEN:?请设置报表执行代理令牌}
+    networks:
+      - report_runner
+    volumes:
+      - type: bind
+        source: ${EA_REPORT_DOCKER_SOCKET:-/var/run/docker.sock}
+        target: /var/run/docker.sock
+        read_only: true
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8090/health', timeout=3).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: local
+
+networks:
+  report_runner:
+    internal: true

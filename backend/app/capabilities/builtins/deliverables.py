@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from io import BytesIO, StringIO
 from typing import Annotated, Literal, Self
+from uuid import UUID
 
 from openpyxl import Workbook  # type: ignore[import-untyped]
 from openpyxl.styles import Font  # type: ignore[import-untyped]
@@ -23,8 +24,10 @@ from app.models.agent import WorkspaceToolPolicy
 from app.models.approval import Approval, ApprovalEvent
 from app.models.conversation import Message, Run
 from app.models.tool_call import ToolCall
+from app.schemas.report import ReportData
 from app.services.chat_attachments import MAX_COLUMNS, MAX_ROWS, PreparedAttachment, prepare_attachment
 from app.services.materials import MaterialStore
+from app.services.report_store import read_report
 from app.services.system_logs import emit_system_log
 
 CREATE_DELIVERABLE = "create_deliverable"
@@ -48,6 +51,7 @@ class DeliverableArgs(BaseModel):
     markdown: str = Field(default="", max_length=MAX_CONTENT)
     columns: list[CellText] = Field(default_factory=list, max_length=MAX_COLUMNS)
     rows: list[Row] = Field(default_factory=list, max_length=MAX_ROWS - 1)
+    report_id: Annotated[UUID, Field(strict=False)] | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @field_validator("title")
     @classmethod
@@ -65,6 +69,10 @@ class DeliverableArgs(BaseModel):
     @model_validator(mode="after")
     def validate_contents(self) -> Self:
         """限制总量并拒绝错列数据，避免导出时静默丢弃内容。"""
+        if self.report_id is not None:
+            if self.format == "md" or self.markdown or self.columns or self.rows:
+                raise ValueError("报表导出使用 CSV 或 Excel，直接提供 report_id")
+            return self
         if self.format == "md":
             if not self.markdown.strip() or self.columns or self.rows or UNSAFE_TEXT.search(self.markdown):
                 raise ValueError("Markdown 报告需要有效正文")
@@ -134,18 +142,31 @@ def render_deliverable(args: DeliverableArgs) -> bytes:
     return buffer.getvalue()
 
 
+async def _resolve_export(arguments: DeliverableArgs, context: ToolContext) -> DeliverableArgs:
+    """按本轮对话的权限加载已保存的报表行，导出使用同一份数据。"""
+    if arguments.report_id is None:
+        return arguments
+    async with context.factory() as session:
+        _, conversation_id = await context.executor._scope_row(session)
+        run = await session.get_one(Run, context.run_id)
+        row = await read_report(session, conversation_id, arguments.report_id, run)
+        data = ReportData.model_validate(row.data)
+    return DeliverableArgs(title=arguments.title, format=arguments.format, columns=data.columns, rows=data.rows)
+
+
 def deliverable_spec(settings: Settings) -> ToolSpec:
     """为主助手注册需要逐次确认的私有文件写入。"""
 
     async def preview(arguments: BaseModel, context: ToolContext) -> dict[str, object]:
         """在批准前展示实际文件名和内容样例。"""
         assert isinstance(arguments, DeliverableArgs)
+        actual = await _resolve_export(arguments, context)
         return {
-            "summary": f"保存文件「{arguments.filename}」到我的材料",
+            "summary": f"保存文件「{actual.filename}」到我的材料",
             "effect": "仅当前用户在当前工作空间可访问",
-            "preview": arguments.markdown[:500]
-            if arguments.format == "md"
-            else {"表头": arguments.columns, "数据行数": len(arguments.rows), "首行": arguments.rows[:1]},
+            "preview": actual.markdown[:500]
+            if actual.format == "md"
+            else {"表头": actual.columns, "数据行数": len(actual.rows), "首行": actual.rows[:1]},
         }
 
     async def handler(context: ToolContext, arguments: BaseModel) -> object:
@@ -153,7 +174,8 @@ def deliverable_spec(settings: Settings) -> ToolSpec:
         assert isinstance(arguments, DeliverableArgs)
         if context.tool_call_id is None:
             raise ApplicationError("APPROVAL_REQUIRED", "文件交付需要有效的工具调用", 409)
-        data = await asyncio.to_thread(render_deliverable, arguments)
+        actual = await _resolve_export(arguments, context)
+        data = await asyncio.to_thread(render_deliverable, actual)
         file = await asyncio.to_thread(prepare_attachment, context.tool_call_id, arguments.filename, data)
         # Excel 包含生成时间；同一调用以业务标识去重，不能依赖二进制哈希。
         view = file.view.model_copy(update={"id": context.tool_call_id})
@@ -217,7 +239,10 @@ def deliverable_spec(settings: Settings) -> ToolSpec:
         key=CREATE_DELIVERABLE,
         version=1,
         display_name="生成可下载文件",
-        description="生成 Markdown 报告或 CSV、Excel 表格并保存到我的材料。必须提供真实正文或表格数据。",
+        description=(
+            "生成 Markdown 报告或 CSV、Excel 表格并保存到我的材料。"
+            "导出已有数据分析结果时只传 report_id，不传 columns 或 rows。"
+        ),
         args_model=DeliverableArgs,
         risk="write",
         approval="always",

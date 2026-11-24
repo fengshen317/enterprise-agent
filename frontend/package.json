@@ -16,6 +16,8 @@
   },
   "dependencies": {
     "dompurify": "^3.4.17",
+    "echarts": "^6.0.0",
+    "highlight.js": "^11.11.1",
     "marked": "^18.2.0",
     "pinia": "^4.1.0",
     "qrcode": "^1.5.4",

@@ -132,7 +132,7 @@ function applyTemplate(): void {
 .parser-fields {
   display: grid; grid-template-columns: 1fr 1fr; gap: 18px;
   label { color: $green; font-size: 12px; }
-  input, select { display: block; width: 100%; margin-top: 8px; border: 1px solid $line; border-radius: 5px; padding: 9px 11px; background: $paper; color: $ink; font: inherit; font-size: 12px; &:focus { outline: 2px solid #92ae7a; outline-offset: 2px; } }
+  input, select { display: block; width: 100%; margin-top: 8px; border: 1px solid $line; border-radius: 5px; padding: 9px 11px; background: $paper; color: $ink; font: inherit; font-size: 12px; &:focus { outline: 2px solid $green; outline-offset: 2px; } }
   &__wide { grid-column: 1 / -1; }
   &__hint { color: $muted; font-size: 11px; line-height: 1.8; }
 }

@@ -82,13 +82,13 @@ async function submit(): Promise<void> {
 <style scoped lang="scss">
 @use '../../styles/variables' as *;
 .reparse-dialog {
-  position: fixed; inset: 0; background: #19382f66; display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 20;
-  &__panel { background: white; border-radius: 9px; width: min(760px, 100%); max-height: 88vh; display: flex; flex-direction: column; overflow: hidden; }
+  position: fixed; inset: 0; background: rgba($ink, .40); display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 20;
+  &__panel { background: $surface; border-radius: 9px; width: min(760px, 100%); max-height: 88vh; display: flex; flex-direction: column; overflow: hidden; }
   &__header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 20px 22px; border-bottom: 1px solid $line; h2 { font-size: 17px; font-weight: 500; } p { color: $muted; font-size: 11px; margin-top: 6px; overflow-wrap: anywhere; } button { border: 0; background: none; color: $muted; font-size: 24px; line-height: 1; } }
   &__body { padding: 20px 22px; overflow-y: auto; }
   &__hint { color: $muted; font-size: 11px; line-height: 1.8; margin-bottom: 16px; }
-  &__error { margin-top: 14px; padding: 10px 14px; background: #faeee6; color: #934b40; border-radius: 5px; font-size: 12px; }
+  &__error { margin-top: 14px; padding: 10px 14px; background: $log-error-bg; color: $log-error; border-radius: 5px; font-size: 12px; }
   &__footer { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 22px; border-top: 1px solid $line; button:not(.reparse-dialog__primary) { border: 1px solid $line; background: $paper; border-radius: 5px; padding: 9px 14px; color: $green; } }
-  &__primary { background: $green; color: white; border: 0; border-radius: 6px; padding: 10px 16px; }
+  &__primary { background: $green; color: $on-green; border: 0; border-radius: 6px; padding: 10px 16px; }
 }
 </style>

@@ -140,12 +140,12 @@ onBeforeUnmount(() => { generation++; releaseReport() })
 @use '../../styles/variables' as *;
 @use '../../styles/knowledge';
 .evaluation {
-  padding: 22px; margin: 18px 0; border: 1px solid $line; border-radius: 8px; background: white;
+  padding: 22px; margin: 18px 0; border: 1px solid $line; border-radius: 8px; background: $surface;
   h2 { font-size: 17px; font-weight: 500; }
   p, small { color: $muted; font-size: 12px; line-height: 1.7; }
   a { color: $green; }
   label { display: grid; gap: 6px; font-size: 13px; }
-  &__run { padding: 8px 14px; border: 0; border-radius: 5px; background: $green; color: white; }
+  &__run { padding: 8px 14px; border: 0; border-radius: 5px; background: $green; color: $on-green; }
   &__results { padding-left: 20px; }
   li { margin: 10px 0; font-size: 13px; overflow-wrap: anywhere; }
   small { display: block; }

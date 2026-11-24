@@ -27,6 +27,7 @@ const messages = ref<Message[]>([])
 const input = ref('')
 interface DraftFile { key: string; filename: string; size: number; preview?: string; file?: File; savedId?: string }
 const fileDraft = shallowRef<DraftFile[]>([])
+const draftFileIds = computed(() => new Set(fileDraft.value.flatMap(item => item.savedId ? [item.savedId] : [])))
 const fileDrafts = new Map<string, DraftFile[]>()
 const fileExtensions = new Set(attachmentAccept.split(','))
 const run = ref<Run | null>(null)
@@ -212,7 +213,8 @@ function toggleCapabilities(): void {
 }
 function followUp(message: Message): void {
   if (input.value.trim() || loading.value || submitting.value || switchingAgent.value) return
-  const excerpt = message.content.replace(/\s+/g, ' ').trim()
+  const context = message.content.trim() || message.reports?.map(report => report.title).join('、') || ''
+  const excerpt = context.replace(/\s+/g, ' ').trim()
   const limit = 180
   if (!excerpt) return
   usePrompt('关于这条回答「' + excerpt.slice(0, limit) + (excerpt.length > limit ? '…' : '') + '」，我想追问：')
@@ -228,7 +230,12 @@ function applySnapshot(snapshot: Snapshot): void {
   approval.value = snapshot.approval ?? null
   const index = messages.value.findIndex(item => item.id === snapshot.message.id)
   if (index < 0) messages.value.push(snapshot.message)
-  else messages.value[index] = snapshot.message
+  else {
+    // 报表一旦挂到消息上就会保留，较早的快照可能尚未携带这份引用。
+    const reports = new Map(messages.value[index]?.reports?.map(report => [report.id, report]))
+    for (const report of snapshot.message.reports ?? []) reports.set(report.id, report)
+    messages.value[index] = reports.size ? { ...snapshot.message, reports: [...reports.values()] } : snapshot.message
+  }
   if (!isActive(snapshot.run)) {
     dispose?.(); dispose = null
     void refreshList().catch(showError)
@@ -377,6 +384,13 @@ watch(sendModeKey, key => {
   catch { sendMode.value = 'enter' }
 }, { immediate: true })
 watch(currentId, loadConversation, { immediate: true })
+watch(() => route.query.plugin, async (key) => {
+  if (key !== 'qq_mail' || currentId.value) return
+  if (!input.value.trim()) writeDraft('请在我的 QQ 邮箱里找到最近一封项目会议通知，读取正文并告诉我会议时间。')
+  await router.replace({ query: { ...route.query, plugin: undefined } })
+  await nextTick()
+  if (alive && !currentId.value) void composer.value?.focus()
+}, { immediate: true })
 watch(() => route.query.material, async (id) => {
   if (typeof id !== 'string' || !id) return
   const context = fileDraftKey.value
@@ -452,7 +466,7 @@ onBeforeUnmount(() => {
       aria-label="问答工作区"
     >
       <div class="chat__top">
-        <div><span class="chat__eyebrow">SEQUENCE / CONVERSATION</span><h1>{{ title }}</h1></div>
+        <h1>{{ title }}</h1>
         <div class="chat__top-actions">
           <span
             v-if="run || currentAgent"
@@ -477,7 +491,12 @@ onBeforeUnmount(() => {
             v-else-if="!messages.length"
             class="chat__welcome"
           >
-            <span class="chat__symbol">≋</span><h2>从一个问题，<br />打开新的思路。</h2><p>当前使用「{{ currentAgent?.name ?? '序列助手' }}」。<br />直接提问，或交给我一个复杂目标；我会按配置使用工具、技能和知识库。</p>
+            <span
+              class="chat__symbol"
+              aria-hidden="true"
+            >≋</span>
+            <h2>从一个问题开始</h2>
+            <p>当前使用「{{ currentAgent?.name ?? '序列助手' }}」。可以直接提问，也可以描述要完成的任务。</p>
             <div class="chat__prompts">
               <button
                 v-for="prompt in prompts"
@@ -512,8 +531,11 @@ onBeforeUnmount(() => {
               :progress-target="run && run.id === message.run_id ? progressTarget : null"
               :status-label="run && run.id === message.run_id ? statuses[run.status] : undefined"
               :follow-up-disabled="loading || submitting || switchingAgent || Boolean(input.trim())"
+              :reuse-files-disabled="submitting || loading"
+              :draft-file-ids="draftFileIds"
               @sources="openSources"
               @follow-up="followUp(message)"
+              @reuse-file="reuseFile($event, message.conversation_id); composer?.focus()"
             >
               <template
                 v-if="retryable && run?.id === message.run_id"
@@ -530,9 +552,9 @@ onBeforeUnmount(() => {
               </template>
             </AnswerMessage>
             <div
-              v-if="message.attachments?.length"
+              v-if="message.role === 'user' && message.attachments?.length"
               class="chat__files"
-              :aria-label="message.role === 'assistant' ? '生成的文件' : '消息附件'"
+              aria-label="消息附件"
             >
               <ChatFileCard
                 v-for="item in message.attachments"
@@ -543,13 +565,9 @@ onBeforeUnmount(() => {
                 :download="chatAttachmentUrl(message.conversation_id, item.id, true)"
                 :note="item.text_truncated ? '已读取部分文字' : !item.text_available && !isAttachmentImage(item.media_type) ? '未提取到文字' : undefined"
               >
-                <RouterLink
-                  v-if="message.role === 'assistant'"
-                  :to="'/materials/' + item.id"
-                >查看材料</RouterLink>
                 <button
                   type="button"
-                  :disabled="submitting || loading || fileDraft.some(entry => entry.savedId === item.id)"
+                  :disabled="submitting || loading || draftFileIds.has(item.id)"
                   :aria-label="'再次附加 ' + item.filename"
                   @click="reuseFile(item, message.conversation_id); composer?.focus()"
                 >
@@ -683,24 +701,57 @@ onBeforeUnmount(() => {
 <style scoped lang="scss">
 @use '../styles/variables' as *;
 .chat {
-  display: grid; grid-template-columns: 235px minmax(0, 1fr); height: calc(100dvh - 77px); min-height: 540px;
-  &__history { background: #f2f4ed; border-right: 1px solid $line; padding: 26px 16px; display: flex; flex-direction: column; gap: 20px; overflow: auto; }
-  &__history-heading { display: flex; justify-content: space-between; align-items: center; padding: 0 8px; color: $muted; font-size: 12px; button { background: none; border: 0; font-size: 20px; color: $green; } }
-  &__new { border: 1px solid #cad6bf; color: $green; background: #e8eedd; padding: 12px; border-radius: 6px; text-align: left; }
-  &__conversation { display: block; padding: 13px 11px; color: #657361; font-size: 12px; line-height: 1.5; border-radius: 6px; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; &--active { background: #dfe8d5; color: #294d38; } &:hover { background: #e6ecde; } }
-  &__local { margin-top: auto; color: #87927e; font-size: 10px; padding: 20px 8px 0; }
+  display: grid; grid-template-columns: 216px minmax(0, 1fr); height: calc(100dvh - #{$header-height}); min-height: 540px;
+  &__history { background: $paper; border-right: 1px solid $line; padding: 17px 13px; display: flex; flex-direction: column; gap: 12px; overflow: auto; }
+  &__history-heading {
+    display: flex; justify-content: space-between; align-items: center; padding: 0 6px; color: $muted; font-size: 12px;
+    button { background: none; border: 0; font-size: 20px; color: $green; }
+  }
+  &__new {
+    border: 1px solid $line; color: $green; background: $surface; padding: 8px 11px;
+    border-radius: $control-radius; text-align: left; font-weight: 650;
+    &:enabled:hover { border-color: $green; }
+  }
+  &__conversation {
+    display: block; padding: 9px 10px; color: $muted; font-size: 13px; line-height: 1.5; border-radius: $control-radius;
+    text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    &:hover { background: $sidebar; color: $ink; }
+    &--active, &--active:hover { background: $selection; color: $green; font-weight: 650; }
+  }
+  &__local { margin-top: auto; color: $muted; font-size: 11px; padding: 16px 6px 0; }
   &__workspace { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
-  &__top { padding: 25px 7%; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid $line; h1 { font-size: 17px; font-weight: 500; margin-top: 9px; overflow-wrap: anywhere; } }
+  &__top {
+    padding: 13px clamp(16px, 4vw, 42px); display: flex; align-items: center; justify-content: space-between;
+    gap: 14px; min-height: 57px; border-bottom: 1px solid $line; background: $surface;
+    h1 { font-size: 17px; font-weight: 650; overflow-wrap: anywhere; min-width: 0; }
+  }
   &__top-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 10px; }
   &__top-actions > :empty { display: none; }
   &__stage { flex: 1; display: flex; min-height: 0; min-width: 0; }
-  &__eyebrow { font-size: 9px; letter-spacing: 2px; color: #859576; }
-  &__model { font-size: 10px; color: $green; border: 1px solid #cbd7be; border-radius: 20px; padding: 7px 12px; }
+  &__model { font-size: 11px; color: $green; background: $sidebar; border-radius: 5px; padding: 4px 8px; }
   &__transcript { flex: 1; min-width: 0; overflow-y: auto; padding: 25px clamp(22px, 5vw, 84px); scroll-behavior: smooth; }
-  &__welcome { padding: 30px 0 40px; h2 { font-size: clamp(25px, 3vw, 40px); font-weight: 400; line-height: 1.6; letter-spacing: -1px; margin: 20px 0; } p { line-height: 2; color: $muted; font-size: 12px; } }
-  &__prompts { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 26px; button { background: #eef2e7; border: 1px solid $line; border-radius: 6px; padding: 11px 15px; color: #516b42; font-size: 12px; text-align: left; } }
-  &__symbol { font-size: 48px; color: #718e57; }
-  &__message { max-width: 920px; margin: 0 auto 10px; padding: 22px 0 26px; border-bottom: 1px solid #e5eadf; &--user .chat__body { background: #eaf0e1; padding: 15px 18px; border-radius: 8px; } }
+  &__welcome {
+    max-width: 920px; margin: 8px auto; padding: clamp(18px, 3vw, 32px);
+    border: 1px solid $line; border-radius: $panel-radius; background: linear-gradient(112deg, $hero-glow, $hero 73%);
+    h2 { @include page-title; margin: 12px 0 7px; }
+    p { line-height: 1.75; color: $muted; font-size: 14px; }
+  }
+  &__prompts {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px;
+    button {
+      min-height: 34px; background: $surface; border: 1px solid $line; border-radius: $control-radius;
+      padding: 7px 10px; color: $green; font-size: 12px; text-align: left;
+      &:enabled:hover { border-color: $green; }
+    }
+  }
+  &__symbol {
+    display: grid; place-items: center; width: 38px; height: 38px;
+    color: $on-green; background: $green; border-radius: 8px; font-size: 22px;
+  }
+  &__message {
+    max-width: 920px; margin: 0 auto 10px; padding: 20px 0; border-bottom: 1px solid $line;
+    &--user .chat__body { background: $selection; padding: 12px 15px; border-radius: $panel-radius; }
+  }
   &__files {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(min(235px, 100%), 1fr)); gap: 7px; margin-top: 8px;
     &--draft { margin: 0 0 8px; max-height: 125px; overflow-y: auto; }
@@ -708,15 +759,32 @@ onBeforeUnmount(() => {
   &__material-link { padding: 8px; color: $green; font-size: 12px; }
   &__speaker { font-size: 12px; color: $green; margin-bottom: 13px; display: flex; align-items: center; gap: 16px; span { font-size: 10px; color: $muted; } }
   &__body { overflow-wrap: anywhere; font-size: 14px; line-height: 1.95; }
-  &__composer { padding: 15px max(24px, 7%) 18px; background: $paper; }
-  &__disclaimer { text-align: center; color: #8b9683; font-size: 10px; margin-top: 10px; }
-  &__error { color: #8b493c; background: #faf0e8; border: 1px solid #e8d7c7; padding: 10px 12px; border-radius: 6px; font-size: 12px; margin-bottom: 10px; overflow-wrap: anywhere; }
-  &__run { color: #8b493c; font-size: 12px; margin-bottom: 8px; overflow-wrap: anywhere; }
+  &__composer {
+    width: 100%; max-width: calc(920px + clamp(44px, 10vw, 168px)); margin-inline: auto;
+    padding: 14px clamp(22px, 5vw, 84px) 16px; background: $paper;
+  }
+  &__disclaimer { text-align: center; color: $muted; font-size: 11px; margin-top: 8px; }
+  &__error { color: $log-error; background: $log-error-bg; padding: 10px 12px; border-radius: $control-radius; font-size: 12px; margin-bottom: 10px; overflow-wrap: anywhere; }
+  &__run { color: $log-error; font-size: 12px; margin-bottom: 8px; overflow-wrap: anywhere; }
   &__connection, &__hint { font-size: 12px; color: $muted; line-height: 1.9; }
   &__link { background: none; border: 0; color: $green; text-decoration: underline; padding: 5px; font-size: 12px; }
 }
-@media (max-width: 1100px) { .chat { grid-template-columns: 180px minmax(0, 1fr); &__top { padding: 22px; } } }
-@media (max-width: 760px) { .chat { grid-template-columns: minmax(0, 1fr); height: auto; min-height: calc(100dvh - 170px); &__history { max-height: 190px; border-right: 0; gap: 10px; padding: 14px; nav { display: flex; overflow-x: auto; } } &__conversation { max-width: 180px; flex-shrink: 0; } &__history-heading, &__local { display: none; } &__transcript { min-height: 250px; max-height: 60dvh; } &__welcome { padding: 0; } &__composer { padding-inline: 14px; } } }
-@media (max-width: 540px) { .chat { &__top { gap: 12px; } &__top-actions { flex: 0 0 auto; flex-direction: column; align-items: flex-end; } } }
+@media (max-width: 1100px) { .chat { grid-template-columns: 168px minmax(0, 1fr); } }
+@media (max-width: 760px) {
+  .chat {
+    grid-template-columns: minmax(0, 1fr); height: auto; min-height: calc(100dvh - 170px);
+    &__history {
+      max-height: 190px; border-right: 0; border-bottom: 1px solid $line; gap: 8px; padding: 12px 14px;
+      nav { display: flex; overflow-x: auto; }
+    }
+    &__conversation { max-width: 180px; flex-shrink: 0; }
+    &__history-heading, &__local { display: none; }
+    &__hint br { display: none; }
+    &__transcript { min-height: 250px; max-height: 60dvh; padding-inline: 14px; }
+    &__welcome { margin-block: 0; }
+    &__composer { padding-inline: 14px; }
+  }
+}
+@media (max-width: 540px) { .chat { &__top { gap: 10px; } &__top-actions { max-width: 55%; flex: 0 0 auto; flex-direction: column; align-items: flex-end; } } }
 @media (prefers-reduced-motion: reduce) { .chat__transcript { scroll-behavior: auto; } }
 </style>

@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     tools_enabled: bool = True
     tool_timeout_seconds: float = Field(default=5, gt=0, le=30)
     tool_max_calls_per_run: int = Field(default=4, ge=1, le=10)
+    report_sandbox_image: str = Field(default="", max_length=250)
+    report_sandbox_runtime: str = Field(default="", max_length=80)
+    report_sandbox_broker_url: str = Field(default="", max_length=500)
+    report_sandbox_broker_token: SecretStr = SecretStr("")
+    report_sandbox_timeout_seconds: float = Field(default=30, ge=5, le=90)
     connector_monitor_enabled: bool = True
     connector_monitor_interval_seconds: float = Field(default=60, ge=1, le=3600)
     connector_credential_key: SecretStr = SecretStr("")

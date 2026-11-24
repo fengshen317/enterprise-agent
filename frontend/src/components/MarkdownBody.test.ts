@@ -1,6 +1,8 @@
-import { mount } from '@vue/test-utils'
-import { expect, it } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+import { afterEach, expect, it, vi } from 'vitest'
 import MarkdownBody from './MarkdownBody.vue'
+
+afterEach(() => { vi.unstubAllGlobals() })
 
 it('把 Markdown 表格渲染为可读的 HTML 表格', () => {
   const wrapper = mount(MarkdownBody, {
@@ -41,5 +43,40 @@ it('只有当前回答可定位的正文引用可用键盘触发，不改写链�
   expect(wrapper.text()).toContain('[8]')
   await references[0]!.trigger('click')
   expect(wrapper.emitted('cite')).toEqual([[1, references[0]!.element, [1]]])
+  wrapper.unmount()
+})
+
+it('结束后可逐块复制原代码，未知语言仍可阅读，代码中的标签不会执行', async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined)
+  vi.stubGlobal('navigator', { clipboard: { writeText } })
+  const wrapper = mount(MarkdownBody, {
+    attachTo: document.body,
+    props: {
+      content: '```js\nconst tag = "<img src=x onerror=alert(1)>"\n```\n\n```custom\n  a[1]\n```',
+      citationIndices: [1],
+      enhanceBlocks: true,
+    },
+  })
+  await vi.waitFor(() => { expect(wrapper.get('.hljs-keyword').text()).toBe('const') })
+  expect(wrapper.find('img').exists()).toBe(false)
+  expect(wrapper.find('button[data-cite]').exists()).toBe(false)
+  expect(wrapper.find('.markdown-body__copy').exists()).toBe(false)
+
+  await wrapper.setProps({ canCopyCode: true })
+  const [first, second] = wrapper.findAll('.markdown-body__code')
+  expect(first!.get('.markdown-body__code-header').text()).toContain('js')
+  expect(second!.get('.markdown-body__code-header').text()).toContain('custom')
+  expect(second!.find('code span').exists()).toBe(false)
+  await second!.get('button').trigger('click')
+  await flushPromises()
+  expect(writeText).toHaveBeenCalledExactlyOnceWith('  a[1]\n')
+  expect(second!.get('button').text()).toBe('已复制')
+
+  writeText.mockRejectedValueOnce(new Error('剪贴板权限受限'))
+  await first!.get('button').trigger('click')
+  await flushPromises()
+  expect(first!.get('button').text()).toBe('复制失败')
+  expect(wrapper.get('[role="status"]').text()).toContain('请手动选中代码')
+  expect(second!.get('button').text()).toBe('复制代码')
   wrapper.unmount()
 })

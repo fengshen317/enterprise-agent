@@ -23,6 +23,11 @@ function closeMenuFromLink(event: MouseEvent): void {
 
 watch(() => route.path, () => { mobileMenuOpen.value = false })
 const sectionTitle = computed(() => typeof route.meta.title === 'string' ? route.meta.title : '问答')
+const inCapabilityCenter = computed(() => route.path === '/admin/plugins'
+  || route.path === '/capabilities' || route.path.startsWith('/capabilities/'))
+const inChannels = computed(() => route.path === '/channels' || route.path.startsWith('/channels/'))
+const sectionParent = computed(() => route.path === '/admin/plugins' ? '能力中心'
+  : route.meta.admin || route.meta.systemAdmin ? '后台管理' : '工作空间')
 async function signOut(): Promise<void> {
   try { await auth.signOut(); await router.replace('/login') } catch (value) { error.value = value instanceof Error ? value.message : '退出失败，请重试' }
 }
@@ -49,7 +54,10 @@ async function changeWorkspace(event: Event): Promise<void> {
     >
       <div class="workspace__top">
         <div class="workspace__brand">
-          <span class="workspace__mark">≋</span><div>序列<small>AGENT WORKSPACE</small></div>
+          <span
+            class="workspace__mark"
+            aria-hidden="true"
+          >≋</span><span>序列</span>
         </div>
         <button
           ref="menuButton"
@@ -105,6 +113,8 @@ async function changeWorkspace(event: Event): Promise<void> {
           >◎ Agent 管理</RouterLink>
           <RouterLink
             class="workspace__nav"
+            :class="{ 'workspace__nav--current': inCapabilityCenter }"
+            :aria-current="inCapabilityCenter ? 'page' : undefined"
             to="/capabilities"
           >✦ 能力中心</RouterLink>
           <RouterLink
@@ -122,8 +132,10 @@ async function changeWorkspace(event: Event): Promise<void> {
           >⏱ 定时任务</RouterLink>
           <RouterLink
             class="workspace__nav"
-            to="/channels/wechat"
-          >✉ 微信</RouterLink>
+            :class="{ 'workspace__nav--current': inChannels }"
+            :aria-current="inChannels ? 'page' : undefined"
+            to="/channels"
+          >✉ 通讯通道</RouterLink>
           <RouterLink
             class="workspace__nav"
             to="/system"
@@ -144,9 +156,6 @@ async function changeWorkspace(event: Event): Promise<void> {
             to="/admin/api-settings"
           >API 配置</RouterLink>
         </nav>
-        <div class="workspace__next">
-          对话 · 智能体 · 能力扩展
-        </div>
         <div class="workspace__account">
           <span>{{ auth.session?.user.display_name }}</span><button
             type="button"
@@ -160,9 +169,6 @@ async function changeWorkspace(event: Event): Promise<void> {
             {{ error }}
           </p>
         </div>
-        <div class="workspace__sidebar-footer">
-          DEEP AGENTS<br />从一个问题，到完整交付。
-        </div>
       </div>
     </aside>
     <main
@@ -170,8 +176,18 @@ async function changeWorkspace(event: Event): Promise<void> {
       class="workspace__main"
       tabindex="-1"
     >
-      <header class="workspace__header">
-        <span>{{ route.meta.admin ? '后台管理' : '工作空间' }} / {{ sectionTitle }}</span><span class="workspace__stage">对话 · 规划 · 协作</span>
+      <header
+        class="workspace__header"
+        :class="{ 'workspace__header--capabilities': route.path === '/capabilities' || route.path === '/admin/plugins' }"
+      >
+        <span class="workspace__breadcrumb">
+          <RouterLink
+            v-if="inChannels && route.path !== '/channels'"
+            to="/channels"
+          >通讯通道</RouterLink>
+          <template v-else>{{ sectionParent }}</template>
+          / <strong>{{ sectionTitle }}</strong>
+        </span>
       </header>
       <ConnectorNotice />
       <RouterView :key="(auth.session?.user.id ?? '') + auth.selectedWorkspaceId" />
@@ -180,13 +196,23 @@ async function changeWorkspace(event: Event): Promise<void> {
 </template>
 
 <style scoped lang="scss">
-.workspace__space label { display: block; font-size: 10px; margin-bottom: 9px; color: #a9bba2; }
-.workspace__space select { width: 100%; background: #244737; color: #e5eddb; border: 1px solid #58745a; border-radius: 4px; padding: 8px; font: inherit; }
-.workspace__account { margin: auto 10px 20px; padding-top: 20px; font-size: 12px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
-.workspace__account button { border: 0; background: none; color: #c4d8b5; padding: 0; font-size: 11px; text-decoration: underline; }
+@use './styles/variables' as *;
+
+.workspace__header--capabilities {
+  padding-inline: 0;
+
+  .workspace__breadcrumb {
+    width: 100%; max-width: $plugin-content-width; margin-inline: auto; padding-inline: $plugin-content-gutter;
+  }
+}
+.workspace__breadcrumb a { color: $green; text-underline-offset: 2px; }
+.workspace__space label { display: block; font-size: 12px; margin-bottom: 7px; color: $muted; }
+.workspace__space select { width: 100%; background: $surface; color: $ink; border: 1px solid $line; border-radius: 7px; padding: 8px; font: inherit; }
+.workspace__account { margin: auto 6px 8px; padding-top: 14px; color: $muted; font-size: 12px; display: flex; flex-wrap: wrap; gap: 9px; align-items: center; }
+.workspace__account button { border: 0; background: none; color: $green; padding: 0; font: inherit; text-decoration: underline; }
 .workspace__nav--admin-child {
-  margin-left: 12px; padding: 9px 14px; border: 1px solid transparent; background: transparent;
-  &::before { content: ''; display: inline-block; width: 6px; height: 6px; margin: 0 8px 2px 0; border-radius: 50%; background: #b5d5a5; }
-  &:hover, &[aria-current='page'] { border-color: #557763; background: #2b5143; }
+  margin-left: 9px; padding: 7px 9px; border: 1px solid transparent; background: transparent;
+  &::before { content: ''; display: inline-block; width: 5px; height: 5px; margin: 0 8px 2px 0; border-radius: 50%; background: currentColor; }
+  &:hover, &[aria-current='page'] { border-color: $line; background: $selection; }
 }
 </style>

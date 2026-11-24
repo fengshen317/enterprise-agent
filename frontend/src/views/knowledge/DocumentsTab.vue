@@ -418,7 +418,7 @@ onBeforeUnmount(() => { alive = false; revision++; clearTimeout(timer) })
 @use '../../styles/variables' as *;
 @use '../../styles/knowledge';
 .documents-tab {
-  background: white; border: 1px solid $line; border-radius: 8px; padding: 22px; margin-bottom: 22px;
+  background: $surface; border: 1px solid $line; border-radius: 8px; padding: 22px; margin-bottom: 22px;
   &__toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; h2 { font-size: 18px; font-weight: 600; } }
   &__refresh { @include knowledge.row-action; }
   &__body, &__table-wrap { min-width: 0; }
@@ -428,14 +428,14 @@ onBeforeUnmount(() => { alive = false; revision++; clearTimeout(timer) })
     input[type="file"] { width: min(100%, 235px); font-size: 12px; }
     input::file-selector-button { margin-right: 6px; @include knowledge.row-action; }
     button { @include knowledge.row-action; }
-    .documents-tab__primary { background: $green; color: white; border-color: $green; &:hover { background: $ink; } }
+    .documents-tab__primary { background: $green; color: $on-green; border-color: $green; &:hover { background: $ink; } }
     label { color: $log-muted; font-size: 12px; }
     select { @include knowledge.row-action; }
   }
   &__upload-heading { flex-basis: 100%; h3 { font-size: 15px; margin-bottom: 5px; } }
   &__file-mark { display: none; }
   &__scope { display: inline-block; margin-top: 6px; color: $log-warning; background: $log-warning-bg; padding: 3px 7px; border-radius: 5px; font-size: 12px; }
-  &__queue { list-style: none; margin: 16px 0 0; padding: 12px 14px; background: $paper; border-radius: 6px; font-size: 11px; li { display: flex; flex-wrap: wrap; gap: 10px; padding: 4px 0; color: $green; small { color: #934b40; width: 100%; } } }
+  &__queue { list-style: none; margin: 16px 0 0; padding: 12px 14px; background: $paper; border-radius: 6px; font-size: 11px; li { display: flex; flex-wrap: wrap; gap: 10px; padding: 4px 0; color: $green; small { color: $log-error; width: 100%; } } }
   &__table-wrap { margin-top: 18px; }
   &__table {
     @include knowledge.table(13px 12px);
@@ -446,7 +446,7 @@ onBeforeUnmount(() => { alive = false; revision++; clearTimeout(timer) })
   }
   &__name { display: block; color: $ink; font-size: 15px; font-weight: 600; }
   &__state { @include knowledge.state; }
-  &__progress { width: min(100%, 120px); height: 4px; background: #e8ece3; border-radius: 4px; margin-top: 7px; overflow: hidden; span { display: block; height: 100%; background: $green; } }
+  &__progress { width: min(100%, 120px); height: 4px; background: $line; border-radius: 4px; margin-top: 7px; overflow: hidden; span { display: block; height: 100%; background: $green; } }
   &__count { color: $log-muted; font-variant-numeric: tabular-nums; }
   &__mobile-label { display: none; }
   &__actions, &__more-actions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; }
@@ -455,8 +455,8 @@ onBeforeUnmount(() => { alive = false; revision++; clearTimeout(timer) })
   &__more-actions { margin-top: 6px; }
   &__actions &__delete { color: $log-error; }
   &__error, &__notice { padding: 12px 16px; border-radius: 5px; font-size: 12px; line-height: 1.8; margin-top: 16px; }
-  &__error { background: #faeee6; color: #934b40; }
-  &__notice { background: #eaf0e1; color: $green; }
+  &__error { background: $log-error-bg; color: $log-error; }
+  &__notice { background: $selection; color: $green; }
   &__empty { padding: 24px 0; color: $muted; font-size: 12px; }
 }
 @media (min-width: $knowledge-stack-width + 1px) {

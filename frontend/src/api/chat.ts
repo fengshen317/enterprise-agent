@@ -1,9 +1,10 @@
 import { API_BASE_URL, ApiError, requestJson, requestForm, getWorkspaceId, notifyUnauthorized } from './client'
 import { parseApproval, type Approval } from './approvals'
 import { parseChatAttachment, type ChatAttachment } from './chatAttachments'
+import { parseChatReportRef, type ChatReportRef } from './chatReports'
 
 export interface Conversation { id: string; title: string; status: string; agent_profile_id?: string | null; updated_at: string }
-export interface Message { id: string; conversation_id: string; run_id: string | null; sequence: number; role: 'user' | 'assistant'; content: string; status: string; created_at?: string; attachments?: ChatAttachment[] }
+export interface Message { id: string; conversation_id: string; run_id: string | null; sequence: number; role: 'user' | 'assistant'; content: string; status: string; created_at?: string; attachments?: ChatAttachment[]; reports?: ChatReportRef[] }
 export type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
 export interface Run { id: string; conversation_id: string; status: RunStatus; model: string; error_code: string | null; error_message: string | null; started_at?: string | null; finished_at?: string | null }
 export interface Snapshot { run: Run; message: Message; approval?: Approval | null }
@@ -20,10 +21,16 @@ function parseConversation(value: unknown): Conversation {
 }
 function parseMessage(value: unknown): Message {
   if (!record(value) || typeof value.id !== 'string' || typeof value.conversation_id !== 'string' || !(value.run_id === null || typeof value.run_id === 'string') || typeof value.sequence !== 'number' || !['user', 'assistant'].includes(String(value.role)) || typeof value.content !== 'string' || !['streaming', 'completed', 'interrupted'].includes(String(value.status))) return invalid()
-  const message = value as unknown as Message
-  if (value.attachments === undefined) return message
-  if (!Array.isArray(value.attachments)) return invalid()
-  return { ...message, attachments: value.attachments.map(parseChatAttachment) }
+  const message = { ...value } as unknown as Message
+  if (value.attachments !== undefined) {
+    if (!Array.isArray(value.attachments)) return invalid()
+    message.attachments = value.attachments.map(parseChatAttachment)
+  }
+  if (value.reports !== undefined) {
+    if (!Array.isArray(value.reports)) return invalid()
+    message.reports = value.reports.map(parseChatReportRef)
+  }
+  return message
 }
 export function parseSnapshot(value: unknown): Snapshot {
   if (!record(value) || !record(value.run)) return invalid()

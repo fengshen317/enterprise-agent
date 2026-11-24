@@ -102,7 +102,6 @@ onMounted(load)
         >
           ← 返回能力中心
         </button>
-        <span class="skill-editor__eyebrow">SKILL / SOP</span>
         <h1>{{ skillId ? form.name || '技能配置' : '新建技能' }}</h1>
         <p>技能是版本化的工作方法：目标、步骤、示例和输出规范。它不能新增工具权限，只能收窄知识库范围。</p>
       </div>
@@ -306,29 +305,28 @@ onMounted(load)
 @use '../../styles/variables' as *;
 .skill-editor {
   max-width: 1280px; margin: 0 auto; padding: 40px clamp(20px, 4vw, 56px) 70px;
-  &__heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; padding-bottom: 22px; border-bottom: 1px solid $line; h1 { font-size: clamp(26px, 3vw, 38px); font-weight: 400; margin: 8px 0; } p { color: $muted; font-size: 12px; line-height: 1.9; max-width: 680px; } }
+  &__heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; padding-bottom: 22px; border-bottom: 1px solid $line; h1 { @include page-title; margin-bottom: 7px; } p { color: $muted; font-size: 12px; line-height: 1.9; max-width: 680px; } }
   &__back { border: 0; background: none; color: $green; font-size: 12px; padding: 0 0 12px; }
-  &__eyebrow { font-size: 9px; letter-spacing: 2px; color: #859576; }
   &__actions { display: flex; gap: 9px; }
-  &__primary, &__publish { border: 0; border-radius: 5px; padding: 10px 16px; font-size: 12px; white-space: nowrap; }
-  &__primary { background: #31533d; color: #edf4e4; }
-  &__publish { background: #e8eedd; color: $green; border: 1px solid #cbd7be; }
+  &__primary, &__publish { border: 0; border-radius: $control-radius; padding: 10px 16px; font-size: 13px; font-weight: 650; white-space: nowrap; }
+  &__primary { background: $green; color: $on-green; &:enabled:hover { background: $green-hover; } }
+  &__publish { background: $selection; color: $green; border: 1px solid $line; }
   &__layout { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 18px; margin-top: 24px; align-items: start; }
   &__main { display: grid; gap: 18px; }
   &__side { display: grid; gap: 18px; position: sticky; top: 20px; }
-  &__card { border: 1px solid $line; background: #fff; border-radius: 8px; padding: 20px; h2 { font-size: 14px; color: $green; margin-bottom: 14px; font-weight: 500; } }
-  &__fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; label { font-size: 11px; color: $green; display: flex; flex-direction: column; gap: 6px; } input, select, textarea { border: 1px solid #d6dfd0; background: $paper; border-radius: 4px; padding: 8px; font: inherit; color: $ink; } }
+  &__card { border: 1px solid $line; background: $surface; border-radius: $panel-radius; padding: 20px; h2 { font-size: 16px; color: $ink; margin-bottom: 14px; font-weight: 500; } }
+  &__fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; label { font-size: 11px; color: $green; display: flex; flex-direction: column; gap: 6px; } input, select, textarea { border: 1px solid $line; background: $paper; border-radius: 4px; padding: 8px; font: inherit; color: $ink; } }
   &__wide { grid-column: 1 / -1; }
-  &__editor { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; textarea { width: 100%; border: 1px solid #d6dfd0; background: $paper; border-radius: 5px; padding: 12px; font: 12px/1.8 ui-monospace, SFMono-Regular, Consolas, monospace; color: $ink; resize: vertical; } }
-  &__preview { border: 1px solid #e0e6da; border-radius: 5px; padding: 12px; max-height: 430px; overflow: auto; background: #fcfdf9; > span { display: block; color: $muted; font-size: 10px; margin-bottom: 8px; } }
+  &__editor { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; textarea { width: 100%; border: 1px solid $line; background: $paper; border-radius: 5px; padding: 12px; font: 12px/1.8 ui-monospace, SFMono-Regular, Consolas, monospace; color: $ink; resize: vertical; } }
+  &__preview { border: 1px solid $line; border-radius: 5px; padding: 12px; max-height: 430px; overflow: auto; background: $surface; > span { display: block; color: $muted; font-size: 10px; margin-bottom: 8px; } }
   &__options { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
-  &__option { display: flex; gap: 8px; align-items: center; border: 1px solid #e0e6da; border-radius: 5px; padding: 9px; font-size: 12px; span { display: flex; flex-direction: column; } small { color: $muted; font-size: 10px; } }
+  &__option { display: flex; gap: 8px; align-items: center; border: 1px solid $line; border-radius: 5px; padding: 9px; font-size: 12px; span { display: flex; flex-direction: column; } small { color: $muted; font-size: 10px; } }
   &__radio { display: block; font-size: 12px; margin: 9px 0; }
   &__kb-list { display: grid; gap: 6px; font-size: 12px; }
   &__hint { color: $muted; font-size: 11px; line-height: 1.8; }
-  &__versions { list-style: none; padding: 0; margin: 0; display: grid; gap: 9px; li { display: flex; flex-direction: column; gap: 3px; border-bottom: 1px solid #edf0e9; padding-bottom: 8px; font-size: 11px; } span { color: $muted; font-size: 10px; } }
-  &__error { color: #8b493c; background: #faf0e8; border: 1px solid #e8d7c7; padding: 10px 12px; border-radius: 6px; font-size: 12px; margin-top: 18px; }
-  &__notice { color: #386b4f; background: #edf4e6; border: 1px solid #d6e5c9; padding: 10px 12px; border-radius: 6px; font-size: 12px; margin-top: 18px; }
+  &__versions { list-style: none; padding: 0; margin: 0; display: grid; gap: 9px; li { display: flex; flex-direction: column; gap: 3px; border-bottom: 1px solid $line; padding-bottom: 8px; font-size: 11px; } span { color: $muted; font-size: 10px; } }
+  &__error { color: $log-error; background: $log-error-bg; border: 1px solid $line; padding: 10px 12px; border-radius: 6px; font-size: 12px; margin-top: 18px; }
+  &__notice { color: $log-success; background: $log-success-bg; border: 1px solid $line; padding: 10px 12px; border-radius: 6px; font-size: 12px; margin-top: 18px; }
 }
 @media (max-width: 900px) { .skill-editor__layout { grid-template-columns: minmax(0, 1fr); } .skill-editor__side { position: static; } .skill-editor__editor { grid-template-columns: minmax(0, 1fr); } .skill-editor__heading { flex-direction: column; align-items: flex-start; } }
 </style>

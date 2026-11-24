@@ -7,12 +7,14 @@ import * as api from '../api/chat'
 import * as agentApi from '../api/agents'
 import type { Message, Snapshot } from '../api/chat'
 import type { Approval } from '../api/approvals'
+import { getChatReport, type ChatReport } from '../api/chatReports'
 import { getMaterial } from '../api/materials'
 import { getToolCalls, type ToolCall } from '../api/tools'
 import { useAuthStore } from '../stores/auth'
 
 vi.mock('../api/agents', () => ({ listAgents: vi.fn() }))
 vi.mock('../api/tools', () => ({ getToolCalls: vi.fn() }))
+vi.mock('../api/chatReports', async (getActual) => ({ ...await getActual<typeof import('../api/chatReports')>(), getChatReport: vi.fn() }))
 vi.mock('../api/materials', async (importOriginal) => {
   const original = await importOriginal<typeof import('../api/materials')>()
   return { ...original, getMaterial: vi.fn() }
@@ -25,6 +27,16 @@ const first: Message = { id: 'm1', conversation_id: 'c1', run_id: null, sequence
 const old: Snapshot = { run: { id: 'r1', conversation_id: 'c1', status: 'completed', model: 'test', error_code: null, error_message: null }, message: { ...first, id: 'm2', run_id: 'r1', sequence: 2, role: 'assistant', content: '旧回答' } }
 const current: Snapshot = { run: { ...old.run, id: 'r2', status: 'running' }, message: { ...old.message, id: 'm4', run_id: 'r2', sequence: 4, content: '部分内容', status: 'streaming' } }
 const imageAttachment = { id: 'f1', filename: '图表.png', media_type: 'image/png', size_bytes: 4, text_available: false, text_truncated: false }
+const reportRef = { id: 'report-1', title: '月度销量报表' }
+const report: ChatReport = {
+  ...reportRef,
+  explanation: '按月汇总销量',
+  columns: ['月份', '销量'],
+  rows: [['一月 <img src=x>', 32], ['二月', null]],
+  charts: [{ title: '销量趋势', type: 'line', x: '月份', y: ['销量'] }],
+  source_files: ['销量.csv'],
+  code: 'print("</code><script>示例</script>")\n',
+}
 const executionCalls = (runId: string, status: ToolCall['status'], title: string): ToolCall[] => [
   { id: runId + '-plan', run_id: runId, tool_name: 'update_plan', status: 'completed',
     days: null, error_code: null, created_at: '', finished_at: '',
@@ -50,6 +62,23 @@ beforeEach(() => {
   vi.mocked(api.getMessages).mockResolvedValue({ items: [first, old.message], has_more: false, active_run_id: null })
   vi.mocked(api.getRun).mockImplementation(async id => id === 'r1' ? old : current)
   vi.mocked(api.watchRun).mockReturnValue(vi.fn())
+})
+
+it('从 QQ 邮箱进入问答只预填草稿，且不覆盖正在编辑的内容', async () => {
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/chat/:conversationId?', component: ChatView }] })
+  await router.push('/chat?plugin=qq_mail')
+  const wrapper = mount(ChatView, { global: { plugins: [router] } })
+  await flushPromises()
+  const composer = wrapper.get<HTMLTextAreaElement>('.chat-composer textarea')
+  expect(composer.element.value).toContain('我的 QQ 邮箱')
+  expect(router.currentRoute.value.query.plugin).toBeUndefined()
+  await composer.setValue('保留这条草稿')
+  await router.push('/chat?plugin=qq_mail')
+  await flushPromises()
+  expect(composer.element.value).toBe('保留这条草稿')
+  expect(api.createRun).not.toHaveBeenCalled()
+  expect(api.createConversation).not.toHaveBeenCalled()
+  wrapper.unmount()
 })
 
 it('附件可移除，纯附件发送使用 multipart，网络失败时保留同一提交键', async () => {
@@ -104,9 +133,16 @@ it('历史回答直接显示生成文件并提供鉴权下载', async () => {
   await router.push('/chat/c1')
   const wrapper = mount(ChatView, { global: { plugins: [router] } })
   await flushPromises()
-  const card = wrapper.get('[aria-label="生成的文件"]')
-  expect(card.get('[aria-label="下载 复盘.md"]').attributes('href')).toContain('/attachments/f1/file?')
+  const card = wrapper.get('.answer-message__files')
+  expect(card.get('h3').text()).toBe('生成的文件')
+  const download = card.get('[aria-label="下载 复盘.md"]')
+  expect(download.text()).toBe('下载')
+  expect(download.attributes('href')).toContain('/attachments/f1/file?')
   expect(card.get('a[href="/materials/f1"]').text()).toBe('查看材料')
+  const reuse = card.get('button[aria-label="再次附加 复盘.md"]')
+  await reuse.trigger('click')
+  expect(reuse.attributes('disabled')).toBeDefined()
+  expect(wrapper.get('[aria-label="待发送附件"]').text()).toContain('复盘.md')
   wrapper.unmount()
 })
 
@@ -151,7 +187,7 @@ it('输入区通过加号统一打开 Agent、能力和快捷指令，点击外�
   const wrapper = mount(ChatView, { global: { plugins: [router] }, attachTo: document.body })
   await flushPromises()
   const opener = wrapper.get('[aria-label="更多功能"]')
-  expect(opener.text()).toBe('+')
+  expect(opener.text()).toContain('工具')
   expect(wrapper.find('[aria-label="选择 Agent"]').exists()).toBe(false)
   await opener.trigger('click')
   const menu = wrapper.get('[aria-label="输入框功能"]')
@@ -262,7 +298,7 @@ it('助手回答中的 Markdown 表格按表格渲染', async () => {
   const table: Message = {
     ...old.message,
     id: 'm5',
-    content: '**知识点日历**\n\n| 天 | 知识点 |\n|---|------|\n| 1 | 什么是 Deep Agent |',
+    content: '**知识点日历**\n\n| 天 | 知识点 |\n|---|------|\n| 1 | 什么是 Deep Agent |\n\n```python\nprint(1)\n```',
   }
   vi.mocked(api.getMessages).mockResolvedValue({ items: [first, table], has_more: false, active_run_id: null })
   vi.mocked(api.getRun).mockResolvedValue({ run: old.run, message: table })
@@ -271,10 +307,14 @@ it('助手回答中的 Markdown 表格按表格渲染', async () => {
   const wrapper = mount(ChatView, { global: { plugins: [router] } })
   await flushPromises()
   const body = wrapper.findAll('.chat__body')[1]!
-  expect(body.find('table').exists()).toBe(true)
+  const scroll = body.get('[role="region"][aria-label="表格"]')
+  expect(scroll.attributes('tabindex')).toBe('0')
+  expect(scroll.find('table').exists()).toBe(true)
   expect(body.findAll('th')).toHaveLength(2)
   expect(body.text()).toContain('什么是 Deep Agent')
   expect(body.text()).not.toContain('|---|')
+  expect(body.get('.markdown-body__code-header').text()).toContain('python')
+  expect(body.get('.markdown-body__copy').text()).toBe('复制代码')
   wrapper.unmount()
 })
 
@@ -519,5 +559,58 @@ it('停止请求失败时不会自动发送补充要求', async () => {
   expect(api.createRun).not.toHaveBeenCalled()
   expect(wrapper.get('textarea').element.value).toBe('未发送的补充要求')
   expect(wrapper.text()).toContain('停止请求失败')
+  wrapper.unmount()
+})
+
+it('历史报表加载失败后可重试并查看表格、源文件及原始 Python', async () => {
+  const message = { ...old.message, content: '', reports: [reportRef] }
+  vi.mocked(api.getMessages).mockResolvedValue({ items: [first, message], has_more: false, active_run_id: null })
+  vi.mocked(api.getRun).mockResolvedValue(old)
+  vi.mocked(getChatReport).mockRejectedValueOnce(new Error('请求超时')).mockResolvedValueOnce(report)
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/chat/:conversationId?', component: ChatView }] })
+  await router.push('/chat/c1')
+  const wrapper = mount(ChatView, { global: { plugins: [router], stubs: { ReportChart: true } } })
+  await flushPromises()
+  const card = wrapper.get('.chat-report')
+  expect(card.get('[role="status"]').text()).toContain('请求超时')
+  await card.get('button').trigger('click')
+  await flushPromises()
+  expect(getChatReport).toHaveBeenCalledTimes(2)
+  expect(getChatReport).toHaveBeenCalledWith('c1', reportRef.id)
+  expect(card.find('report-chart-stub').exists()).toBe(true)
+  expect(card.get('[role="region"]').attributes('tabindex')).toBe('0')
+  expect(card.get('th').attributes('scope')).toBe('col')
+  expect(card.get('td').text()).toBe('一月 <img src=x>')
+  expect(card.find('img, script').exists()).toBe(false)
+  expect(card.text()).toContain('销量.csv')
+  expect(card.get('pre > code').element.textContent).toBe(report.code)
+  wrapper.unmount()
+})
+
+it('运行快照更新时保留报表与已展开内容，并支持基于报表继续追问', async () => {
+  const message = { ...current.message, content: '' }
+  vi.mocked(api.getMessages).mockResolvedValue({ items: [first, message], has_more: false, active_run_id: 'r2' })
+  vi.mocked(api.getRun).mockResolvedValue({ ...current, message })
+  vi.mocked(getChatReport).mockResolvedValue(report)
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/chat/:conversationId?', component: ChatView }] })
+  await router.push('/chat/c1')
+  const wrapper = mount(ChatView, { global: { plugins: [router], stubs: { ReportChart: true } } })
+  await flushPromises()
+  const receive = vi.mocked(api.watchRun).mock.calls[0]![1]
+  receive({ ...current, message: { ...message, reports: [reportRef] } })
+  await flushPromises()
+  const disclosure = wrapper.get('.chat-report details').element
+  disclosure.setAttribute('open', '')
+  receive({ ...current, message: { ...message, reports: [{ ...reportRef }] } })
+  receive({ run: { ...current.run, status: 'completed' }, message: { ...message, status: 'completed' } })
+  await flushPromises()
+  expect(wrapper.get('.chat-report details').element).toBe(disclosure)
+  expect(disclosure.hasAttribute('open')).toBe(true)
+  expect(getChatReport).toHaveBeenCalledTimes(1)
+  expect(wrapper.text()).not.toContain('本次未生成正文')
+  const followUp = wrapper.findAll('button').find(button => button.text() === '基于此回答追问')
+  expect(followUp).toBeDefined()
+  await followUp!.trigger('click')
+  expect(wrapper.get('textarea').element.value).toContain(reportRef.title)
   wrapper.unmount()
 })

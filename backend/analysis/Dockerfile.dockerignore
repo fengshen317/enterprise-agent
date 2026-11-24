@@ -1,0 +1,7 @@
+**
+!analysis/Dockerfile
+!analysis/bootstrap.py
+!analysis/broker.py
+!analysis/execute.py
+!analysis/requirements.txt
+!app/services/report_sandbox.py

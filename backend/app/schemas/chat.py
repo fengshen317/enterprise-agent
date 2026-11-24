@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.approval import ApprovalView
+from app.schemas.report import ReportRef
 
 RunStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 MAX_CHAT_ATTACHMENTS = 4
@@ -106,6 +107,7 @@ class MessageView(BaseModel):
     role: Literal["user", "assistant"]
     content: str
     attachments: list[ChatAttachmentView] = Field(default_factory=list)
+    reports: list[ReportRef] = Field(default_factory=list)
     status: Literal["streaming", "completed", "interrupted"]
     created_at: datetime
     updated_at: datetime

@@ -125,18 +125,18 @@ async function search(): Promise<void> {
 @use '../../styles/variables' as *;
 @use '../../styles/knowledge';
 .retrieval-tab {
-  &__form, &__results { background: white; border: 1px solid $line; border-radius: 8px; padding: 22px; margin-bottom: 18px; h2 { font-size: 17px; font-weight: 500; } }
+  &__form, &__results { background: $surface; border: 1px solid $line; border-radius: 8px; padding: 22px; margin-bottom: 18px; h2 { font-size: 17px; font-weight: 500; } }
   &__hint { color: $muted; font-size: 11px; line-height: 1.8; margin: 8px 0 16px; }
   label { display: block; color: $green; font-size: 12px; }
-  input { display: block; width: 100%; margin-top: 8px; border: 1px solid $line; border-radius: 5px; padding: 9px 11px; background: $paper; color: $ink; font: inherit; font-size: 12px; &:focus { outline: 2px solid #92ae7a; outline-offset: 2px; } }
+  input { display: block; width: 100%; margin-top: 8px; border: 1px solid $line; border-radius: 5px; padding: 9px 11px; background: $paper; color: $ink; font: inherit; font-size: 12px; &:focus { outline: 2px solid $green; outline-offset: 2px; } }
   &__params { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; margin-top: 14px; label { width: 140px; } }
-  &__primary { background: $green; color: white; border: 0; border-radius: 6px; padding: 10px 16px; }
+  &__primary { background: $green; color: $on-green; border: 0; border-radius: 6px; padding: 10px 16px; }
   &__results header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; span { color: $muted; font-size: 11px; } }
   &__item { border-top: 1px solid $line; padding: 14px 0; }
   &__item-head { display: flex; justify-content: space-between; gap: 12px; color: $green; font-size: 12px; }
   &__score { color: $muted; font-size: 11px; }
   &__content { white-space: pre-wrap; overflow-wrap: anywhere; color: $ink; font-size: 12px; line-height: 1.9; margin-top: 10px; }
-  &__error { padding: 12px 16px; border-radius: 5px; font-size: 12px; background: #faeee6; color: #934b40; }
+  &__error { padding: 12px 16px; border-radius: 5px; font-size: 12px; background: $log-error-bg; color: $log-error; }
   &__empty { color: $muted; font-size: 12px; padding: 12px 0; }
 }
 @media (min-width: $knowledge-stack-width + 1px) {

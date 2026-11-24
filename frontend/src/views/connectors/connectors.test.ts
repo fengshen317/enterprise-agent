@@ -15,7 +15,8 @@ vi.mock('../../api/connectors', async original => ({
   ...await original<typeof api>(), listConnectors: vi.fn(), getConnector: vi.fn(),
   authenticateConnector: vi.fn(), getConnectorAuthStatus: vi.fn(), testConnector: vi.fn(),
   listBuiltinConnectors: vi.fn(), getYangJiBaoHoldings: vi.fn(),
-  installConnector: vi.fn(), setConnectorEnabled: vi.fn(),
+  installConnector: vi.fn(), setConnectorEnabled: vi.fn(), savePersonalAccount: vi.fn(),
+  removePersonalAccount: vi.fn(),
 }))
 
 const health: api.ConnectorHealth = {
@@ -57,11 +58,11 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers() })
 
 it('全局持续展示已启用连接器提醒，管理员入口携带连接器参数', async () => {
-  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: { template: '<div />' } }, { path: '/capabilities', component: { template: '<div />' } }] })
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: { template: '<div />' } }, { path: '/admin/plugins', component: { template: '<div />' } }] })
   const wrapper = mount(ConnectorNotice, { global: { plugins: [router] } })
   await flushPromises()
   expect(wrapper.text()).toContain('测试连接器需要授权')
-  expect(wrapper.get('a').attributes('href')).toBe('/capabilities?tab=connectors&connector=test')
+  expect(wrapper.get('a').attributes('href')).toBe('/admin/plugins?connector=test')
   useConnectorsStore().connectors = [{ ...connector, enabled: false }, { ...connector, key: 'config', auth_action: 'configure', auth_status: 'unknown' }]
   await flushPromises()
   expect(wrapper.text()).toContain('需要配置')
@@ -100,13 +101,16 @@ it('已保存的密钥显示配置状态，输入框保持空白', async () => {
 })
 
 it('连接器页通过提醒参数打开对应抽屉并显示健康时间', async () => {
-  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/connectors', component: ConnectorsView }] })
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/connectors', component: ConnectorsView }, { path: '/capabilities', component: { template: '<div />' } }],
+  })
   await router.push('/connectors?connector=test')
   const wrapper = mount(ConnectorsView, { global: { plugins: [router] } })
   await flushPromises()
   expect(wrapper.find('.connector-dialog').exists()).toBe(true)
   expect(api.getConnector).toHaveBeenCalledWith('test')
-  expect(wrapper.get('.connectors__card .connectors__action--add').attributes('aria-label')).toBe('连接测试连接器')
+  expect(wrapper.get('.connectors__card .connectors__action').attributes('aria-label')).toBe('查看测试连接器')
   expect(wrapper.get('.connector-dialog').text()).toContain('最近成功 尚无记录')
   expect(api.authenticateConnector).not.toHaveBeenCalled()
   await wrapper.get('.connector-dialog__close').trigger('click')
@@ -116,36 +120,59 @@ it('连接器页通过提醒参数打开对应抽屉并显示健康时间', asyn
   wrapper.unmount()
 })
 
-it('同一网格展示连接器并通过加号安装和启用', async () => {
-  const healthy: api.ConnectorView = {
-    ...connector, status: 'connected', auth_status: 'authorized', auth_action: null, last_error_code: null,
-  }
+it('已开放的 QQ 邮箱允许成员绑定、去问答和从我的插件解绑', async () => {
+  signIn('member')
   const candidate: api.BuiltinConnector = {
-    key: 'fund_market', kind: 'api', name: '基金行情', description: '查看估值和净值', icon: '📈',
-    installed: false, config_fields: [],
+    key: 'qq_mail', kind: 'api', name: 'QQ 邮箱', description: '阅读收件箱', icon: '✉',
+    installed: true, config_fields: [],
   }
-  const added: api.ConnectorView = { ...healthy, ...candidate, auth_status: 'not_required' }
-  vi.mocked(api.listBuiltinConnectors).mockResolvedValue([
-    { ...candidate, key: healthy.key, name: healthy.name, installed: true }, candidate,
-  ])
-  vi.mocked(api.listConnectors).mockResolvedValueOnce([healthy]).mockResolvedValue([healthy, added])
-  vi.mocked(api.installConnector).mockResolvedValue({ ...detail, ...added, enabled: false })
-  vi.mocked(api.setConnectorEnabled).mockResolvedValue({ ...detail, ...added })
-  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/connectors', component: ConnectorsView }] })
-  await router.push('/connectors')
+  const mail: api.ConnectorView = { ...connector, ...candidate, status: 'connected', auth_action: null, auth_status: 'unknown' }
+  const account: api.PersonalAccount = {
+    bound: false, guide_url: 'https://example.com/imap',
+    fields: [{ key: 'email', label: 'QQ 邮箱地址', secret: false }, { key: 'auth_code', label: 'IMAP 授权码', secret: true }],
+  }
+  vi.mocked(api.listBuiltinConnectors).mockResolvedValue([candidate])
+  vi.mocked(api.listConnectors).mockResolvedValue([connector, mail])
+  vi.mocked(api.getConnector).mockResolvedValue({ ...detail, ...mail, personal_account: account })
+  vi.mocked(api.savePersonalAccount).mockResolvedValue({ ...account, bound: true })
+  vi.mocked(api.removePersonalAccount).mockResolvedValue(account)
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/plugins', component: ConnectorsView },
+      { path: '/chat', component: { template: '<div />' } },
+      { path: '/capabilities', component: { template: '<div />' } },
+    ],
+  })
+  await router.push('/plugins')
   const wrapper = mount(ConnectorsView, { global: { plugins: [router] } })
   await flushPromises()
-  expect(wrapper.findAll('.connectors__grid')).toHaveLength(1)
   expect(wrapper.findAll('.connectors__card')).toHaveLength(2)
-  expect(wrapper.get('[data-connector="test"] [role="img"]').attributes('aria-label')).toBe('健康')
-  expect(wrapper.get('[data-connector="fund_market"] button').text()).toBe('+')
-  await wrapper.get('input[type="search"]').setValue('基金')
+  await wrapper.get('input[type="search"]').setValue('邮箱')
   expect(wrapper.findAll('.connectors__card')).toHaveLength(1)
-  await wrapper.get('[data-connector="fund_market"] button').trigger('click')
+  await wrapper.get('[aria-label="添加QQ 邮箱"]').trigger('click')
   await flushPromises()
-  expect(api.installConnector).toHaveBeenCalledExactlyOnceWith('fund_market')
-  expect(api.setConnectorEnabled).toHaveBeenCalledExactlyOnceWith('fund_market', true)
-  expect(wrapper.find('button[aria-label="管理基金行情"]').exists()).toBe(true)
+  await wrapper.get('input[type="email"]').setValue('sample@example.com')
+  await wrapper.get('input[type="password"]').setValue('sample-code')
+  await wrapper.get('.personal-account__form').trigger('submit')
+  await flushPromises()
+  expect(api.savePersonalAccount).toHaveBeenCalledExactlyOnceWith('qq_mail', { email: 'sample@example.com', auth_code: 'sample-code' })
+  expect(api.installConnector).not.toHaveBeenCalled()
+  expect(api.setConnectorEnabled).not.toHaveBeenCalled()
+  expect(wrapper.get('.connector-dialog__footer a').attributes('href')).toBe('/chat?plugin=qq_mail')
+  await wrapper.get('.connector-dialog__close').trigger('click')
+  await wrapper.findAll('.connectors__filters button')[1]!.trigger('click')
+  expect(wrapper.get('[data-connector="qq_mail"]').text()).toContain('已绑定')
+  vi.mocked(api.getConnector).mockResolvedValue({ ...detail, ...mail, personal_account: { ...account, bound: true } })
+  await wrapper.get('[aria-label="查看QQ 邮箱"]').trigger('click')
+  await flushPromises()
+  const unbind = wrapper.findAll('.personal-account__actions button').find(button => button.text() === '解除绑定')
+  await unbind!.trigger('click')
+  expect(api.removePersonalAccount).not.toHaveBeenCalled()
+  await wrapper.get('.personal-account__button--danger').trigger('click')
+  await flushPromises()
+  expect(api.removePersonalAccount).toHaveBeenCalledWith('qq_mail')
+  expect(wrapper.find('[data-connector="qq_mail"]').exists()).toBe(false)
   wrapper.unmount()
 })
 

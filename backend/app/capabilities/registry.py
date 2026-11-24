@@ -8,6 +8,7 @@ from app.capabilities.builtins.authoring import authoring_specs
 from app.capabilities.builtins.deliverables import deliverable_spec
 from app.capabilities.builtins.knowledge import knowledge_specs
 from app.capabilities.builtins.materials import material_specs
+from app.capabilities.builtins.reporting import report_specs
 from app.capabilities.builtins.run_stats import run_stats_spec
 from app.capabilities.builtins.scheduled import scheduled_specs
 from app.capabilities.builtins.web_search import WEB_SEARCH_TOOL, web_search_spec
@@ -113,6 +114,9 @@ def build_default_registry(
     registry = ToolRegistry()
     registry.register(run_stats_spec(settings))
     registry.register(deliverable_spec(settings))
+    if settings.report_sandbox_image or settings.report_sandbox_broker_url:
+        for spec in report_specs(settings):
+            registry.register(spec)
     for spec in material_specs(settings):
         registry.register(spec)
     for spec in authoring_specs(settings):

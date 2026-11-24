@@ -242,7 +242,7 @@ onBeforeUnmount(() => { alive = false; request++ })
     max-height: 90vh;
     overflow: auto;
     padding: 24px;
-    background: white;
+    background: $surface;
     border: 1px solid $line;
     border-radius: 8px;
   }
@@ -261,7 +261,7 @@ onBeforeUnmount(() => { alive = false; request++ })
   }
   &__selected { display: flex; flex-wrap: wrap; gap: 6px; button { overflow-wrap: anywhere; } }
   &__panel footer { justify-content: flex-end; margin-bottom: 0; }
-  &__primary { background: $green !important; color: white !important; }
-  &__error { color: #934b40 !important; }
+  &__primary { background: $green !important; color: $on-green !important; }
+  &__error { color: $log-error !important; }
 }
 </style>

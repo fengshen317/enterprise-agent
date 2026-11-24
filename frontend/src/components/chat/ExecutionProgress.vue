@@ -161,10 +161,10 @@ function closeOnEscape(event: KeyboardEvent): void {
   &--header { position: relative; }
   &__trigger {
     display: flex; align-items: center; gap: 9px; min-height: 36px; padding: 6px 10px;
-    border: 1px solid #cbd7be; border-radius: 7px; background: #e8eee2;
+    border: 1px solid $line; border-radius: 7px; background: $sidebar;
     color: $ink; font: inherit; font-variant-numeric: tabular-nums; white-space: nowrap;
     &:hover, &[aria-expanded="true"] { border-color: $green; }
-    span + span:not(.execution-progress__chevron) { border-inline-start: 1px solid #cbd7be; padding-inline-start: 9px; }
+    span + span:not(.execution-progress__chevron) { border-inline-start: 1px solid $line; padding-inline-start: 9px; }
   }
   &__chevron {
     width: 6px; height: 6px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor;
@@ -175,8 +175,8 @@ function closeOnEscape(event: KeyboardEvent): void {
     position: absolute; z-index: 8; inset: calc(100% + 9px) 0 auto auto;
     width: min(360px, calc(100vw - 44px)); max-height: min(52dvh, 440px);
     overflow: auto; overscroll-behavior: contain; padding: 14px 16px;
-    border: 1px solid $line; border-radius: 10px; background: #fff;
-    box-shadow: 0 10px 26px #19382f24;
+    border: 1px solid $line; border-radius: 10px; background: $surface;
+    box-shadow: 0 10px 26px rgba($ink, .14);
   }
   h3 { margin: 0 0 8px; color: $ink; font-size: 13px; span { color: $muted; font-size: 11px; font-weight: 400; } }
   section { margin-block: 10px; }
@@ -189,7 +189,7 @@ function closeOnEscape(event: KeyboardEvent): void {
     &::before {
       counter-increment: step; content: counter(step);
       color: $green; min-width: 1.4em; text-align: center; font-variant-numeric: tabular-nums;
-      background: #edf1e8; border-radius: 4px;
+      background: $sidebar; border-radius: 4px;
     }
     > span:first-of-type { flex: 1; }
   }
@@ -199,12 +199,12 @@ function closeOnEscape(event: KeyboardEvent): void {
   &__status {
     color: $muted; flex-shrink: 0;
     &[data-status="running"], &[data-status="in_progress"], &[data-status="completed"] { color: $green; }
-    &[data-status="failed"], &[data-status="denied"], &[data-status="expired"] { color: #934b40; }
+    &[data-status="failed"], &[data-status="denied"], &[data-status="expired"] { color: $log-error; }
   }
   summary { color: $green; cursor: pointer; margin-top: 4px; }
   &__output, &__error { margin: 5px 0 0; line-height: 1.65; overflow-wrap: anywhere; }
   &__output { white-space: pre-wrap; }
-  &__error { color: #934b40; }
+  &__error { color: $log-error; }
   &__retry { border: 0; padding: 0; color: $green; background: none; text-decoration: underline; font: inherit; }
 }
 </style>

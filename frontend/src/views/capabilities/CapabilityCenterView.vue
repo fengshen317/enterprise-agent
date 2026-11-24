@@ -5,17 +5,20 @@ import { useAuthStore } from '../../stores/auth'
 import { listSkills, type Skill } from '../../api/skills'
 import { listTools, setToolEnabled, type Tool } from '../../api/tools'
 import ConnectorsView from '../connectors/ConnectorsView.vue'
+import AdminPluginsView from '../connectors/AdminPluginsView.vue'
 
-type CapabilityTab = 'tools' | 'skills' | 'connectors'
 const sections = {
   tools: { label: '工具', description: '查看 Agent 可调用的工具、审批要求和空间启用状态。' },
   skills: { label: '技能', description: '维护版本化的 Markdown / SOP，让 Agent 按工作流程执行。' },
-  connectors: { label: '连接器', description: '接入外部服务，管理授权、配置和连接状态。' },
+  connectors: { label: '插件', description: '查看可用插件，在当前工作空间绑定个人账号。' },
+  management: { label: '插件管理', description: '面向成员启用插件，管理应用的授权方式和启停状态。' },
 }
+type CapabilityTab = keyof typeof sections
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const tab = computed<CapabilityTab>(() => {
+  if (route.path === '/admin/plugins') return 'management'
   const value = route.query.tab
   return value === 'skills' || value === 'connectors' ? value : 'tools'
 })
@@ -27,15 +30,18 @@ const error = ref('')
 const busy = ref('')
 const visibleTools = computed(() => source.value ? tools.value.filter(tool => tool.connector_key === source.value) : tools.value)
 const isAdmin = computed(() => auth.activeWorkspace?.role === 'admin' && auth.activeWorkspace.status === 'active')
+const tabs = computed<CapabilityTab[]>(() => isAdmin.value
+  ? ['tools', 'skills', 'connectors', 'management']
+  : ['tools', 'skills', 'connectors'])
 const riskLabels: Record<string, string> = { read: '只读', write: '写入', delete: '删除', external: '外发' }
 
 function showError(value: unknown): void { error.value = value instanceof Error ? value.message : '操作失败，请重试' }
 let loadVersion = 0
 async function load(section: CapabilityTab = tab.value): Promise<void> {
   const version = ++loadVersion
-  loading.value = section !== 'connectors'
+  loading.value = section === 'tools' || section === 'skills'
   error.value = ''
-  if (section === 'connectors') return
+  if (section === 'connectors' || section === 'management') return
   try {
     if (section === 'tools') {
       const items = await listTools()
@@ -48,7 +54,12 @@ async function load(section: CapabilityTab = tab.value): Promise<void> {
   finally { if (version === loadVersion) loading.value = false }
 }
 function switchTab(value: CapabilityTab): void {
-  if (value !== tab.value || source.value || route.query.connector) void router.push({ query: { tab: value } })
+  if (value === tab.value && !source.value && !route.query.connector) return
+  if (value === 'management') {
+    if (isAdmin.value) void router.push('/admin/plugins')
+  } else {
+    void router.push({ path: '/capabilities', query: { tab: value } })
+  }
 }
 async function toggle(tool: Tool): Promise<void> {
   if (busy.value || !isAdmin.value) return
@@ -66,9 +77,8 @@ watch(tab, value => { void load(value) }, { immediate: true })
   <section class="capabilities">
     <header class="capabilities__heading">
       <div>
-        <span class="capabilities__eyebrow">CAPABILITY CENTER</span>
         <h1>能力中心</h1>
-        <p>管理工作空间的工具、技能和外部连接。为单个 Agent 分配能力，请前往「Agent 管理」。</p>
+        <p>在工作空间中管理工具、技能和插件。</p>
       </div>
       <button
         v-if="tab === 'skills'"
@@ -84,13 +94,13 @@ watch(tab, value => { void load(value) }, { immediate: true })
       aria-label="能力分类"
     >
       <button
-        v-for="(section, key) in sections"
+        v-for="key in tabs"
         :key="key"
         type="button"
         :aria-current="tab === key ? 'page' : undefined"
         @click="switchTab(key)"
       >
-        {{ section.label }}
+        {{ sections[key].label }}
       </button>
     </nav>
     <p class="capabilities__section-description">
@@ -105,6 +115,10 @@ watch(tab, value => { void load(value) }, { immediate: true })
     </p>
     <ConnectorsView
       v-if="tab === 'connectors'"
+      embedded
+    />
+    <AdminPluginsView
+      v-else-if="tab === 'management' && isAdmin"
       embedded
     />
     <p
@@ -182,7 +196,7 @@ watch(tab, value => { void load(value) }, { immediate: true })
     </div>
 
     <div
-      v-else
+      v-else-if="tab === 'skills'"
       class="capabilities__table-wrap"
     >
       <table class="capabilities__table">
@@ -225,11 +239,22 @@ watch(tab, value => { void load(value) }, { immediate: true })
 <style scoped lang="scss">
 @use '../../styles/variables' as *;
 .capabilities {
-  max-width: 1280px; margin: 0 auto; padding: 40px clamp(20px, 4vw, 56px) 70px;
-  &__heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; padding-bottom: 24px; border-bottom: 1px solid $line; h1 { font-size: clamp(28px, 3vw, 40px); font-weight: 400; margin: 10px 0; } p { color: $muted; font-size: 12px; line-height: 1.9; max-width: 720px; } }
-  &__eyebrow { font-size: 9px; letter-spacing: 2px; color: #859576; }
-  &__primary { background: #31533d; color: #edf4e4; border: 0; border-radius: 5px; padding: 11px 17px; font-size: 12px; white-space: nowrap; }
-  &__tabs { display: flex; gap: 6px; margin: 20px 0 10px; border-bottom: 1px solid $line; button { border: 0; background: none; color: $muted; font-size: 13px; padding: 10px 16px; border-bottom: 2px solid transparent; } button[aria-current='page'] { color: $green; border-bottom-color: $green; font-weight: 600; } }
+  max-width: $plugin-content-width; margin: 0 auto; padding: 1.25rem $plugin-content-gutter 2rem;
+  &__heading {
+    display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: .75rem;
+    h1 { @include page-title; margin: 0; }
+    p { margin: .45rem 0 0; color: $muted; }
+  }
+  &__primary { background: $green; color: $on-green; border: 0; border-radius: $control-radius; padding: 10px 15px; font-size: 13px; white-space: nowrap; }
+  &__tabs {
+    display: flex; flex-wrap: wrap; gap: 4px; margin: 1.1rem 0 .65rem; border-bottom: 1px solid $line;
+    button {
+      border: 0; background: none; color: $muted; font-size: 13px; padding: 9px clamp(8px, 2vw, 16px);
+      border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0;
+      &:hover { background: $sidebar; }
+      &[aria-current='page'] { color: $green; border-bottom-color: $green; font-weight: 650; }
+    }
+  }
   &__section-description { margin: 0 0 16px; color: $muted; font-size: 13px; line-height: 1.7; }
   &__filter { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 12px 14px; background: $paper; color: $muted; font-size: 12px; overflow-wrap: anywhere; }
   &__filter a, &__table a { color: $green; text-decoration: underline; }

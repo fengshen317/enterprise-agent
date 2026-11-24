@@ -137,6 +137,17 @@ docker compose exec ragflow cat /var/lib/ea-ragflow-admin/admin-password
 - 腾讯会议、养基宝和腾讯新闻等本机 CLI 连接器需要为 API 容器提供相应 Linux 可执行文件及依赖。可用衍生镜像或只读挂载安装，再按各连接器说明配置。API 运行账号的主目录保存在 `api_home` 卷中，供使用该目录保存授权状态的 CLI 持久化。
 - 修改根目录 `.env` 后执行 `docker compose up -d --wait` 让 Compose 应用新配置。定时任务、渠道轮询和问答执行与 API 同进程运行，部署时保持一个 API 容器、一个 Uvicorn Worker。
 
+## 启用问答报表分析
+
+报表执行使用可选覆盖文件 `compose.report.yaml`。首次启用时在 Linux Docker Engine 配置 `runsc`（gVisor），构建分析镜像，并在项目根目录 `.env` 设置独立随机的 `EA_REPORT_SANDBOX_BROKER_TOKEN`。代理通过 Compose 专用内网服务接收任务。只有受信代理访问 Docker socket，执行 Python 的容器没有网络或应用凭证。
+
+```bash
+docker build --target runner -f backend/analysis/Dockerfile -t enterprise-agent-report-sandbox:local backend
+docker compose -f compose.yaml -f compose.report.yaml up -d --build --wait
+```
+
+第一个命令构建每次执行用的 Python 镜像。第二个命令合并基础部署和报表代理配置，构建服务并等待就绪。日常启动继续带上两个 `-f` 参数，可以省略 `--build`。更新分析依赖或执行脚本后先重建分析镜像，再带 `--build` 更新服务。若报表代理调用失败，检查分析镜像、运行时、代理令牌及 Docker socket，再从原对话重试。
+
 ## 迁入已有数据库
 
 从现有 PostgreSQL 用 `pg_dump -Fc` 导出数据库。在新服务器填写根目录 `.env` 后先启动 PostgreSQL，将备份恢复到空库，再启动应用执行后续迁移。若源库已有管理员，使用原账号登录。

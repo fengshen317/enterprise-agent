@@ -120,14 +120,14 @@ onBeforeUnmount(() => { alive = false; revision++ })
 <style scoped lang="scss">
 @use '../../styles/variables' as *;
 .chunks-dialog {
-  position: fixed; inset: 0; background: #19382f66; display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 20;
-  &__panel { background: white; border-radius: 9px; width: min(860px, 100%); max-height: 86vh; display: flex; flex-direction: column; overflow: hidden; }
+  position: fixed; inset: 0; background: rgba($ink, .40); display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 20;
+  &__panel { background: $surface; border-radius: 9px; width: min(860px, 100%); max-height: 86vh; display: flex; flex-direction: column; overflow: hidden; }
   &__header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 20px 22px; border-bottom: 1px solid $line; h2 { font-size: 17px; font-weight: 500; overflow-wrap: anywhere; } p { color: $muted; font-size: 11px; margin-top: 6px; } button { border: 0; background: none; color: $muted; font-size: 24px; line-height: 1; } }
   &__list { list-style: none; margin: 0; padding: 0 22px; overflow-y: auto; li { border-bottom: 1px solid $line; padding: 14px 0; } }
   &__line { display: flex; justify-content: space-between; gap: 12px; color: $muted; font-size: 10px; }
-  &__disabled { color: #934b40; }
+  &__disabled { color: $log-error; }
   &__content { white-space: pre-wrap; overflow-wrap: anywhere; color: $ink; font-size: 12px; line-height: 1.9; margin-top: 8px; }
-  &__error { margin: 18px 22px; padding: 10px 14px; background: #faeee6; color: #934b40; border-radius: 5px; font-size: 12px; }
+  &__error { margin: 18px 22px; padding: 10px 14px; background: $log-error-bg; color: $log-error; border-radius: 5px; font-size: 12px; }
   &__hint { padding: 24px 22px; color: $muted; font-size: 12px; }
   &__footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 22px; border-top: 1px solid $line; color: $muted; font-size: 11px; button { border: 1px solid $line; background: $paper; border-radius: 5px; padding: 7px 11px; color: $green; font-size: 11px; } }
 }

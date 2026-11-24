@@ -256,7 +256,7 @@ onMounted(refresh)
   color: $ink;
 
   h1, h2, p, dl, dd { margin: 0; }
-  h1 { font-size: clamp(1.6rem, 3vw, 2.2rem); line-height: 1.15; }
+  h1 { @include page-title; }
   h2 { font-size: 1.05rem; }
   p { line-height: 1.6; }
   &__header {
@@ -278,10 +278,10 @@ onMounted(refresh)
   &__current, &__form {
     padding: clamp(1rem, 2.5vw, 1.65rem);
     border: 1px solid $line;
-    border-radius: .85rem;
+    border-radius: $panel-radius;
   }
   &__current {
-    background: $paper;
+    background: linear-gradient(110deg, $hero-glow, $hero);
     p { color: $log-muted; }
     dl div + div { margin-top: .9rem; }
     dt { color: $log-muted; font-size: .82rem; }
@@ -306,7 +306,7 @@ onMounted(refresh)
   &__override { margin-top: .8rem !important; overflow-wrap: anywhere; }
   &__refresh { margin-top: .65rem; background: transparent; color: $green; border: 0; padding: 0; text-decoration: underline; }
   &__form {
-    background: white;
+    background: $surface;
     fieldset { display: grid; gap: .9rem; padding: 0; margin: 1.25rem 0; border: 0; }
     label { display: grid; gap: .4rem; font-size: .88rem; font-weight: 600; min-width: 0; }
     label span { color: $log-muted; font-size: .8rem; font-weight: 400; }
@@ -316,7 +316,7 @@ onMounted(refresh)
       padding: .65rem .7rem;
       border: 1px solid $line;
       border-radius: .4rem;
-      background: white;
+      background: $surface;
       color: $ink;
       font: inherit;
       font-weight: 400;
@@ -333,7 +333,7 @@ onMounted(refresh)
     border: 0;
     border-radius: .4rem;
     background: $green;
-    color: white;
+    color: $on-green;
     font-weight: 600;
     &:disabled { opacity: .62; }
   }

@@ -135,6 +135,20 @@ class Message(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ChatReport(Base):
+    """计算结果独立保存，消息快照只读取轻量引用。"""
+
+    __tablename__ = "chat_reports"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    message_id: Mapped[UUID] = mapped_column(ForeignKey("messages.id", ondelete="CASCADE"), index=True)
+    title: Mapped[str] = mapped_column(String(120))
+    data: Mapped[dict[str, object]] = mapped_column(JSONB)
+    source_files: Mapped[list[str]] = mapped_column(JSONB)
+    code: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class ChatAttachment(Base):
     """个人工作空间材料，来源对话仅用于定位上传记录。"""
 

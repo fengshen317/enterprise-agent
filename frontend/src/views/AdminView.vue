@@ -102,9 +102,7 @@ onBeforeUnmount(() => { alive = false; revision++; password.value = '' })
   <section class="admin">
     <header class="admin__heading">
       <div>
-        <p class="admin__eyebrow">
-          WORKSPACE / ADMINISTRATION
-        </p><h1>成员与权限</h1><p class="admin__description">
+        <h1>成员与权限</h1><p class="admin__description">
           {{ auth.activeWorkspace?.name }} · 管理当前空间的访问权限
         </p>
       </div>
@@ -353,25 +351,24 @@ onBeforeUnmount(() => { alive = false; revision++; password.value = '' })
 @use '../styles/variables' as *;
 .admin {
   max-width: 1200px; margin: 0 auto; padding: 40px clamp(20px, 4vw, 56px) 70px;
-  &__heading { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 22px; h1 { font-size: 28px; font-weight: 500; margin: 13px 0; } }
+  &__heading { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 22px; h1 { @include page-title; margin-bottom: 7px; } }
   &__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-  &__logs-link { border: 1px solid $line; border-radius: 6px; padding: 10px 15px; background: white; color: $green; text-decoration: none; &:hover { border-color: $green; } }
-  &__eyebrow { color: $muted; font-size: 10px; letter-spacing: 2px; }
+  &__logs-link { border: 1px solid $line; border-radius: 6px; padding: 10px 15px; background: $surface; color: $green; text-decoration: none; &:hover { border-color: $green; } }
   &__description, &__hint, &__boundary { color: $muted; font-size: 12px; line-height: 1.9; }
-  &__boundary { border-left: 2px solid $line; padding-left: 14px; margin-bottom: 26px; }
-  &__primary { background: $green; color: white; border: 0; border-radius: 6px; padding: 11px 17px; }
-  &__create, &__card { margin: 22px 0; background: white; border: 1px solid $line; border-radius: 8px; overflow: hidden; }
+  &__boundary { padding: 12px 14px; margin-bottom: 22px; border: 1px solid $line; border-radius: $panel-radius; background: linear-gradient(110deg, $hero, $paper); }
+  &__primary { background: $green; color: $on-green; border: 0; border-radius: $control-radius; padding: 10px 14px; font-weight: 650; &:enabled:hover { background: $green-hover; } }
+  &__create, &__card { margin: 22px 0; background: $surface; border: 1px solid $line; border-radius: $panel-radius; overflow: hidden; }
   &__create { padding: 24px; h2 { margin-bottom: 20px; font-size: 17px; font-weight: 500; } .admin__hint { margin: 16px 0; } }
   &__fields { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; label { color: $green; font-size: 12px; } input, select { display: block; margin-top: 8px; width: 100%; } }
-  input, select { border: 1px solid $line; border-radius: 5px; padding: 9px 11px; background: $paper; color: $ink; font: inherit; font-size: 12px; &:focus { outline: 2px solid #92ae7a; outline-offset: 2px; } }
+  input, select { border: 1px solid $line; border-radius: 5px; padding: 9px 11px; background: $paper; color: $ink; font: inherit; font-size: 12px; &:focus { outline: 2px solid $green; outline-offset: 2px; } }
   &__toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 20px; label { font-size: 14px; span { color: $muted; margin-left: 6px; } } div { display: flex; flex-wrap: wrap; gap: 8px; } }
   &__toolbar button, &__pagination button, &__save { border: 1px solid $line; background: $paper; border-radius: 5px; padding: 8px 12px; color: $green; font-size: 12px; }
   &__table-wrap { overflow-x: auto; }
-  &__table { width: 100%; border-collapse: collapse; text-align: left; th { background: $paper; color: $muted; font-size: 11px; font-weight: 400; padding: 13px 20px; white-space: nowrap; } td { padding: 17px 20px; border-bottom: 1px solid $line; font-size: 12px; white-space: nowrap; } strong { font-weight: 500; } small { display: block; color: $muted; margin-top: 7px; } }
+  &__table { width: 100%; border-collapse: collapse; text-align: left; th { background: $sidebar; color: $muted; font-size: 12px; font-weight: 600; padding: 13px 20px; white-space: nowrap; } td { padding: 17px 20px; border-bottom: 1px solid $line; font-size: 12px; white-space: nowrap; } tbody tr:hover, tbody tr:focus-within { background: $paper; } strong { font-weight: 600; } small { display: block; color: $muted; margin-top: 7px; } }
   &__pagination { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 16px 20px; color: $muted; font-size: 11px; div { display: flex; gap: 8px; } }
   &__error, &__notice { padding: 12px 16px; border-radius: 5px; font-size: 12px; line-height: 1.8; }
-  &__error { background: #faeee6; color: #934b40; }
-  &__notice { background: #eaf0e1; color: $green; }
+  &__error { background: $log-error-bg; color: $log-error; }
+  &__notice { background: $selection; color: $green; }
   &__empty { padding: 24px; color: $muted; font-size: 12px; }
   &__audit-heading { padding: 20px; display: flex; gap: 16px; align-items: center; h2 { font-size: 15px; font-weight: 500; } span { color: $muted; font-size: 11px; } }
   &__audits { list-style: none; padding: 0 20px; li { border-top: 1px solid $line; padding: 15px 0; display: grid; gap: 7px; font-size: 12px; line-height: 1.8; } strong { font-weight: 500; color: $green; } time { color: $muted; font-size: 10px; } }
