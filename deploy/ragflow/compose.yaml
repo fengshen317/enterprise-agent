@@ -1,7 +1,11 @@
 x-logging: &logging
   driver: local
 
-x-ragflow-password: &ragflow-password ${EA_RAGFLOW_SERVICE_PASSWORD:?请在根目录 .env 中设置 RAGFlow 内部服务密码}
+x-password-file: &password-file /run/ea-ragflow/password
+x-password-volume: &password-volume ragflow_service_credentials:/run/ea-ragflow:ro
+x-credentials-ready: &credentials-ready
+  condition: service_completed_successfully
+  restart: true
 
 services:
   ragflow:
@@ -22,27 +26,24 @@ services:
       MYSQL_HOST: ragflow-db
       MYSQL_DBNAME: rag_flow
       MYSQL_USER: rag_flow
-      MYSQL_PASSWORD: *ragflow-password
       ES_HOST: ragflow-search
-      ELASTIC_PASSWORD: *ragflow-password
       MINIO_HOST: ragflow-objects
       MINIO_USER: rag_flow
-      MINIO_PASSWORD: *ragflow-password
       KVROCKS_HOST: ragflow-cache
-      REDIS_PASSWORD: *ragflow-password
       NATS_HOST: ragflow-queue
       CLICKHOUSE_HOST: ragflow-analytics
-      CLICKHOUSE_PASSWORD: *ragflow-password
     ports:
       # 管理界面通过服务器本机或 SSH 隧道访问，工作台 API 通过容器网络调用。
       - "127.0.0.1:${EA_RAGFLOW_UI_PORT:-9388}:80"
     volumes:
       - ./entrypoint.sh:/etc/enterprise-agent/ragflow-entrypoint.sh:ro
       - ragflow_admin_state:/var/lib/ea-ragflow-admin
+      - *password-volume
     networks:
       - ragflow_client
       - ragflow_storage
     depends_on:
+      service-credentials-init: *credentials-ready
       ragflow-db:
         condition: service_healthy
       ragflow-search:
@@ -68,10 +69,10 @@ services:
     restart: unless-stopped
     environment:
       MYSQL_ROOT_HOST: localhost
-      MYSQL_ROOT_PASSWORD: *ragflow-password
+      MYSQL_ROOT_PASSWORD_FILE: *password-file
       MYSQL_DATABASE: rag_flow
       MYSQL_USER: rag_flow
-      MYSQL_PASSWORD: *ragflow-password
+      MYSQL_PASSWORD_FILE: *password-file
     command:
       - --max_connections=1000
       - --character-set-server=utf8mb4
@@ -79,10 +80,13 @@ services:
       - --default-authentication-plugin=mysql_native_password
     volumes:
       - ragflow_mysql:/var/lib/mysql
+      - *password-volume
     networks:
       - ragflow_storage
+    depends_on:
+      service-credentials-init: *credentials-ready
     healthcheck:
-      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysql --protocol=TCP -h127.0.0.1 -u\"$$MYSQL_USER\" \"$$MYSQL_DATABASE\" -e 'SELECT 1'"]
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$(cat /run/ea-ragflow/password)\" mysql --protocol=TCP -h127.0.0.1 -u\"$$MYSQL_USER\" \"$$MYSQL_DATABASE\" -e 'SELECT 1'"]
       interval: 5s
       timeout: 5s
       retries: 24
@@ -98,13 +102,16 @@ services:
       xpack.security.http.ssl.enabled: "false"
       xpack.security.transport.ssl.enabled: "false"
       ES_JAVA_OPTS: -Xms1g -Xmx1g
-      ELASTIC_PASSWORD: *ragflow-password
+      ELASTIC_PASSWORD_FILE: *password-file
     volumes:
       - ragflow_elasticsearch:/usr/share/elasticsearch/data
+      - *password-volume
     networks:
       - ragflow_storage
+    depends_on:
+      service-credentials-init: *credentials-ready
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS --user \"elastic:$$ELASTIC_PASSWORD\" 'http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=4s'"]
+      test: ["CMD-SHELL", "curl -fsS --user \"elastic:$$(cat /run/ea-ragflow/password)\" 'http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=4s'"]
       interval: 10s
       timeout: 6s
       retries: 24
@@ -117,11 +124,14 @@ services:
     command: ["server", "--console-address", ":9001", "/data"]
     environment:
       MINIO_ROOT_USER: rag_flow
-      MINIO_ROOT_PASSWORD: *ragflow-password
+      MINIO_ROOT_PASSWORD_FILE: *password-file
     volumes:
       - ragflow_minio:/data
+      - *password-volume
     networks:
       - ragflow_storage
+    depends_on:
+      service-credentials-init: *credentials-ready
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/ready"]
       interval: 10s
@@ -138,16 +148,18 @@ services:
       # Kvrocks 配置文件不会展开环境变量，启动时生成仅容器用户可读的配置。
       - |
         umask 077
-        printf 'bind 0.0.0.0\nport 6379\ndir /var/lib/kvrocks\nrequirepass %s\n' "$$REDIS_PASSWORD" > /tmp/kvrocks.conf
+        password=$$(cat /run/ea-ragflow/password)
+        printf 'bind 0.0.0.0\nport 6379\ndir /var/lib/kvrocks\nrequirepass %s\n' "$$password" > /tmp/kvrocks.conf
         exec kvrocks -c /tmp/kvrocks.conf
-    environment:
-      REDIS_PASSWORD: *ragflow-password
     volumes:
       - ragflow_kvrocks:/var/lib/kvrocks
+      - *password-volume
     networks:
       - ragflow_storage
+    depends_on:
+      service-credentials-init: *credentials-ready
     healthcheck:
-      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -qx PONG"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$(cat /run/ea-ragflow/password)\" redis-cli ping | grep -qx PONG"]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -174,14 +186,17 @@ services:
     environment:
       CLICKHOUSE_DB: ragflow
       CLICKHOUSE_USER: ragflow
-      CLICKHOUSE_PASSWORD: *ragflow-password
+      CLICKHOUSE_PASSWORD_FILE: *password-file
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     volumes:
       - ragflow_clickhouse:/var/lib/clickhouse
+      - *password-volume
     networks:
       - ragflow_storage
+    depends_on:
+      service-credentials-init: *credentials-ready
     healthcheck:
-      test: ["CMD-SHELL", "clickhouse-client --user \"$$CLICKHOUSE_USER\" --password \"$$CLICKHOUSE_PASSWORD\" --database \"$$CLICKHOUSE_DB\" --query 'SELECT 1'"]
+      test: ["CMD-SHELL", "clickhouse-client --user \"$$CLICKHOUSE_USER\" --password \"$$(cat /run/ea-ragflow/password)\" --database \"$$CLICKHOUSE_DB\" --query 'SELECT 1'"]
       interval: 10s
       timeout: 5s
       retries: 24
@@ -194,6 +209,7 @@ networks:
     internal: true
 
 volumes:
+  ragflow_service_credentials:
   ragflow_admin_state:
   ragflow_mysql:
   ragflow_elasticsearch:

@@ -7,6 +7,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
 
+FIRST_ADMIN_KEY = "first_admin_user_id"
+
 
 class SystemMetadata(Base):
     """保存基础设施标记，不存放业务配置或凭证。"""

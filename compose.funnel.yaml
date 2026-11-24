@@ -1,0 +1,7 @@
+services:
+  web:
+    # Funnel 负责公网 HTTPS，Caddy 在本机接收转发并继续处理前端与 /api。
+    environment:
+      EA_DEPLOY_DOMAIN: http://:8080
+    ports: !override
+      - "127.0.0.1:${EA_FUNNEL_ORIGIN_PORT:-18080}:8080"

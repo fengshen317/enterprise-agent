@@ -138,6 +138,7 @@ onBeforeUnmount(() => { generation++; releaseReport() })
 
 <style scoped lang="scss">
 @use '../../styles/variables' as *;
+@use '../../styles/knowledge';
 .evaluation {
   padding: 22px; margin: 18px 0; border: 1px solid $line; border-radius: 8px; background: white;
   h2 { font-size: 17px; font-weight: 500; }
@@ -148,5 +149,13 @@ onBeforeUnmount(() => { generation++; releaseReport() })
   &__results { padding-left: 20px; }
   li { margin: 10px 0; font-size: 13px; overflow-wrap: anywhere; }
   small { display: block; }
+}
+@media (min-width: $knowledge-stack-width + 1px) {
+  .evaluation {
+    @include knowledge.desktop-surface;
+    padding: 24px;
+    h2 { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
+    p, small { color: $log-muted; font-size: 13px; }
+  }
 }
 </style>

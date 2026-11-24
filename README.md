@@ -25,7 +25,7 @@
 
 ## 部署到服务器
 
-使用 Docker Compose 启动 Caddy、FastAPI、PostgreSQL 16 及 RAGFlow 知识库服务。复制根目录 `.env.example` 为 `.env`，填写域名和服务密码，再运行 `docker compose up -d --build --wait --wait-timeout 420`。管理员初始化、RAGFlow 模型和 API Key 配置、升级与备份见 [Docker 部署指南](deploy/README.md)。
+在服务器把根目录的 `.env.example` 复制为 `.env`，填写域名，再运行 `docker compose up -d`。服务密码由首次启动自动生成并保存。访问 `https://你的域名/login`，按页面提示创建首个管理员。 [Docker 部署指南](deploy/README.md#首次部署)
 
 ## 开始开发
 

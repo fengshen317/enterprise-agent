@@ -1,15 +1,77 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { ApiError } from '../api/client'
+import { createInitialAdmin, getInitialSetup, type InitialSetupStatus } from '../api/initialSetup'
 
+const MIN_PASSWORD_LENGTH = 4
 const router = useRouter()
 const auth = useAuthStore()
 const username = ref('')
 const password = ref('')
 const busy = ref(false)
 const error = ref('')
+const setup = ref<InitialSetupStatus | null>(null)
+const setupToken = ref('')
+const setupUsername = ref('admin')
+const displayName = ref('管理员')
+const setupPassword = ref('')
+const confirmPassword = ref('')
+const setupBusy = ref(false)
+const setupError = ref('')
+const notice = ref('')
+
+async function loadSetup(): Promise<void> {
+  try {
+    const current = await getInitialSetup()
+    if (current.available) {
+      setupUsername.value = current.username ?? 'admin'
+      setup.value = current
+    }
+  } catch { /* 现有部署仍可照常提交登录。 */ }
+}
+
+async function submitSetup(): Promise<void> {
+  if (setupBusy.value) return
+  setupError.value = ''
+  if (Array.from(setupPassword.value).length < MIN_PASSWORD_LENGTH) {
+    setupError.value = `密码至少需要 ${MIN_PASSWORD_LENGTH} 个字符。`
+    return
+  }
+  if (setupPassword.value !== confirmPassword.value) {
+    setupError.value = '两次输入的密码不一致。'
+    return
+  }
+  setupBusy.value = true
+  try {
+    username.value = await createInitialAdmin({
+      token: setupToken.value.trim(),
+      username: setupUsername.value,
+      display_name: displayName.value.trim(),
+      password: setupPassword.value,
+    })
+    notice.value = '管理员已创建。请登录工作台。'
+    error.value = ''
+    setup.value = null
+  } catch (value) {
+    if (value instanceof ApiError && value.status === 409) {
+      notice.value = '首次部署已结束。请使用已有管理员账号登录。'
+      error.value = ''
+      setup.value = null
+    } else {
+      setupError.value = value instanceof Error ? value.message : '创建管理员失败，请重试'
+    }
+  } finally {
+    setupToken.value = ''
+    setupPassword.value = ''
+    confirmPassword.value = ''
+    setupBusy.value = false
+  }
+}
+
+onMounted(loadSetup)
+
 async function signIn(): Promise<void> {
   if (busy.value) return
   busy.value = true; error.value = ''
@@ -35,6 +97,97 @@ async function signIn(): Promise<void> {
     </section>
     <section class="login__panel">
       <form
+        v-if="setup"
+        class="login__form login__form--setup"
+        @submit.prevent="submitSetup"
+      >
+        <p class="login__eyebrow">
+          首次部署
+        </p>
+        <h2>创建工作台管理员</h2>
+        <p class="login__hint">
+          验证部署口令后，创建管理员和默认工作空间。
+        </p>
+        <fieldset :disabled="setupBusy">
+          <label for="setup-token">部署口令</label>
+          <input
+            id="setup-token"
+            v-model="setupToken"
+            type="password"
+            autocomplete="off"
+            minlength="32"
+            maxlength="128"
+            required
+          />
+          <details class="login__setup-help">
+            <summary>在哪里查看部署口令</summary>
+            <p>可使用服务器环境配置中的口令。使用自动生成的口令时，在部署目录运行以下命令。</p>
+            <code>docker compose exec api cat /home/enterprise-agent/.enterprise-agent/setup-token</code>
+          </details>
+          <div class="login__setup-fields">
+            <div>
+              <label for="setup-username">管理员账号</label>
+              <input
+                id="setup-username"
+                v-model.trim="setupUsername"
+                :readonly="setup.username !== null"
+                autocomplete="username"
+                minlength="3"
+                maxlength="64"
+                required
+              />
+            </div>
+            <div>
+              <label for="setup-display-name">显示名称</label>
+              <input
+                id="setup-display-name"
+                v-model.trim="displayName"
+                autocomplete="name"
+                maxlength="100"
+                required
+              />
+            </div>
+            <div>
+              <label for="setup-password">设置密码</label>
+              <input
+                id="setup-password"
+                v-model="setupPassword"
+                type="password"
+                autocomplete="new-password"
+                :placeholder="`至少 ${MIN_PASSWORD_LENGTH} 个字符`"
+                :minlength="MIN_PASSWORD_LENGTH"
+                required
+              />
+            </div>
+            <div>
+              <label for="setup-confirm-password">确认密码</label>
+              <input
+                id="setup-confirm-password"
+                v-model="confirmPassword"
+                type="password"
+                autocomplete="new-password"
+                :minlength="MIN_PASSWORD_LENGTH"
+                required
+              />
+            </div>
+          </div>
+        </fieldset>
+        <p
+          v-if="setupError"
+          class="login__error"
+          role="alert"
+        >
+          {{ setupError }}
+        </p>
+        <button
+          type="submit"
+          :disabled="setupBusy"
+        >
+          {{ setupBusy ? '正在创建…' : '创建管理员 →' }}
+        </button>
+      </form>
+      <form
+        v-else
         class="login__form"
         @submit.prevent="signIn"
       >
@@ -42,6 +195,12 @@ async function signIn(): Promise<void> {
           欢迎回来
         </p><h2>登录工作台</h2><p class="login__hint">
           使用管理员为你创建的账号继续。
+        </p><p
+          v-if="notice"
+          class="login__notice"
+          role="status"
+        >
+          {{ notice }}
         </p><label for="username">账号</label><input
           id="username"
           v-model="username"
@@ -90,6 +249,11 @@ async function signIn(): Promise<void> {
   &__hint, &__footer { color: $muted; font-size: 12px; line-height: 1.9; }
   &__footer { margin-top: 22px; font-size: 11px; }
   &__error { color: #934b40; background: #faeee6; border-radius: 5px; padding: 10px; font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; margin-top: 15px; }
+  &__notice { color: $green; background: $paper; padding: 10px 12px; border-radius: 6px; font-size: 13px; }
+  &__form--setup { width: min(100%, 480px); fieldset { margin: 0; padding: 0; border: 0; min-width: 0; } }
+  &__setup-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 14px; }
+  &__setup-help { color: $muted; margin-top: 10px; font-size: 12px; line-height: 1.7; summary { color: $green; cursor: pointer; } code { display: block; padding: 8px 10px; background: $paper; color: $ink; overflow-wrap: anywhere; } }
 }
 @media (max-width: 760px) { .login { grid-template-columns: 1fr; &__story { min-height: auto; padding: 25px; h1, .login__description, .login__edition { display: none; } } &__panel { padding: 45px 24px; } } }
+@media (max-width: 430px) { .login__setup-fields { grid-template-columns: 1fr; } }
 </style>

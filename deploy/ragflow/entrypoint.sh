@@ -2,6 +2,11 @@
 set -euo pipefail
 
 umask 077
+service_password=$(cat /run/ea-ragflow/password)
+export MYSQL_PASSWORD="$service_password" ELASTIC_PASSWORD="$service_password" MINIO_PASSWORD="$service_password"
+export REDIS_PASSWORD="$service_password" CLICKHOUSE_PASSWORD="$service_password"
+unset service_password
+
 state=/var/lib/ea-ragflow-admin
 password_file="$state/admin-password"
 

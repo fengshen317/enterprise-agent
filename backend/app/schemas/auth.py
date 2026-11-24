@@ -16,6 +16,7 @@ class AuthContext:
     username: str
     display_name: str
     expires_at: datetime
+    first_admin: bool = False
 
 
 @dataclass(frozen=True)

@@ -9,11 +9,21 @@ h1, h2, h3, p { margin: 0; }
 .workspace {
   display: grid; grid-template-columns: $sidebar-width minmax(0, 1fr); min-height: 100vh;
   &__sidebar { background: #173b32; color: #d1dfd2; padding: 34px 20px; display: flex; flex-direction: column; }
+  &__top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  &__navigation, &__links { display: flex; flex-direction: column; }
+  &__navigation { flex: 1; }
+  &__menu-toggle { display: none; }
+  &__skip {
+    position: fixed; z-index: 5; top: 12px; left: 12px; padding: 12px; border-radius: 6px;
+    background: white; color: $ink; transform: translateY(-160%);
+    &:focus { transform: none; }
+  }
   &__brand { display: flex; align-items: center; gap: 13px; padding: 0 12px; font-size: 25px; letter-spacing: 4px; small { display: block; font-size: 9px; letter-spacing: 2px; margin-top: 7px; color: #a4baa7; } }
   &__mark { background: #cee2b8; color: $ink; border-radius: 9px; font-size: 32px; padding: 0 9px; }
   &__space { border: 1px solid #436150; border-radius: 7px; padding: 14px; margin: 35px 0 30px; font-size: 12px; }
   &__label { font-size: 10px; color: #94ac99; letter-spacing: 2px; padding: 0 13px 12px; }
   &__nav { margin-bottom: 8px; color: #e0edcf; background: #315342; text-decoration: none; padding: 14px; border-radius: 7px; }
+  &__nav:hover, &__nav[aria-current='page'], &__nav--current { background: #3b6250; }
   &__next { color: #a4baa7; padding: 19px 14px; font-size: 12px; }
   &__sidebar-footer { margin-top: auto; padding: 25px 12px 0; border-top: 1px solid #3b594a; font-size: 10px; letter-spacing: 1px; line-height: 2.2; color: #a4baa7; }
   &__header { height: 77px; border-bottom: 1px solid $line; background: #fcfdf9; display: flex; justify-content: space-between; align-items: center; padding: 0 40px; font-size: 12px; color: $muted; }
@@ -42,4 +52,43 @@ h1, h2, h3, p { margin: 0; }
   code { display: block; font-size: 10px; margin-top: 12px; color: #8a754f; overflow-wrap: anywhere; }
 }
 @media (max-width: 1000px) { .workspace { grid-template-columns: 185px minmax(0, 1fr); } .overview { padding: 30px 24px; &__number { font-size: 85px; } &__roadmap { grid-template-columns: 1fr; } } }
-@media (max-width: 650px) { .workspace { display: block; &__sidebar { padding: 18px; } &__brand { font-size: 20px; } &__space, &__label, &__next, &__sidebar-footer { display: none; } &__nav { margin-top: 18px; } &__header { padding: 0 20px; height: 62px; } } .overview { padding: 25px 18px; &__heading { flex-wrap: wrap; } &__intro { padding: 25px; } &__number { display: none; } &__checks { grid-template-columns: 1fr; } &__section-heading { align-items: flex-start; } } }
+@media (min-width: $knowledge-stack-width + 1px) {
+  .workspace--knowledge {
+    .workspace__main { background: $knowledge-canvas; }
+    .workspace__header { height: 56px; background: #fafbf8; }
+    .workspace__stage { display: none; }
+    .workspace__space { margin-bottom: 23px; }
+    .workspace__nav {
+      padding-block: 11px;
+      margin-bottom: 4px;
+      background: transparent;
+      &:hover { background: #24483b; }
+      &[aria-current='page'], &--current { background: #315746; color: white; }
+    }
+    .workspace__next, .workspace__sidebar-footer { display: none; }
+  }
+}
+@media (max-width: 650px) {
+  .workspace {
+    display: block;
+    &__sidebar { padding: 10px 16px; }
+    &__brand { padding: 0; font-size: 20px; }
+    &__mark { font-size: 26px; }
+    &__menu-toggle {
+      display: inline-flex; align-items: center; min-height: 44px; padding: 0 14px;
+      border: 1px solid #759784; border-radius: 6px; background: transparent; color: #e0edcf;
+      white-space: nowrap;
+      &:hover, &[aria-expanded='true'] { background: #315342; }
+    }
+    &__navigation {
+      display: none; max-height: 70vh; overflow-y: auto; padding: 4px;
+      &--open { display: flex; }
+    }
+    &__space { margin: 10px 0 16px; }
+    &__label, &__next, &__sidebar-footer { display: none; }
+    &__nav { min-height: 44px; }
+    &__header { padding: 0 16px; height: 45px; }
+    &__stage { display: none; }
+  }
+  .overview { padding: 25px 18px; &__heading { flex-wrap: wrap; } &__intro { padding: 25px; } &__number { display: none; } &__checks { grid-template-columns: 1fr; } &__section-heading { align-items: flex-start; } }
+}

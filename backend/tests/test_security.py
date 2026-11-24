@@ -4,6 +4,7 @@ import pytest
 
 from app.core.errors import ApplicationError
 from app.core.security import csrf_token, digest_token, hash_password, normalize_username, verify_password
+from app.schemas.auth import LoginRequest
 
 
 def test_password_hashing_and_invalid_hashes() -> None:
@@ -28,15 +29,13 @@ def test_csrf_and_session_digests_are_distinct_and_session_bound() -> None:
     assert len(digest_token(token)) == 64 and token not in digest_token(token)
 
 
-@pytest.mark.parametrize("password", ["1", "", "   ", "中文🙂", "x" * 129])
+@pytest.mark.parametrize("password", ["1", "", "   ", "中文🙂", "x" * 257])
 def test_password_has_no_character_limits(password: str) -> None:
     """创建与登录使用同一原始值，不裁剪或拒绝字符。
 
     Args:
         password: 不同长度与字符组成的测试密码。
     """
-    from app.schemas.auth import LoginRequest
-
     request = LoginRequest(username="admin", password=password)
     assert request.password.get_secret_value() == password
     assert verify_password(password, hash_password(password))

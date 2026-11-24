@@ -13,7 +13,7 @@ vi.mock('../../api/knowledge', () => ({
 }))
 
 const base: api.KnowledgeBase = {
-  id: 'kb-1', name: '制度库', description: '公司制度', visibility: 'workspace', status: 'ready', error_code: null,
+  id: 'kb-1', name: '制度库', description: '公司制度', visibility: 'workspace', status: 'ready', error_code: null, can_manage: true,
   parser_settings: {
     chunk_token_size: 512, delimiters: ['\n'], overlapped_percent: 0.1, use_parent_child: false,
     parent_child_delimiter: '\n', pdf_parse_method: 'deepdoc', auto_keywords_top_n: null, auto_questions_top_n: null,
@@ -50,9 +50,9 @@ it('展示知识库统计并进入详情', async () => {
   const wrapper = mount(KnowledgeListView, { global: { plugins: [pinia, router] } })
   await flushPromises()
   expect(wrapper.text()).toContain('制度库')
-  expect(wrapper.text()).toContain('Chunk')
+  expect(wrapper.text()).toContain('分块')
   expect(wrapper.text()).toContain('8')
-  expect(wrapper.get('.knowledge-list__row-actions a').attributes('href')).toBe('/knowledge/kb-1')
+  expect(wrapper.get('a.knowledge-list__name').attributes('href')).toBe('/knowledge/kb-1')
   wrapper.unmount()
 })
 
@@ -80,11 +80,22 @@ it('删除需要二次确认', async () => {
   await router.push('/knowledge')
   const wrapper = mount(KnowledgeListView, { global: { plugins: [pinia, router] } })
   await flushPromises()
-  const button = wrapper.findAll('.knowledge-list__row-actions button')[0]!
+  const button = wrapper.get('details.knowledge-list__more button')
   await button.trigger('click')
   expect(api.deleteKnowledgeBase).not.toHaveBeenCalled()
   await button.trigger('click')
   await flushPromises()
   expect(api.deleteKnowledgeBase).toHaveBeenCalledWith('kb-1')
+  wrapper.unmount()
+})
+
+it('可读但不可管理的知识库只显示查看入口', async () => {
+  vi.mocked(api.listKnowledgeBases).mockResolvedValue([{ ...base, can_manage: false }])
+  const { pinia, router } = setup()
+  await router.push('/knowledge')
+  const wrapper = mount(KnowledgeListView, { global: { plugins: [pinia, router] } })
+  await flushPromises()
+  expect(wrapper.get('a.knowledge-list__name').text()).toBe('制度库')
+  expect(wrapper.find('details.knowledge-list__more').exists()).toBe(false)
   wrapper.unmount()
 })

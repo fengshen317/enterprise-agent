@@ -1,0 +1,116 @@
+@use './variables' as *;
+
+@mixin desktop-header {
+  padding: 26px 30px;
+  border: 1px solid $knowledge-divider;
+  border-radius: 12px;
+  background: $knowledge-tint;
+}
+
+@mixin desktop-surface {
+  border: 1px solid $knowledge-divider;
+  border-radius: 12px;
+  background: white;
+  box-shadow: 0 4px 16px rgba($ink, .045);
+}
+
+@mixin desktop-table {
+  th, td { padding-block: 15px; }
+  th { background: $knowledge-canvas; }
+  tbody tr:hover, tbody tr:focus-within { background: #f6f9f5; }
+}
+
+@mixin desktop-mark {
+  position: absolute;
+  inset: 0 auto auto 0;
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid $knowledge-divider;
+  border-radius: 8px;
+  background: $knowledge-tint;
+  color: $green;
+
+  &::before { content: ''; box-sizing: border-box; border: 1.5px solid currentColor; }
+}
+
+@mixin table($cell-padding) {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  text-align: left;
+
+  th, td { padding: $cell-padding; }
+  th { background: $paper; color: $log-muted; font-size: 12px; font-weight: 500; }
+  td { border-bottom: 1px solid $line; font-size: 13px; vertical-align: top; overflow-wrap: anywhere; }
+  tr:last-child td { border-bottom: 0; }
+  small { display: block; margin-top: 5px; color: $log-muted; font-size: 12px; line-height: 1.6; }
+}
+
+@mixin stacked-table {
+  display: block;
+
+  // 列标题在窄屏不重复占位，仍供读屏软件识别单元格的含义。
+  thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  tbody { display: block; }
+  tbody tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 12px;
+    padding: 14px;
+    border-bottom: 1px solid $line;
+  }
+  tbody tr:last-child { border-bottom: 0; }
+  td { display: block; min-width: 0; padding: 0; border: 0; }
+}
+
+@mixin state {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  border-radius: 5px;
+  padding: 3px 7px;
+  color: $log-muted;
+  background: $paper;
+  font-size: 12px;
+
+  &[data-status='ready'] { color: $log-success; background: $log-success-bg; }
+  &[data-status='failed'], &[data-status='delete_failed'] { color: $log-error; background: $log-error-bg; }
+  &[data-status='creating'], &[data-status='configuring'], &[data-status='deleting'],
+  &[data-status='uploading'], &[data-status='uploaded'], &[data-status='parsing'] {
+    color: $log-warning;
+    background: $log-warning-bg;
+  }
+}
+
+@mixin row-action {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid $line;
+  border-radius: 5px;
+  background: white;
+  color: $green;
+  font-size: 12px;
+
+  &:hover { background: $paper; }
+  &:focus-visible { outline: 2px solid $green; outline-offset: 2px; }
+
+  @media (max-width: $knowledge-stack-width) { min-height: 44px; }
+}
+
+@mixin disclosure {
+  summary { cursor: pointer; @include row-action; }
+  summary::after {
+    content: '';
+    width: 6px;
+    height: 6px;
+    margin-left: 9px;
+    border-right: 1px solid currentColor;
+    border-bottom: 1px solid currentColor;
+    transform: translateY(-2px) rotate(45deg);
+  }
+  &[open] summary::after { transform: translateY(2px) rotate(225deg); }
+}

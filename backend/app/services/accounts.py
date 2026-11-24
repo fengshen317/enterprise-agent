@@ -12,12 +12,34 @@ from app.core.errors import ApplicationError
 from app.core.security import hash_password, normalize_username
 from app.models.conversation import Conversation, Run
 from app.models.identity import User, Workspace, WorkspaceMembership
+from app.models.system import FIRST_ADMIN_KEY, SystemMetadata
 
 ACCOUNT_LOCK = 782341913
+MIN_PASSWORD_LENGTH = 4
+
+
+def _validate_new_password(password: str) -> None:
+    """在首次创建和重置时执行同一条密码规则。
+
+    Args:
+        password: 用户输入的新密码，保留原始字符。
+    """
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise ApplicationError("PASSWORD_TOO_SHORT", f"密码至少需要 {MIN_PASSWORD_LENGTH} 个字符", 422)
+
+
+async def initial_setup_available(session: AsyncSession) -> bool:
+    """网页初始化只对尚无账号和空间的部署开放。"""
+    if await session.get(SystemMetadata, FIRST_ADMIN_KEY) is not None:
+        return False
+    return (
+        await session.scalar(select(User.id).limit(1)) is None
+        and await session.scalar(select(Workspace.id).limit(1)) is None
+    )
 
 
 class AccountManager:
-    """只供本地管理命令使用，不暴露匿名注册接口。"""
+    """在管理命令和一次性部署流程中原子创建账号。"""
 
     def __init__(self, factory: async_sessionmaker[AsyncSession]) -> None:
         """保存独立会话工厂。
@@ -37,6 +59,8 @@ class AccountManager:
         role: str = "member",
         initialize: bool = False,
         claim_legacy: bool = False,
+        *,
+        first_setup: bool = False,
     ) -> tuple[UUID, UUID, int]:
         """原子创建账号与成员，初始化时同时创建空间。
 
@@ -49,6 +73,7 @@ class AccountManager:
             role: 新成员角色。
             initialize: 是否创建新空间与管理员。
             claim_legacy: 是否显式认领无归属对话。
+            first_setup: 是否强制空库并记录部署级管理员。
 
         Returns:
             用户标识、空间标识及认领数量。
@@ -65,9 +90,15 @@ class AccountManager:
             raise ApplicationError("INVALID_ACCOUNT_INPUT", "账号显示名、空间或角色不合法", 422)
         if claim_legacy and not initialize:
             raise ApplicationError("INVALID_ACCOUNT_INPUT", "添加普通账号时不能认领历史数据", 422)
+        if first_setup and (not initialize or claim_legacy):
+            raise ApplicationError("INVALID_ACCOUNT_INPUT", "网页初始化必须创建管理员和空间", 422)
+        if initialize:
+            _validate_new_password(password)
         encoded = await asyncio.to_thread(hash_password, password)
         async with self.factory.begin() as session:
             await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": ACCOUNT_LOCK})
+            if first_setup and not await initial_setup_available(session):
+                raise ApplicationError("INITIAL_SETUP_CLOSED", "首次初始化已关闭，请使用现有账号登录", 409)
             if await session.scalar(select(User.id).where(User.username == username)) is not None:
                 raise ApplicationError("ACCOUNT_EXISTS", "账号已存在，未更改原密码；重置请使用 reset-password", 409)
             workspace = await session.scalar(select(Workspace).where(Workspace.slug == slug).with_for_update())
@@ -86,6 +117,8 @@ class AccountManager:
             session.add(
                 WorkspaceMembership(workspace_id=workspace.id, user_id=user.id, role="admin" if initialize else role)
             )
+            if first_setup:
+                session.add(SystemMetadata(key=FIRST_ADMIN_KEY, value=str(user.id)))
             await session.flush()
             count = await self._claim(session, user.id, workspace.id) if claim_legacy else 0
             return user.id, workspace.id, count
@@ -158,6 +191,7 @@ class AccountManager:
             password: 本机输入的新密码。
         """
         username = normalize_username(username)
+        _validate_new_password(password)
         encoded = await asyncio.to_thread(hash_password, password)
         async with self.factory.begin() as session:
             user = await session.scalar(select(User).where(User.username == username).with_for_update())

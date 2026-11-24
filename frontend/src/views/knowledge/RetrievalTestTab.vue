@@ -123,6 +123,7 @@ async function search(): Promise<void> {
 
 <style scoped lang="scss">
 @use '../../styles/variables' as *;
+@use '../../styles/knowledge';
 .retrieval-tab {
   &__form, &__results { background: white; border: 1px solid $line; border-radius: 8px; padding: 22px; margin-bottom: 18px; h2 { font-size: 17px; font-weight: 500; } }
   &__hint { color: $muted; font-size: 11px; line-height: 1.8; margin: 8px 0 16px; }
@@ -137,5 +138,13 @@ async function search(): Promise<void> {
   &__content { white-space: pre-wrap; overflow-wrap: anywhere; color: $ink; font-size: 12px; line-height: 1.9; margin-top: 10px; }
   &__error { padding: 12px 16px; border-radius: 5px; font-size: 12px; background: #faeee6; color: #934b40; }
   &__empty { color: $muted; font-size: 12px; padding: 12px 0; }
+}
+@media (min-width: $knowledge-stack-width + 1px) {
+  .retrieval-tab {
+    &__form, &__results { @include knowledge.desktop-surface; padding: 24px; h2 { font-size: 20px; font-weight: 600; } }
+    &__hint, &__content { font-size: 13px; color: $log-muted; }
+    input { min-height: 40px; font-size: 13px; }
+    &__primary { min-height: 40px; &:hover:not(:disabled) { background: $ink; } }
+  }
 }
 </style>

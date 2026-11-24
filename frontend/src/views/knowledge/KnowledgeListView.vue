@@ -101,6 +101,10 @@ async function remove(item: KnowledgeBase): Promise<void> {
   finally { rowBusy.value = '' }
 }
 
+function resetDeleteConfirmation(event: Event, itemId: string): void {
+  if (!(event.currentTarget as HTMLDetailsElement).open && confirmDelete.value === itemId) confirmDelete.value = ''
+}
+
 void load()
 onBeforeUnmount(() => { alive = false; revision++ })
 </script>
@@ -109,10 +113,9 @@ onBeforeUnmount(() => { alive = false; revision++ })
   <section class="knowledge-list">
     <header class="knowledge-list__heading">
       <div>
-        <p class="knowledge-list__eyebrow">
-          KNOWLEDGE / LIBRARY
-        </p><h1>知识库</h1><p class="knowledge-list__description">
-          统一管理文档解析与检索；空间管理员创建空间知识库，成员可以创建自己的私有知识库。
+        <h1>知识库</h1>
+        <p class="knowledge-list__description">
+          管理供问答检索的空间资料和个人文档。
         </p>
       </div><button
         class="knowledge-list__primary"
@@ -120,12 +123,15 @@ onBeforeUnmount(() => { alive = false; revision++ })
         :disabled="saving"
         @click="startCreate"
       >
-        {{ showForm ? '收起表单' : '＋ 新建知识库' }}
+        <span
+          v-if="!showForm"
+          aria-hidden="true"
+        >＋</span>{{ showForm ? '收起表单' : '新建知识库' }}
       </button>
+      <p class="knowledge-list__boundary">
+        空间知识库供成员检索，由空间管理员创建和管理。私有知识库仅创建者可见。
+      </p>
     </header>
-    <p class="knowledge-list__boundary">
-      空间知识库对当前空间成员可检索，管理员可管理；私有知识库仅创建者可见，管理员也不能读取。
-    </p>
     <p
       v-if="error"
       class="knowledge-list__error"
@@ -203,7 +209,11 @@ onBeforeUnmount(() => { alive = false; revision++ })
       aria-label="知识库列表"
     >
       <div class="knowledge-list__toolbar">
-        <span>我的知识库 <strong>{{ bases.length }}</strong></span><button
+        <div class="knowledge-list__catalog-title">
+          <h2>知识库目录</h2>
+          <span>{{ bases.length }} 个</span>
+        </div>
+        <button
           type="button"
           :disabled="loading"
           @click="load"
@@ -215,33 +225,113 @@ onBeforeUnmount(() => { alive = false; revision++ })
         class="knowledge-list__table-wrap"
         :aria-busy="loading"
       >
-        <table class="knowledge-list__table">
-          <thead><tr><th>名称</th><th>可见性</th><th>状态</th><th>文档</th><th>Chunk</th><th>更新时间</th><th>操作</th></tr></thead>
-          <tbody>
+        <table
+          class="knowledge-list__table"
+          aria-label="知识库"
+          role="table"
+        >
+          <thead role="rowgroup">
+            <tr role="row">
+              <th scope="col">
+                名称
+              </th><th scope="col">
+                可见性
+              </th><th scope="col">
+                状态
+              </th><th scope="col">
+                文档
+              </th>
+              <th scope="col">
+                分块
+              </th><th scope="col">
+                更新时间
+              </th><th scope="col">
+                操作
+              </th>
+            </tr>
+          </thead>
+          <tbody role="rowgroup">
             <tr
               v-for="item in bases"
               :key="item.id"
+              role="row"
             >
-              <td>
-                <strong>{{ item.name }}</strong><small>{{ item.description || '暂无描述' }}</small>
+              <td
+                class="knowledge-list__row-title"
+                role="cell"
+              >
+                <div class="knowledge-list__item">
+                  <span
+                    class="knowledge-list__folder"
+                    aria-hidden="true"
+                  />
+                  <RouterLink
+                    class="knowledge-list__name"
+                    :to="'/knowledge/' + item.id"
+                  >
+                    {{ item.name }}
+                  </RouterLink>
+                  <small v-if="item.description">{{ item.description }}</small>
+                </div>
               </td>
-              <td>{{ item.visibility === 'workspace' ? '空间' : '私有' }}</td>
-              <td>
-                <span class="knowledge-list__state">{{ statusLabel(item.status) }}</span><small v-if="item.error_code">{{ errorLabel(item.error_code) }}</small>
+              <td role="cell">
+                <span class="knowledge-list__scope">{{ item.visibility === 'workspace' ? '空间知识库' : '私有知识库' }}</span>
               </td>
-              <td>{{ item.document_count }}</td>
-              <td>{{ item.chunk_count }}</td>
-              <td>{{ timeLabel(item.updated_at) }}</td>
-              <td class="knowledge-list__row-actions">
-                <RouterLink :to="'/knowledge/' + item.id">
-                  进入详情
-                </RouterLink><button
-                  type="button"
-                  :disabled="!!rowBusy"
-                  @click="remove(item)"
+              <td role="cell">
+                <span
+                  class="knowledge-list__state"
+                  :data-status="item.status"
+                >{{ statusLabel(item.status) }}</span>
+                <small v-if="item.error_code">{{ errorLabel(item.error_code) }}</small>
+              </td>
+              <td
+                class="knowledge-list__count"
+                role="cell"
+              >
+                <span
+                  class="knowledge-list__mobile-label"
+                  aria-hidden="true"
+                >文档</span>{{ item.document_count }}
+              </td>
+              <td
+                class="knowledge-list__count"
+                role="cell"
+              >
+                <span
+                  class="knowledge-list__mobile-label"
+                  aria-hidden="true"
+                >分块</span>{{ item.chunk_count }}
+              </td>
+              <td
+                class="knowledge-list__updated"
+                role="cell"
+              >
+                <span
+                  class="knowledge-list__mobile-label"
+                  aria-hidden="true"
+                >更新于</span>{{ timeLabel(item.updated_at) }}
+              </td>
+              <td
+                class="knowledge-list__row-actions"
+                role="cell"
+                :class="{ 'knowledge-list__row-actions--empty': !item.can_manage }"
+              >
+                <details
+                  v-if="item.can_manage"
+                  class="knowledge-list__more"
+                  @toggle="resetDeleteConfirmation($event, item.id)"
                 >
-                  {{ confirmDelete === item.id ? '确认删除' : '删除' }}
-                </button>
+                  <summary :aria-label="'更多操作：' + item.name">
+                    更多
+                  </summary>
+                  <button
+                    type="button"
+                    :disabled="!!rowBusy"
+                    @click="remove(item)"
+                  >
+                    {{ confirmDelete === item.id ? '确认删除' : '删除' }}
+                  </button>
+                </details>
               </td>
             </tr>
           </tbody>
@@ -259,13 +349,17 @@ onBeforeUnmount(() => { alive = false; revision++ })
 
 <style scoped lang="scss">
 @use '../../styles/variables' as *;
+@use '../../styles/knowledge';
 .knowledge-list {
   max-width: 1280px; margin: 0 auto; padding: 40px clamp(20px, 4vw, 56px) 70px;
-  &__heading { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 22px; h1 { font-size: 28px; font-weight: 500; margin: 13px 0; } }
-  &__eyebrow { color: $muted; font-size: 10px; letter-spacing: 2px; }
-  &__description, &__boundary { color: $muted; font-size: 12px; line-height: 1.9; }
-  &__boundary { border-left: 2px solid $line; padding-left: 14px; margin-bottom: 26px; }
-  &__primary { background: $green; color: white; border: 0; border-radius: 6px; padding: 11px 17px; }
+  &__heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 16px; h1 { font-size: 30px; font-weight: 600; margin-bottom: 6px; } }
+  &__description, &__boundary { color: $log-muted; font-size: 13px; line-height: 1.65; }
+  &__boundary { flex-basis: 100%; border-left: 2px solid $line; padding-left: 14px; }
+  &__primary {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: $green; color: white; border: 0; border-radius: 7px; padding: 11px 17px;
+    &:hover:not(:disabled) { background: $ink; }
+  }
   &__form, &__card { margin: 22px 0; background: white; border: 1px solid $line; border-radius: 8px; overflow: hidden; }
   &__form { padding: 24px; h2 { margin-bottom: 20px; font-size: 17px; font-weight: 500; } }
   &__fields { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; label { color: $green; font-size: 12px; } input, select { display: block; margin-top: 8px; width: 100%; } }
@@ -273,15 +367,75 @@ onBeforeUnmount(() => { alive = false; revision++ })
   textarea { display: block; width: 100%; margin-top: 8px; resize: vertical; }
   &__description-input { display: block; margin: 20px 0; color: $green; font-size: 12px; }
   &__actions { display: flex; gap: 10px; margin-top: 20px; button:not(.knowledge-list__primary) { border: 1px solid $line; background: $paper; border-radius: 5px; padding: 10px 16px; color: $green; } }
-  &__toolbar { display: flex; align-items: center; justify-content: space-between; padding: 20px; span { font-size: 14px; strong { color: $muted; margin-left: 6px; } } button { border: 1px solid $line; background: $paper; border-radius: 5px; padding: 8px 12px; color: $green; font-size: 12px; } }
-  &__table-wrap { overflow-x: auto; }
-  &__table { width: 100%; border-collapse: collapse; text-align: left; th { background: $paper; color: $muted; font-size: 11px; font-weight: 400; padding: 13px 20px; white-space: nowrap; } td { padding: 17px 20px; border-bottom: 1px solid $line; font-size: 12px; white-space: nowrap; vertical-align: top; } strong { font-weight: 500; } small { display: block; color: $muted; margin-top: 7px; max-width: 320px; white-space: normal; line-height: 1.7; } }
-  &__state { display: inline-block; padding: 3px 7px; border-radius: 4px; background: #eef0eb; color: $muted; font-size: 10px; }
-  &__row-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; a, button { border: 1px solid $line; background: $paper; border-radius: 5px; padding: 6px 9px; color: $green; font-size: 11px; text-decoration: none; } }
+  &__toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px; button { @include knowledge.row-action; } }
+  &__catalog-title {
+    display: flex; align-items: center; gap: 10px;
+    h2 { font-size: 16px; font-weight: 600; }
+    span { border-radius: 5px; background: $knowledge-tint; color: $log-success; padding: 3px 7px; font-size: 12px; }
+  }
+  &__table {
+    @include knowledge.table(13px 12px);
+    th:nth-child(1) { width: 29%; }
+    th:nth-child(2), th:nth-child(7) { width: 11%; }
+    th:nth-child(3) { width: 14%; }
+    th:nth-child(4), th:nth-child(5) { width: 8%; }
+    th:nth-child(6) { width: 19%; }
+  }
+  &__folder { display: none; }
+  &__name { color: $ink; font-size: 15px; font-weight: 600; text-underline-offset: 3px; &:hover { color: $green; } }
+  &__scope { color: $log-muted; }
+  &__state { @include knowledge.state; }
+  &__count, &__updated { font-variant-numeric: tabular-nums; }
+  &__mobile-label { display: none; }
+  &__more {
+    @include knowledge.disclosure;
+    button { @include knowledge.row-action; margin-top: 6px; color: $log-error; }
+  }
   &__error, &__notice { padding: 12px 16px; border-radius: 5px; font-size: 12px; line-height: 1.8; margin-bottom: 18px; }
   &__error { background: #faeee6; color: #934b40; }
   &__notice { background: #eaf0e1; color: $green; }
   &__empty { padding: 24px; color: $muted; font-size: 12px; }
 }
-@media (max-width: 900px) { .knowledge-list { padding: 24px 16px; &__fields { grid-template-columns: 1fr; } &__heading { align-items: flex-start; flex-direction: column; } } }
+@media (min-width: $knowledge-stack-width + 1px) {
+  .knowledge-list {
+    padding-top: 28px;
+    &__heading { @include knowledge.desktop-header; gap: 14px; h1 { font-size: 36px; } }
+    &__description { font-size: 14px; }
+    &__boundary { border: 0; border-top: 1px solid $knowledge-divider; padding: 12px 0 0; }
+    &__primary { min-height: 44px; }
+    &__card { @include knowledge.desktop-surface; }
+    &__toolbar { padding: 15px 20px; }
+    &__catalog-title h2 { font-size: 18px; }
+    &__table {
+      @include knowledge.desktop-table;
+      th:first-child, td:first-child { padding-left: 20px; }
+      th:nth-child(4), th:nth-child(5), td:nth-child(4), td:nth-child(5) { text-align: right; }
+      th:nth-child(6), td:nth-child(6) { padding-left: 18px; }
+    }
+    &__item { position: relative; min-height: 38px; padding-left: 49px; }
+    &__folder {
+      @include knowledge.desktop-mark;
+      &::before { width: 18px; height: 12px; border-radius: 2px; transform: translateY(2px); }
+      &::after { content: ''; position: absolute; top: 11px; left: 10px; width: 8px; height: 4px; border: 1.5px solid currentColor; border-bottom: 0; border-radius: 2px 2px 0 0; }
+    }
+    &__name { text-decoration: none; &:hover, &:focus-visible { text-decoration: underline; } }
+    &__updated { color: $log-muted; }
+  }
+}
+@media (max-width: $knowledge-stack-width) {
+  .knowledge-list {
+    padding: 20px 16px 32px;
+    &__table { @include knowledge.stacked-table; }
+    &__table tbody tr { padding-top: 8px; }
+    &__row-title, &__updated, &__row-actions { grid-column: 1 / -1; }
+    &__name { display: flex; align-items: center; min-height: 44px; }
+    &__row-title small { margin-top: 0; }
+    &__row-actions--empty { display: none !important; }
+    &__mobile-label { display: inline; margin-right: 6px; color: $log-muted; }
+    &__fields { grid-template-columns: minmax(0, 1fr); }
+    &__heading { align-items: flex-start; flex-wrap: wrap; }
+    &__primary, &__toolbar button { min-height: 44px; }
+    &__toolbar { padding: 10px 14px; border-bottom: 1px solid $line; }
+  }
+}
 </style>

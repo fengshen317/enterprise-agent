@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     database_port: int = Field(default=5432, ge=1, le=65535)
     database_user: str = Field(default="postgres", min_length=1)
     database_password: SecretStr = SecretStr("")
+    database_password_file: Path | None = None
     database_name: str = Field(default="enterprise_agent", min_length=1)
     test_database_name: str | None = None
     # 工程检查不依赖模型凭证；调用模型时再检查是否已配置。
@@ -121,6 +122,8 @@ class Settings(BaseSettings):
     system_log_retention_days: int = Field(default=30, ge=1, le=365)
     auth_session_hours: int = Field(default=12, ge=1, le=168)
     system_admin_username: str = Field(default="", max_length=64)
+    initial_setup_token: SecretStr = SecretStr("")
+    initial_setup_token_file: Path | None = None
     auth_cookie_secure: bool = False
     auth_login_max_failures: int = Field(default=5, ge=1, le=20)
     auth_login_window_seconds: int = Field(default=900, ge=60, le=3600)
@@ -160,10 +163,15 @@ class Settings(BaseSettings):
         Returns:
             可直接传给 SQLAlchemy 的连接对象，默认字符串表示隐藏密码。
         """
+        password = self.database_password.get_secret_value()
+        if not password and self.database_password_file is not None:
+            password = self.database_password_file.read_bytes().decode("utf-8").rstrip("\n")
+            if not password:
+                raise ValueError("数据库密码文件为空")
         return URL.create(
             drivername="postgresql+asyncpg",
             username=self.database_user,
-            password=self.database_password.get_secret_value(),
+            password=password,
             host=self.database_host,
             port=self.database_port,
             database=self.database_name,

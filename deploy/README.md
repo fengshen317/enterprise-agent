@@ -4,32 +4,94 @@
 
 ## 首次部署
 
-1. 准备 Docker Engine 28 或以上版本和 Docker Compose 2.26.1 或以上版本。资源从 4 核 CPU、16 GB 内存、50 GB 可用磁盘空间起步，按文档解析量和业务负载扩容。按 RAGFlow 部署要求检查 `sysctl vm.max_map_count`，低于 262144 时在服务器上将其调整到至少 262144 并持久化。将域名解析到服务器并开放公网 TCP 80 和 443。 [RAGFlow v1.0.0 部署要求](https://github.com/infiniflow/ragflow/blob/v1.0.0/docker/README.md) · [Caddy 自动 HTTPS](https://caddyserver.com/docs/automatic-https)
-2. 在仓库根目录复制环境模板。
+1. 在服务器仓库根目录把 `.env.example` 复制成 `.env`，填写 `EA_DEPLOY_DOMAIN`。 [服务器准备](#服务器准备) · [环境配置](#环境配置)
+2. 启动服务。
 
    ```bash
-   cp -n .env.example .env
-   chmod 600 .env
-   openssl rand -hex 32
+   docker compose up -d
    ```
 
-   分别生成两个随机值，填入 `EA_DATABASE_PASSWORD` 和 `EA_RAGFLOW_SERVICE_PASSWORD`。将实际域名填入 `EA_DEPLOY_DOMAIN`，例如 `agent.example.com`。域名只填主机名。
+3. 打开 `https://你的域名/login`，按页面提示创建管理员。填写 `.env` 中预设的部署口令，或[读取自动生成的口令](#读取一次性部署口令)。创建完成后登录，从「API 配置」设置模型。
 
-3. 构建、启动并查看服务状态。
+首次启动会构建缺少的应用镜像、生成并保存两组独立的服务密码、迁移数据库并初始化内置 RAGFlow，可能需要几分钟。已有账号的部署直接登录。
 
-   ```bash
-   docker compose config --quiet
-   docker compose up -d --build --wait --wait-timeout 420
-   docker compose ps
-   ```
+## 服务器准备
 
-4. 新数据库首次登录前，在自己的终端交互创建管理员并设置密码。令根目录 `.env` 的 `EA_SYSTEM_ADMIN_USERNAME` 与该账号一致。迁入已有账号的数据库可指定已有账号。
+- 安装 Docker Engine 28 或以上版本和 Docker Compose 2.26.1 或以上版本。
+- 内置 RAGFlow 建议至少 4 核 CPU、16 GB 内存、50 GB 可用磁盘空间。检查 `sysctl vm.max_map_count`，低于 262144 时调高并持久化。 [RAGFlow v1.0.0 部署要求](https://github.com/infiniflow/ragflow/blob/v1.0.0/docker/README.md)
+- 将域名解析到服务器并开放公网 TCP 80 和 443，供 Caddy 自动签发 HTTPS 证书。 [Caddy 自动 HTTPS](https://caddyserver.com/docs/automatic-https)
 
-   ```bash
-   docker compose exec api python -m app.cli.accounts init --username admin
-   ```
+## 环境配置
 
-5. 打开 `https://你的域名/login` 登录。访问 `/api/health/live` 和 `/api/health/ready` 应分别返回 `ok` 和 `ready`。在侧栏「API 配置」设置语言模型，再到问答页面验证流式回答。
+在仓库根目录复制环境模板。
+
+```bash
+cp -n .env.example .env
+chmod 600 .env
+```
+
+在 `.env` 填写 `EA_DEPLOY_DOMAIN`，仅填主机名，如 `agent.example.com`。两个服务密码会保存于 `postgres_credentials` 和 `ragflow_service_credentials` 命名卷。后续启动复用这些值。
+
+已有部署升级时保留 `EA_DATABASE_PASSWORD` 和 `EA_RAGFLOW_SERVICE_PASSWORD` 中的原值，启动会把它们写入凭据卷。若还原了已有服务的数据卷，也需同时还原凭据卷，或在 `.env` 提供对应的原密码。
+
+可选填 `EA_INITIAL_SETUP_TOKEN`，使用另外生成的随机值作为网页创建管理员时的一次性口令。
+
+### 读取一次性部署口令
+
+未预填 `EA_INITIAL_SETUP_TOKEN` 时，可在服务器项目目录读取自动生成的口令。管理员创建成功后，初始化入口自动关闭，生成的口令文件会清理。
+
+```bash
+docker compose exec api cat /home/enterprise-agent/.enterprise-agent/setup-token
+```
+
+### 忘记工作台管理员密码
+
+在部署电脑的项目目录中运行以下命令。把 `admin` 换成创建管理员时填写的登录名。
+
+```bash
+docker compose exec api python -m app.cli.accounts reset-password --username admin
+```
+
+按终端提示输入两次新密码。重置成功后，原会话立即失效，使用新密码重新登录即可。首次创建和重置密码均要求至少 4 个字符，长度不设上限。一次性部署口令仅用于创建首个管理员。
+
+## 端口与访问范围
+
+默认部署在云安全组和服务器防火墙放行 **TCP 80 和 443** 即可对外提供工作台。SSH 运维使用服务器已有的 SSH 端口。RAGFlow 运维入口的宿主机端口只绑定回环地址，可通过 [SSH 隧道](#ragflow-运维入口)访问。
+
+| 服务 | 容器访问端口 | 宿主机访问方式 |
+| --- | --- | --- |
+| Caddy `web` | `80` HTTP、`443` HTTPS | 公网 TCP `80`、`443`。前端和 `/api` 共用域名 |
+| FastAPI `api` | `api:8000` | 由 Caddy 转发 `/api` |
+| 工作台 PostgreSQL `db` | `db:5432` | Compose 内网 |
+| RAGFlow Web 与数据 API | `ragflow:80` | 默认 `127.0.0.1:9388`，可用 `EA_RAGFLOW_UI_PORT` 修改宿主机端口 |
+| RAGFlow Admin API | `ragflow:9381` | RAGFlow 初始化任务通过 Compose 内网调用 |
+| RAGFlow MySQL `ragflow-db` | `3306` | Compose 内网 |
+| Elasticsearch `ragflow-search` | `9200` | Compose 内网 |
+| MinIO `ragflow-objects` | `9000` API、`9001` 控制台 | Compose 内网 |
+| Kvrocks `ragflow-cache` | `6379` | Compose 内网 |
+| NATS `ragflow-queue` | `4222` 客户端、`8222` 健康检查 | Compose 内网 |
+| ClickHouse `ragflow-analytics` | `9000` 原生协议 | Compose 内网 |
+
+表中列出项目使用的服务端口。启动后可用 `docker compose ps` 查看当前实例的端口映射。本地开发的 Vite 和 FastAPI 默认端口另见[本地开发指南](../docs/development/本地开发指南.md)。
+
+## 用 Tailscale Funnel 公网访问
+
+已登录 Tailscale 的部署电脑可用 Funnel 提供公网 HTTPS。先在 Tailscale 的设备列表查看这台电脑的完整 `.ts.net` 主机名，再在项目根目录的 `.env` 填写。
+
+```dotenv
+EA_DEPLOY_DOMAIN=你的电脑名.你的网络名.ts.net
+COMPOSE_PATH_SEPARATOR=:
+COMPOSE_FILE=compose.yaml:compose.funnel.yaml
+```
+
+执行 `docker compose up -d` 启动工作台。本机 Caddy 入口默认是 `http://127.0.0.1:18080`，若改了 `EA_FUNNEL_ORIGIN_PORT`，同步修改下方转发目标。
+
+```bash
+tailscale funnel --bg http://127.0.0.1:18080
+tailscale funnel status
+```
+
+首次启用时按 Tailscale 提示确认。浏览器访问 Funnel 输出的 HTTPS 地址并打开 `/login`。Funnel 只转发工作台网页与同源 API，登录和首个管理员的部署口令仍按本指南操作。可用 `tailscale funnel --https=443 off` 关闭这条默认端口的公网转发。 [Tailscale Funnel 指南](https://tailscale.com/docs/use-cases/application-testing/share-local-dev-server-with-internet)
 
 ## 在工作台配置 API
 
@@ -41,7 +103,7 @@
 
 FastAPI 默认使用 Compose 内网地址 `http://ragflow:80`。内置部署的 `ragflow-init` 等 RAGFlow 就绪后创建普通服务账号、签发并验证 API Key。再次部署时复用有效 Key。初始化成功后 FastAPI 从只读卷加载 Key，RAGFlow 自助注册默认关闭。镜像锁定为 `infiniflow/ragflow:v1.0.0`，`EA_RAGFLOW_IMAGE` 可指定可信镜像仓库的同版本镜像。
 
-1. 使用 `EA_SYSTEM_ADMIN_USERNAME` 指定的工作台账号登录，从「API 配置」进入「管理知识库模型」。
+1. 使用工作台系统管理员登录，从「API 配置」进入「管理知识库模型」。
 2. 选择硅基流动 BGE-M3、OpenAI Embedding 或自定义 OpenAI 兼容服务，并填写供应商 API Key。自定义服务还需填写 Base URL、模型 ID、向量维度、批量上限和最大 Token 数。
 3. 点击「验证并启用」。后端用 RAGFlow 发起 Embedding 调用并核对维度，成功后设置新知识库的默认模型。已创建的知识库继续使用原模型及其供应商凭据。若已有部署设置了 `EA_RAGFLOW_EMBEDDING_MODEL`，先移除该覆盖值并应用容器配置，再在工作台切换默认模型。
 4. 在工作台新建知识库，上传小文档，等待解析完成，再执行检索测试。
@@ -85,6 +147,8 @@ docker compose exec -T db sh -ec 'pg_restore --exit-on-error --no-owner --no-pri
 docker compose up -d --build --wait --wait-timeout 420
 ```
 
+如需在终端初始化并认领早期未归属的本地对话，可在 `.env` 将 `EA_SYSTEM_ADMIN_USERNAME` 设为 `admin`，再执行 `docker compose exec api python -m app.cli.accounts init --username admin --claim-legacy`。
+
 ## 更新、备份与排障
 
 更新前记录当前版本并先备份。从仓库根目录执行以下命令，将备份保存在当前账号的私有目录。
@@ -97,7 +161,7 @@ docker compose exec -T db sh -ec 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" 
 docker compose exec -T db pg_restore --list < "$backup"
 ```
 
-将数据库备份和生成的部署密钥保存在受限位置。备份 `api_home`，它保存 CLI 授权及解密工作台 API 配置所需的 `.enterprise-agent/integration-config.key`。迁移数据库时同时还原这个密钥文件。若使用知识库，应同时保存 PostgreSQL、RAGFlow 的持久化数据卷和 `ragflow_admin_state`、`ragflow_api_credentials`。只恢复工作台数据库时，其中的知识库仍会引用原 RAGFlow dataset。数据库卷初始化后，轮换密码时须同步修改服务账号和根目录 `.env`。
+将数据库备份和生成的部署密钥保存在受限位置。备份 `postgres_credentials` 和 `api_home`，后者保存 CLI 授权及解密工作台 API 配置所需的 `.enterprise-agent/integration-config.key`。若使用知识库，应同时保存 RAGFlow 的持久化数据卷与 `ragflow_service_credentials`、`ragflow_admin_state`、`ragflow_api_credentials`。只恢复工作台数据库时，其中的知识库仍会引用原 RAGFlow dataset。数据库卷初始化后，轮换密码时须同步修改服务账号和根目录 `.env`。
 
 更新到目标应用版本后构建镜像，安排短暂停机以确保迁移期间没有旧 API 写入。
 
@@ -110,8 +174,13 @@ docker compose logs --tail=100 api web db
 
 回滚前检查旧应用与当前数据库结构的兼容性。若不兼容，先在独立环境将备份恢复到空数据库并验证，再切回对应应用版本。应用容器可以重建，日常停止使用 `docker compose stop`，保留 PostgreSQL、Caddy 和 API 的命名卷。
 
+### 启动排障
+
+页面迟迟打不开时，用 `docker compose config --quiet` 检查配置，用 `docker compose ps` 查看服务状态。
+
 | 现象 | 检查 |
 | --- | --- |
+| 服务密码初始化失败 | 查看 `docker compose logs service-credentials-init`。还原旧数据时，同时还原凭据卷或提供原密码 |
 | 域名访问失败或证书未签发 | 检查 DNS、80/443 防火墙、端口占用和 `docker compose logs web` |
 | 镜像构建时 Python 依赖下载缓慢 | 在 `.env` 设置 `EA_PYPI_INDEX_URL` 为可信镜像的 simple 索引后重新构建，依赖仍按 `uv.lock` 校验版本和哈希 |
 | 后端未就绪 | 检查 `docker compose ps`、`docker compose logs api db` 和迁移报错 |
@@ -130,5 +199,11 @@ docker compose logs --tail=100 api web db
 2026-11-23 在独立 Compose 项目从空卷验证内置 RAGFlow `v1.0.0` 自动初始化、重复运行复用 Key、显式 Key 跳过初始化、HTTPS 系统管理员配置模型，以及空间管理员访问限制。通过本地兼容 Embedding 测试服务验证模型配置失败时保留原默认值，切换后新库使用新模型，旧库沿用原模型并能解析和检索普通及受限 TXT。原生 `/admin` 可通过回环端口访问，超级管理员认证和用户列表请求通过。生产供应商的连接及向量质量由部署环境验收。
 
 同日通过本地 HTTPS 验证工作台 API 配置，覆盖权限、CSRF、密钥加密保存、保存后问答，以及 API 重启后用同一套配置继续问答。语言模型使用 Compose 网络内的兼容协议测试服务。
+
+从空卷启动 Compose 后，通过本地 HTTPS 验证网页首次部署。服务能自动生成权限为 0600 的口令文件，创建成功后清理文件并关闭入口。API 重启后，首个管理员仍可登录和访问部署级配置。
+
+2026-11-24 在新的 Compose 项目从空卷执行 `docker compose up -d`，确认本地 HTTPS 就绪、登录页可访问，并且首次管理员初始化入口已开启。
+
+同日使用只填写域名的环境文件从空卷启动，验证 PostgreSQL、MinIO 和 RAGFlow 认证。保留数据卷重建容器后，两组服务密码保持一致。使用已有数据卷和原显式密码升级也通过。
 
 本地开发流程见 [本地开发指南](../docs/development/本地开发指南.md)。

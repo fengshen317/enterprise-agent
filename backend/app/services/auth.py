@@ -6,7 +6,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import Select, select, update
+from sqlalchemy import Select, String, cast, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -15,6 +15,7 @@ from app.core.errors import ApplicationError
 from app.core.security import csrf_token, digest_token, verify_password
 from app.models.conversation import Conversation, Run
 from app.models.identity import AuthSession, LoginLimit, User, Workspace, WorkspaceMembership
+from app.models.system import FIRST_ADMIN_KEY, SystemMetadata
 from app.schemas.auth import AuthContext, ResourceScope, SessionView, UserView, WorkspaceView
 
 
@@ -70,8 +71,9 @@ class AuthService:
         self.factory, self.settings = factory, settings
 
     def is_system_admin(self, context: AuthContext) -> bool:
-        """以部署指定的唯一账号区分系统权限与空间角色。"""
-        return context.username == self.settings.system_admin_username.strip().lower()
+        """优先服从部署配置，默认使用网页首次初始化写入的账号 ID。"""
+        username = self.settings.system_admin_username.strip().lower()
+        return context.username == username if username else context.first_admin
 
     async def login(self, username: str, password: str, client_host: str) -> str:
         """验证凭证、失败窗口和账号版本后创建随机会话。
@@ -145,7 +147,13 @@ class AuthService:
         async with self.factory() as session:
             row = (
                 await session.execute(
-                    select(AuthSession, User)
+                    select(
+                        AuthSession,
+                        User,
+                        select(SystemMetadata.key)
+                        .where(SystemMetadata.key == FIRST_ADMIN_KEY, SystemMetadata.value == cast(User.id, String))
+                        .exists(),
+                    )
                     .join(User)
                     .where(
                         AuthSession.token_digest == digest_token(token),
@@ -158,8 +166,8 @@ class AuthService:
             ).one_or_none()
             if row is None:
                 raise ApplicationError("AUTH_REQUIRED", "登录已失效，请重新登录", 401)
-            stored, user = row
-            return AuthContext(user.id, stored.id, user.username, user.display_name, stored.expires_at)
+            stored, user, first_admin = row
+            return AuthContext(user.id, stored.id, user.username, user.display_name, stored.expires_at, first_admin)
 
     async def view(self, context: AuthContext, token: str) -> SessionView:
         """只向当前用户返回自己的成员空间与 CSRF 值。

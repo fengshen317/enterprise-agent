@@ -2,6 +2,7 @@
 
 import json
 import logging
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -60,6 +61,23 @@ def test_database_parts_load_from_environment(monkeypatch: pytest.MonkeyPatch) -
     assert settings.sqlalchemy_url.port == 5434
     assert settings.sqlalchemy_url.password == "p@ss#/%"
     assert settings.sqlalchemy_url.database == "environment_test"
+
+
+def test_database_password_file_and_explicit_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """容器可从密码文件连接，本地显式密码仍然优先。"""
+    path = tmp_path / "password"
+    password = " p@ss:#/%'with-space "
+    path.write_bytes((password + "\n").encode())
+    monkeypatch.delenv("EA_DATABASE_PASSWORD", raising=False)
+    monkeypatch.setenv("EA_DATABASE_PASSWORD_FILE", str(path))
+    settings = Settings(_env_file=None)
+    assert settings.sqlalchemy_url.password == password
+    assert password not in str(settings.sqlalchemy_url)
+    path.write_bytes(b"")
+    with pytest.raises(ValueError, match="密码文件为空"):
+        _ = settings.sqlalchemy_url
+    monkeypatch.setenv("EA_DATABASE_PASSWORD", "test-explicit")
+    assert Settings(_env_file=None).sqlalchemy_url.password == "test-explicit"
 
 
 def test_json_log_keeps_correlation_without_arbitrary_fields() -> None:

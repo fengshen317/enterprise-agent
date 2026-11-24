@@ -169,6 +169,7 @@ watch(() => props.kb.id, initialize, { immediate: true })
 
 <style scoped lang="scss">
 @use '../../styles/variables' as *;
+@use '../../styles/knowledge';
 .parser-config-tab {
   &__card { background: white; border: 1px solid $line; border-radius: 8px; padding: 22px; margin-bottom: 18px; h2 { font-size: 17px; font-weight: 500; margin-bottom: 16px; } }
   &__fields { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; label { color: $green; font-size: 12px; } input, select { display: block; width: 100%; margin-top: 8px; } }
@@ -181,6 +182,14 @@ watch(() => props.kb.id, initialize, { immediate: true })
   &__error, &__notice { padding: 12px 16px; border-radius: 5px; font-size: 12px; line-height: 1.8; margin-bottom: 18px; }
   &__error { background: #faeee6; color: #934b40; }
   &__notice { background: #eaf0e1; color: $green; }
+}
+@media (min-width: $knowledge-stack-width + 1px) {
+  .parser-config-tab {
+    &__card { @include knowledge.desktop-surface; padding: 24px; h2 { font-size: 20px; font-weight: 600; } }
+    &__hint { font-size: 13px; color: $log-muted; }
+    input, select, textarea { font-size: 13px; }
+    &__actions { flex-wrap: wrap; }
+  }
 }
 @media (max-width: 760px) { .parser-config-tab { &__fields { grid-template-columns: 1fr; } } }
 </style>

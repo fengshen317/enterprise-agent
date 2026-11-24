@@ -20,6 +20,7 @@ from app.api.channels import router as channel_router
 from app.api.chat import router as chat_router
 from app.api.connectors import router as connector_router
 from app.api.health import router
+from app.api.initial_setup import router as initial_setup_router
 from app.api.knowledge import router as knowledge_router
 from app.api.materials import router as material_router
 from app.api.ragflow_models import router as ragflow_models_router
@@ -44,6 +45,7 @@ from app.services.approvals import ApprovalService
 from app.services.auth import AuthService
 from app.services.chat_runtime import ChatRuntime
 from app.services.config_service import ConfigService
+from app.services.initial_setup import InitialSetupService
 from app.services.knowledge import KnowledgeService
 from app.services.ragflow import RagflowClient, RagflowClientProtocol
 from app.services.ragflow_models import RagflowModelService
@@ -93,6 +95,12 @@ def create_app(
         log_recorder = SystemLogRecorder(database.session_factory, retention_days=config.system_log_retention_days)
         app.state.system_log_recorder = log_recorder
         app.state.auth_service = AuthService(database.session_factory, config)
+        initial_setup = InitialSetupService(database.session_factory, config)
+        try:
+            await initial_setup.load_token()
+        except Exception:
+            logger.warning("initial_setup_unavailable")
+        app.state.initial_setup = initial_setup
         # 集成配置服务：从 DB 加载覆盖值并同步到 Settings，支持前端管理。
         config_service = ConfigService(database.session_factory, config)
         try:
@@ -262,6 +270,7 @@ def create_app(
     register_error_handlers(app)
     app.include_router(router)
     app.include_router(auth_router)
+    app.include_router(initial_setup_router)
     app.include_router(admin_router)
     app.include_router(chat_router)
     app.include_router(connector_router)

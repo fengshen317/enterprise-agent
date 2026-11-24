@@ -54,24 +54,40 @@ onBeforeUnmount(() => { alive = false; revision++ })
 <template>
   <section class="knowledge-detail">
     <header class="knowledge-detail__heading">
-      <div>
-        <RouterLink
-          class="knowledge-detail__back"
-          to="/knowledge"
-        >
-          ← 返回知识库列表
-        </RouterLink>
-        <h1>{{ kb?.name ?? '知识库详情' }}</h1>
-        <p
+      <RouterLink
+        class="knowledge-detail__back"
+        to="/knowledge"
+      >
+        ← 返回知识库列表
+      </RouterLink>
+      <div class="knowledge-detail__overview">
+        <div class="knowledge-detail__identity">
+          <h1>{{ kb?.name ?? '知识库详情' }}</h1>
+          <p
+            v-if="kb?.description"
+            class="knowledge-detail__description"
+          >
+            {{ kb.description }}
+          </p>
+          <p
+            v-if="kb"
+            class="knowledge-detail__meta"
+          >
+            <span class="knowledge-detail__badge">{{ kb.visibility === 'workspace' ? '空间知识库' : '私有知识库' }}</span>
+            <span
+              class="knowledge-detail__state"
+              :data-status="kb.status"
+            >{{ statusLabel(kb.status) }}</span>
+            <span v-if="kb.error_code">{{ errorLabel(kb.error_code) }}</span>
+          </p>
+        </div>
+        <dl
           v-if="kb"
-          class="knowledge-detail__meta"
+          class="knowledge-detail__metrics"
         >
-          <span class="knowledge-detail__badge">{{ kb.visibility === 'workspace' ? '空间知识库' : '私有知识库' }}</span>
-          <span class="knowledge-detail__badge">{{ statusLabel(kb.status) }}</span>
-          <span v-if="kb.error_code">{{ errorLabel(kb.error_code) }}</span>
-          <span>文档 {{ kb.document_count }}</span>
-          <span>Chunk {{ kb.chunk_count }}</span>
-        </p>
+          <div><dt>文档</dt><dd>{{ kb.document_count }}</dd></div>
+          <div><dt>分块</dt><dd>{{ kb.chunk_count }}</dd></div>
+        </dl>
       </div>
     </header>
     <p
@@ -92,7 +108,6 @@ onBeforeUnmount(() => { alive = false; revision++ })
         type="button"
         role="tab"
         :aria-selected="tab === item.key"
-        :class="{ 'knowledge-detail__tab--active': tab === item.key }"
         @click="selectTab(item.key)"
       >
         {{ item.label }}
@@ -126,15 +141,62 @@ onBeforeUnmount(() => { alive = false; revision++ })
 
 <style scoped lang="scss">
 @use '../../styles/variables' as *;
+@use '../../styles/knowledge';
 .knowledge-detail {
   max-width: 1280px; margin: 0 auto; padding: 40px clamp(20px, 4vw, 56px) 70px;
-  &__back { color: $muted; font-size: 12px; text-decoration: none; &:hover { color: $green; } }
-  &__heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; h1 { font-size: 28px; font-weight: 500; margin: 13px 0; } }
-  &__meta { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; color: $muted; font-size: 12px; }
-  &__badge { padding: 3px 8px; border-radius: 4px; background: #eef0eb; color: $green; font-size: 10px; }
-  &__tabs { display: flex; gap: 8px; margin: 26px 0 20px; border-bottom: 1px solid $line; button { border: 0; border-bottom: 2px solid transparent; background: none; color: $muted; padding: 10px 14px; font-size: 13px; } }
-  &__tab--active { color: $green !important; border-bottom-color: $green !important; }
+  &__back { display: inline-flex; align-items: center; min-height: 34px; color: $log-muted; font-size: 13px; text-underline-offset: 3px; &:hover { color: $green; } }
+  &__heading h1 { font-size: 30px; font-weight: 600; margin: 6px 0 12px; overflow-wrap: anywhere; }
+  &__description { color: $log-muted; font-size: 14px; line-height: 1.65; margin-bottom: 10px; overflow-wrap: anywhere; }
+  &__meta { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; color: $log-muted; font-size: 13px; }
+  &__badge { padding: 3px 8px; border-radius: 5px; background: #e6eee4; color: $ink; font-size: 12px; }
+  &__state { @include knowledge.state; }
+  &__metrics {
+    display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 8px 0 0; color: $log-muted; font-size: 13px;
+    div { display: flex; gap: 4px; }
+    dd { margin: 0; color: $ink; font-variant-numeric: tabular-nums; }
+  }
+  &__tabs {
+    display: flex; gap: 8px; margin: 20px 0 16px; border-bottom: 1px solid $line;
+    button {
+      min-height: 44px; border: 0; border-bottom: 2px solid transparent; background: none;
+      color: $log-muted; padding: 8px 14px; font-size: 13px;
+      &:hover { background: #e9efe6; color: $ink; }
+      &[aria-selected='true'] { color: $green; border-bottom-color: $green; font-weight: 600; }
+    }
+  }
   &__error { padding: 12px 16px; border-radius: 5px; font-size: 12px; background: #faeee6; color: #934b40; }
   &__hint { color: $muted; font-size: 12px; }
+}
+@media (min-width: $knowledge-stack-width + 1px) {
+  .knowledge-detail {
+    padding-top: 28px;
+    &__heading { @include knowledge.desktop-header; }
+    &__heading h1 { font-size: 34px; margin-bottom: 8px; }
+    &__overview { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
+    &__identity { min-width: 0; }
+    &__meta { margin-top: 12px; }
+    &__metrics {
+      flex: none; gap: 0; max-width: 38%;
+      div { flex-direction: column; min-width: 92px; gap: 4px; padding: 4px 18px; border-left: 1px solid #c7d7c8; }
+      dd { font-size: 24px; font-weight: 600; line-height: 1.2; }
+    }
+    &__tabs {
+      width: fit-content; padding: 4px; gap: 4px; margin: 18px 0 22px;
+      border: 1px solid $knowledge-divider; border-radius: 8px; background: white;
+      button {
+        border: 0; border-radius: 5px; min-height: 38px;
+        &[aria-selected='true'] { background: $knowledge-tint; color: $ink; }
+      }
+    }
+  }
+}
+@media (max-width: $knowledge-stack-width) {
+  .knowledge-detail {
+    padding: 16px 16px 32px;
+    &__back { min-height: 44px; }
+    &__heading h1 { font-size: 26px; }
+    &__description { display: none; }
+    &__tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; button { padding-inline: 5px; } }
+  }
 }
 </style>

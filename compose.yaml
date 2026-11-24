@@ -15,15 +15,36 @@ x-ragflow-client: &ragflow-client
   EA_RAGFLOW_API_KEY: ${EA_RAGFLOW_API_KEY:-}
 
 services:
+  service-credentials-init:
+    image: python:3.13-slim-bookworm
+    network_mode: none
+    command: ["python", "/opt/enterprise-agent/init-service-passwords.py"]
+    environment:
+      EA_DATABASE_PASSWORD: ${EA_DATABASE_PASSWORD:-}
+      EA_RAGFLOW_SERVICE_PASSWORD: ${EA_RAGFLOW_SERVICE_PASSWORD:-}
+    volumes:
+      - ./deploy/init-service-passwords.py:/opt/enterprise-agent/init-service-passwords.py:ro
+      - postgres_credentials:/run/ea-postgres
+      - ragflow_service_credentials:/run/ea-ragflow
+      - postgres_data:/var/lib/ea-existing/postgres:ro
+      - ragflow_mysql:/var/lib/ea-existing/mysql:ro
+      - ragflow_elasticsearch:/var/lib/ea-existing/elasticsearch:ro
+    logging: *logging
+
   db:
     image: postgres:16-bookworm
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${EA_DATABASE_NAME:-enterprise_agent}
       POSTGRES_USER: ${EA_DATABASE_USER:-enterprise_agent}
-      POSTGRES_PASSWORD: ${EA_DATABASE_PASSWORD:?请在 .env 中设置数据库密码}
+      POSTGRES_PASSWORD_FILE: /run/ea-postgres/password
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - postgres_credentials:/run/ea-postgres:ro
+    depends_on:
+      service-credentials-init:
+        condition: service_completed_successfully
+        restart: true
     healthcheck:
       # 通过 TCP 检查正式实例，避开首次初始化时仅监听本地套接字的临时实例。
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
@@ -59,10 +80,12 @@ services:
       EA_DATABASE_PORT: "5432"
       EA_DATABASE_NAME: ${EA_DATABASE_NAME:-enterprise_agent}
       EA_DATABASE_USER: ${EA_DATABASE_USER:-enterprise_agent}
-      EA_DATABASE_PASSWORD: ${EA_DATABASE_PASSWORD:?请在 .env 中设置数据库密码}
+      EA_DATABASE_PASSWORD: ""
+      EA_DATABASE_PASSWORD_FILE: /run/ea-postgres/password
       EA_CORS_ORIGINS: "[]"
       EA_AUTH_TRUSTED_ORIGINS: '["https://${EA_DEPLOY_DOMAIN:?请在 .env 中设置部署域名}"]'
       EA_PUBLIC_APP_BASE_URL: https://${EA_DEPLOY_DOMAIN:?请在 .env 中设置部署域名}
+      EA_INITIAL_SETUP_TOKEN_FILE: /home/enterprise-agent/.enterprise-agent/setup-token
       EA_RAGFLOW_API_KEY_FILE: /var/lib/ea-ragflow-api/api-key
       # 工作台通过 API Key 访问，RAGFlow 内部服务密码只给其子栈。
       EA_RAGFLOW_SERVICE_PASSWORD: ""
@@ -75,7 +98,11 @@ services:
     volumes:
       - api_home:/home/enterprise-agent
       - ragflow_api_credentials:/var/lib/ea-ragflow-api:ro
+      - postgres_credentials:/run/ea-postgres:ro
     depends_on:
+      service-credentials-init:
+        condition: service_completed_successfully
+        restart: true
       db:
         condition: service_healthy
       ragflow-init:
@@ -107,6 +134,7 @@ services:
 
 volumes:
   postgres_data:
+  postgres_credentials:
   api_home:
   caddy_data:
   caddy_config:
