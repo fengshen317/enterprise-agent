@@ -185,6 +185,14 @@ docker compose logs --tail=100 api web db
 
 回滚前检查旧应用与当前数据库结构的兼容性。若不兼容，先在独立环境将备份恢复到空数据库并验证，再切回对应应用版本。应用容器可以重建，日常停止使用 `docker compose stop`，保留 PostgreSQL、Caddy 和 API 的命名卷。
 
+### GitHub Actions 只读连通性验证
+
+验证分支 `chore/github-deploy-check` 中的工作流变更触发检查。GitHub 托管 Runner 使用 OIDC 临时加入 Tailscale，通过 OpenSSH 读取运行中的 Compose 项目。部署机将验证公钥绑定到 `docker compose ls`，并关闭该公钥的交互终端和转发能力。
+
+GitHub 的 `deploy-connectivity-check` 环境仅允许验证分支访问。环境变量 `TAILSCALE_OIDC_CLIENT_ID` 和 `TAILSCALE_OIDC_AUDIENCE` 用于加入私网。环境 Secrets `EA_VERIFY_SSH_HOST`、`EA_VERIFY_SSH_USER`、`EA_VERIFY_SSH_KEY` 和 `EA_VERIFY_SSH_KNOWN_HOSTS` 分别保存目标地址、SSH 用户、只读验证私钥和已核对的主机公钥记录。Tailscale 应将验证节点的访问权限限制在目标电脑的 TCP 22 端口。
+
+工作流通过即验证了 GitHub Runner 到部署机的私网访问、主机校验、免密认证和现有 Compose 项目的运行状态。镜像发布、版本切换和迁移属于后续自动更新流程。
+
 ### 启动排障
 
 页面迟迟打不开时，用 `docker compose config --quiet` 检查配置，用 `docker compose ps` 查看服务状态。

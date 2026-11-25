@@ -1,0 +1,54 @@
+name: 验证部署机连通性
+
+on:
+  push:
+    branches:
+      - chore/github-deploy-check
+    paths:
+      - .github/workflows/deploy-connectivity-check.yml
+
+permissions:
+  id-token: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    environment: deploy-connectivity-check
+    timeout-minutes: 6
+    steps:
+      - name: 加入 Tailscale 私网
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
+        with:
+          oauth-client-id: ${{ vars.TAILSCALE_OIDC_CLIENT_ID }}
+          audience: ${{ vars.TAILSCALE_OIDC_AUDIENCE }}
+          tags: tag:enterprise-agent-actions-check
+          ping: ${{ secrets.EA_VERIFY_SSH_HOST }}
+
+      - name: 检查现有 Compose 项目
+        shell: bash
+        env:
+          SSH_HOST: ${{ secrets.EA_VERIFY_SSH_HOST }}
+          SSH_USER: ${{ secrets.EA_VERIFY_SSH_USER }}
+          SSH_KEY: ${{ secrets.EA_VERIFY_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.EA_VERIFY_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          : "${SSH_HOST:?缺少部署机地址}"
+          : "${SSH_USER:?缺少 SSH 账号}"
+          : "${SSH_KEY:?缺少只读验证私钥}"
+          : "${SSH_KNOWN_HOSTS:?缺少已核对的部署机主机公钥}"
+          umask 077
+          ssh_dir="$(mktemp -d)"
+          printf '%s\n' "$SSH_KEY" | tr -d '\r' > "$ssh_dir/key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" | tr -d '\r' > "$ssh_dir/known_hosts"
+          # 服务端公钥绑定 docker compose ls，日志只保留检查结果。
+          projects="$(ssh -n -T \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$ssh_dir/known_hosts" \
+            -i "$ssh_dir/key" -l "$SSH_USER" "$SSH_HOST" hostname)"
+          if ! awk '$1 == "enterprise-agent" && $2 ~ /^running\([1-9][0-9]*\)$/ { found = 1 } END { exit !found }' <<< "$projects"; then
+            echo "::error::部署机未报告 enterprise-agent Compose 项目在运行"
+            exit 1
+          fi
+          echo "SSH 主机校验、免密认证及 enterprise-agent Compose 项目检查通过。"
