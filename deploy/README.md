@@ -193,6 +193,8 @@ GitHub 的 `deploy-connectivity-check` 环境仅允许验证分支访问。环�
 
 工作流通过即验证了 GitHub Runner 到部署机的私网访问、主机校验、免密认证和现有 Compose 项目的运行状态。镜像发布、版本切换和迁移属于后续自动更新流程。
 
+2026-11-25，GitHub 托管 Runner 已在实际部署电脑通过上述检查。Tailscale 的 OIDC 信任规则匹配 GitHub 当次签发的完整 subject，其中包含所有者和仓库的固定 ID。[GitHub Actions 验证记录](https://github.com/fengshen317/enterprise-agent/actions/runs/45592994603/job/139134375597)
+
 ### 启动排障
 
 页面迟迟打不开时，用 `docker compose config --quiet` 检查配置，用 `docker compose ps` 查看服务状态。
