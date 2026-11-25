@@ -191,6 +191,8 @@ docker compose logs --tail=100 api web db
 
 验收先用历史镜像初始化 PostgreSQL 16 至 `0026` 并写入一条测试对话。旧 API 停止后生成 `pg_dump -Fc` 备份，再启动发布镜像，检查页面、数据库就绪、迁移版本和旧数据。最后将备份恢复到空数据库并用旧 API 验证就绪，同时保留升级后的数据库用于比对。演练使用临时数据和独立项目名，RAGFlow、报表执行、真实模型及部署机上的更新需另行验收。
 
+2026-11-25，两个独立 GitHub 托管 Runner 完成发布演练。API 和 Web 镜像按摘要发布及重新拉取，PostgreSQL 从 `0026` 升级到 `0027` 后保留测试对话，备份恢复至空数据库后旧 API 再次通过就绪检查，升级库保留 `0027`。两次切换均通过 Funnel 本地源站的页面和就绪检查。[GitHub Actions 验收记录](https://github.com/fengshen317/enterprise-agent/actions/runs/45600551534)
+
 ### 启动排障
 
 页面迟迟打不开时，用 `docker compose config --quiet` 检查配置，用 `docker compose ps` 查看服务状态。
