@@ -1,0 +1,11 @@
+# 预构建镜像与同次发布的 Compose 文件一起使用。
+services:
+  api:
+    build: !reset null
+    image: ${EA_RELEASE_API_IMAGE:?请提供 API 镜像}
+  ragflow-init:
+    build: !reset null
+    image: ${EA_RELEASE_API_IMAGE:?请提供 API 镜像}
+  web:
+    build: !reset null
+    image: ${EA_RELEASE_WEB_IMAGE:?请提供 Web 镜像}

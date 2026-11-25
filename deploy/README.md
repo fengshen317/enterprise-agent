@@ -185,6 +185,12 @@ docker compose logs --tail=100 api web db
 
 回滚前检查旧应用与当前数据库结构的兼容性。若不兼容，先在独立环境将备份恢复到空数据库并验证，再切回对应应用版本。应用容器可以重建，日常停止使用 `docker compose stop`，保留 PostgreSQL、Caddy 和 API 的命名卷。
 
+### 镜像发布与数据库恢复演练
+
+`chore/github-release-test` 分支上的发布演练使用 GitHub 托管 Runner。构建任务将 API 和 Web 镜像推送到 GHCR 的独立测试包，发布包同时记录镜像摘要、源码提交、Compose 文件及其引用的脚本。验收任务在新的 Runner 上按摘要拉取镜像，通过 `compose.release.yaml` 和 Funnel 源站覆盖配置启动应用。
+
+验收先用历史镜像初始化 PostgreSQL 16 至 `0026` 并写入一条测试对话。旧 API 停止后生成 `pg_dump -Fc` 备份，再启动发布镜像，检查页面、数据库就绪、迁移版本和旧数据。最后将备份恢复到空数据库并用旧 API 验证就绪，同时保留升级后的数据库用于比对。演练使用临时数据和独立项目名，RAGFlow、报表执行、真实模型及部署机上的更新需另行验收。
+
 ### 启动排障
 
 页面迟迟打不开时，用 `docker compose config --quiet` 检查配置，用 `docker compose ps` 查看服务状态。

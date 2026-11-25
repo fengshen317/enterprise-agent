@@ -1,0 +1,100 @@
+name: 演练发布和数据库恢复
+
+on:
+  push:
+    branches:
+      - chore/github-release-test
+    paths:
+      - .github/workflows/release-rehearsal.yml
+      - compose*.yaml
+      - deploy/**
+      - backend/**
+      - frontend/**
+
+permissions: {}
+
+jobs:
+  publish:
+    name: 构建和发布测试镜像
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 将测试镜像发布到 GHCR 并生成发布包
+        shell: bash
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          release_dir="$RUNNER_TEMP/release"
+          mkdir -p "$release_dir/deploy"
+          cp compose.yaml compose.funnel.yaml compose.report.yaml compose.release.yaml "$release_dir/"
+          cp deploy/init-service-passwords.py "$release_dir/deploy/"
+          cp -R deploy/ragflow "$release_dir/deploy/"
+          printf '%s\n' "$GITHUB_SHA" > "$release_dir/source-revision"
+
+          for service in api web; do
+            if [[ "$service" == api ]]; then
+              context=backend
+            else
+              context=frontend
+            fi
+            image="ghcr.io/${GITHUB_REPOSITORY,,}-release-test-$service"
+            tag="$image:test-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            metadata="$RUNNER_TEMP/$service-image.json"
+            docker buildx build --platform linux/amd64 --push --tag "$tag" \
+              --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+              --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+              --metadata-file "$metadata" "$context"
+            digest="$(jq -er '."containerimage.digest" | select(test("^sha256:[0-9a-f]{64}$"))' "$metadata")"
+            printf 'EA_RELEASE_%s_IMAGE=%s@%s\n' "${service^^}" "$image" "$digest" >> "$release_dir/release.env"
+          done
+          tar -czf "$RUNNER_TEMP/release-test.tar.gz" -C "$release_dir" .
+
+      - name: 保存测试发布包
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-test
+          path: ${{ runner.temp }}/release-test.tar.gz
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  rehearse:
+    name: 拉取镜像并演练升级和恢复
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 下载测试发布包
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-test
+          path: ${{ runner.temp }}/release-download
+
+      - name: 使用正式镜像入口完成升级和恢复
+        shell: bash
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          release_dir="$RUNNER_TEMP/release"
+          mkdir -p "$release_dir"
+          tar -xzf "$RUNNER_TEMP/release-download/release-test.tar.gz" -C "$release_dir"
+          bash deploy/tests/release-rehearsal.sh "$release_dir"
