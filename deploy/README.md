@@ -196,6 +196,7 @@ docker compose logs --tail=100 api web db
 | 镜像构建时 Python 依赖下载缓慢 | 在 `.env` 设置 `EA_PYPI_INDEX_URL` 为可信镜像的 simple 索引后重新构建，依赖仍按 `uv.lock` 校验版本和哈希 |
 | 后端未就绪 | 检查 `docker compose ps`、`docker compose logs api db` 和迁移报错 |
 | RAGFlow 未就绪 | 检查 `docker compose ps`、`docker compose logs ragflow ragflow-search ragflow-db`、内存和 `vm.max_map_count` |
+| Windows 上 RAGFlow 日志出现 `set: pipefail: invalid option name` | 将 `deploy/ragflow/entrypoint.sh` 的行尾保存为 LF，再用原来的 Compose 配置执行 `up -d`。该脚本由 Linux 容器中的 Bash 直接读取，仓库的 `.gitattributes` 会在 Git 检出时保留 LF |
 | 服务账号初始化失败 | 检查 `docker compose logs ragflow-init ragflow`。已有内置实例可提供原 API Key，或核对原超级管理员密码 |
 | 工作台知识库无法创建或检索 | 先在「知识库模型」查看默认 Embedding 和验证结果，再检查 RAGFlow 日志 |
 | 登录报请求来源不受信任 | 检查浏览器实际地址是否为 `https://` 加 `EA_DEPLOY_DOMAIN` |
