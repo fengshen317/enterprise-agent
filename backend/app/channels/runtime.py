@@ -580,8 +580,9 @@ class ChannelRuntime:
 
             async def dispatch(event: InboundEvent) -> None:
                 fresh = await self.repo.get_app(app_id)
-                current = fresh if fresh is not None and fresh.status == "active" else app
-                await self._on_enterprise(current, event)
+                if fresh is None or fresh.status != "active":
+                    return
+                await self._on_enterprise(fresh, event)
 
             async def refresh() -> AppRecord | None:
                 return await self.repo.get_app(app_id)

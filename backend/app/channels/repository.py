@@ -954,6 +954,8 @@ class ChannelStore:
                 )
                 current.status = "disabled"
                 current.updated_at = now
+                # 先把旧的 active 行刷出去，否则同一 flush 里 INSERT 会撞上唯一索引。
+                await session.flush()
                 current = None
             if current is None:
                 current = ChannelApp(
@@ -1086,6 +1088,8 @@ class ChannelStore:
                 previous.bot_token_ciphertext = ""
                 previous.updated_at = now
             if taken is None:
+                # 旧的未解绑行还在唯一索引里时，不能和新建插在同一次 flush。
+                await session.flush()
                 taken = ChannelAccount(
                     user_id=row.user_id,
                     workspace_id=row.workspace_id,

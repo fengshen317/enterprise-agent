@@ -180,6 +180,7 @@ class FeishuClient:
         try:
             await asyncio.Future()
         except asyncio.CancelledError:
+            # 只发停止信号，不在问答事件循环里 join。SDK 的 start() 经常不返回，join 会把微信轮询一起卡住。
             _stop_feishu(session)
             logger.info("feishu_connection_task_cancelled", extra={"app_id": key})
             raise
@@ -321,9 +322,6 @@ def _stop_feishu(session: _FeishuSession) -> None:
         thread_loop.call_soon_threadsafe(lambda: thread_loop.create_task(shutdown()))
     elif thread_loop is not None and not thread_loop.is_running():
         thread_loop.call_soon_threadsafe(thread_loop.stop)
-    thread = session.thread
-    if thread is not None and thread.is_alive():
-        thread.join(timeout=5)
 
 
 def _token_key(app: AppRecord) -> str:
