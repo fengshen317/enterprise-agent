@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import threading
@@ -120,7 +121,7 @@ class FeishuClient:
         self._tokens: dict[str, tuple[str, float]] = {}
         self._lock = asyncio.Lock()
         self._next_send: dict[str, float] = {}
-        self._threads: dict[str, threading.Thread] = {}
+        self._sessions: dict[str, _FeishuSession] = {}
 
     async def aclose(self) -> None:
         """关闭自己创建的 HTTP 客户端。"""
@@ -156,29 +157,30 @@ class FeishuClient:
         await self._post_message(app, open_id, "interactive", card)
 
     async def serve(self, app: AppRecord, dispatch: Dispatch) -> None:
-        """在守护线程里维持官方长连接。取消本任务不会关掉已经连上的 SDK。
+        """在守护线程里维持官方长连接。取消本任务时关掉这条连接。
 
-        飞书 SDK 在导入时绑定自己的事件循环，不能和问答循环混用。凭证变更后需要重启进程。
+        飞书 SDK 在导入时绑定自己的事件循环，不能和问答循环混用。
 
         Args:
             app: 企业应用。
             dispatch: 收到单聊或卡片按钮后的处理。
         """
         key = str(app.id)
-        current = self._threads.get(key)
-        if current is None or not current.is_alive():
-            loop = asyncio.get_running_loop()
-            thread = threading.Thread(
-                target=_run_sdk,
-                args=(app.external_app_id, app.secret, loop, dispatch),
-                name=f"feishu-{key[:8]}",
-                daemon=True,
-            )
-            self._threads[key] = thread
-            thread.start()
+        session = _FeishuSession()
+        self._sessions[key] = session
+        loop = asyncio.get_running_loop()
+        thread = threading.Thread(
+            target=_run_sdk,
+            args=(app.external_app_id, app.secret, loop, dispatch, session),
+            name=f"feishu-{key[:8]}",
+            daemon=True,
+        )
+        session.thread = thread
+        thread.start()
         try:
             await asyncio.Future()
         except asyncio.CancelledError:
+            _stop_feishu(session)
             logger.info("feishu_connection_task_cancelled", extra={"app_id": key})
             raise
 
@@ -207,7 +209,7 @@ class FeishuClient:
 
     async def _tenant_token(self, app: AppRecord) -> str:
         """缓存 tenant_access_token，过期前一分钟刷新。"""
-        cached = self._tokens.get(str(app.id))
+        cached = self._tokens.get(_token_key(app))
         if cached is not None and cached[1] > monotonic() + 60:
             return cached[0]
         try:
@@ -222,7 +224,7 @@ class FeishuClient:
         if response.status_code >= 400 or not token or body.get("code") not in (0, None):
             raise ChannelSendError("token_failed", retryable=False)
         expire = float(body.get("expire") or 7200)
-        self._tokens[str(app.id)] = (token, monotonic() + expire)
+        self._tokens[_token_key(app)] = (token, monotonic() + expire)
         return token
 
     async def _throttle(self, open_id: str) -> None:
@@ -236,26 +238,50 @@ class FeishuClient:
             await asyncio.sleep(delay)
 
 
-def _run_sdk(app_id: str, secret: str, loop: asyncio.AbstractEventLoop, dispatch: Dispatch) -> None:
+class _FeishuSession:
+    """一条飞书长连接的线程和事件循环，取消时用来关掉它。"""
+
+    def __init__(self) -> None:
+        self.thread: threading.Thread | None = None
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.client: Any | None = None
+        self.stopped = False
+
+
+def _run_sdk(
+    app_id: str,
+    secret: str,
+    loop: asyncio.AbstractEventLoop,
+    dispatch: Dispatch,
+    session: _FeishuSession,
+) -> None:
     """在线程自己的事件循环里启动飞书长连接。"""
     thread_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(thread_loop)
+    session.loop = thread_loop
     import lark_oapi as lark
+    import lark_oapi.ws.client as ws_client
     from lark_oapi.event.callback.model.p2_card_action_trigger import (
         CallBackToast,
         P2CardActionTrigger,
         P2CardActionTriggerResponse,
     )
 
+    # SDK 在导入时记下的循环可能属于别的线程。这条连接必须用当前线程的循环。
+    ws_client.loop = thread_loop
+
     def on_message(data: object) -> None:
+        if session.stopped:
+            return
         event = _event_from_receive(data)
         if event is not None:
             asyncio.run_coroutine_threadsafe(_forward(dispatch, event), loop)
 
     def on_card(data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
-        event = _event_from_card(data)
-        if event is not None:
-            asyncio.run_coroutine_threadsafe(_forward(dispatch, event), loop)
+        if not session.stopped:
+            event = _event_from_card(data)
+            if event is not None:
+                asyncio.run_coroutine_threadsafe(_forward(dispatch, event), loop)
         response = P2CardActionTriggerResponse()
         toast = CallBackToast()
         toast.type = "info"
@@ -269,7 +295,41 @@ def _run_sdk(app_id: str, secret: str, loop: asyncio.AbstractEventLoop, dispatch
         .register_p2_card_action_trigger(on_card)
         .build()
     )
-    lark.ws.Client(app_id, secret, event_handler=handler, log_level=lark.LogLevel.WARNING).start()
+    if session.stopped:
+        return
+    client = lark.ws.Client(app_id, secret, event_handler=handler, log_level=lark.LogLevel.WARNING)
+    session.client = client
+    client._auto_reconnect = True
+    try:
+        client.start()
+    finally:
+        session.stopped = True
+
+
+def _stop_feishu(session: _FeishuSession) -> None:
+    """让 SDK 线程退出，避免停用或换凭证后旧连接还在收事件。"""
+    session.stopped = True
+    thread_loop = session.loop
+    client = session.client
+    if thread_loop is not None and client is not None and thread_loop.is_running():
+
+        async def shutdown() -> None:
+            client._auto_reconnect = False
+            await client._disconnect()
+            thread_loop.stop()
+
+        thread_loop.call_soon_threadsafe(lambda: thread_loop.create_task(shutdown()))
+    elif thread_loop is not None and not thread_loop.is_running():
+        thread_loop.call_soon_threadsafe(thread_loop.stop)
+    thread = session.thread
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=5)
+
+
+def _token_key(app: AppRecord) -> str:
+    """密钥变了就换缓存键，避免继续用旧的 tenant_access_token。"""
+    digest = hashlib.sha256(app.secret.encode()).hexdigest()[:12]
+    return f"{app.id}:{digest}"
 
 
 def _event_from_receive(data: object) -> InboundEvent | None:

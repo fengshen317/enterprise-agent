@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -21,6 +22,7 @@ _GROUP_EVENTS = {"GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"}
 # 官方文档：GROUP_AND_C2C_EVENT = 1 << 25。
 _INTENT = 1 << 25
 Dispatch = Callable[[InboundEvent], Awaitable[None]]
+Refresh = Callable[[], Awaitable[AppRecord | None]]
 Connect = Callable[..., Any]
 
 
@@ -182,12 +184,15 @@ class QQBotClient:
         self._attach_passive(body, msg_id, msg_seq)
         await self._post_message(app, openid, body)
 
-    async def serve(self, app: AppRecord, dispatch: Dispatch) -> None:
+    async def serve(self, app: AppRecord, dispatch: Dispatch, refresh: Refresh | None = None) -> None:
         """连接官方网关，只把单聊和群事件交给上层。
+
+        每次重连都重新读取凭证。
 
         Args:
             app: QQ 机器人应用。
             dispatch: 入站处理。
+            refresh: 重连前重新读取应用。返回空或已停用时退出。
         """
         connect = self._connect
         if connect is None:
@@ -195,10 +200,18 @@ class QQBotClient:
 
             connect = websockets.connect
         delay = 1.0
+        current = app
         while True:
             try:
-                token = await self._access_token(app)
-                url = await self._gateway(app, token)
+                if refresh is not None:
+                    loaded = await refresh()
+                    if loaded is None or loaded.status != "active" or not loaded.secret:
+                        return
+                    if loaded.secret != current.secret:
+                        self._tokens.pop(_token_key(current), None)
+                    current = loaded
+                token = await self._access_token(current)
+                url = await self._gateway(current, token)
                 async with connect(url) as socket:
                     delay = 1.0
                     await _run_gateway(socket, token, dispatch)
@@ -227,7 +240,7 @@ class QQBotClient:
 
     async def _access_token(self, app: AppRecord) -> str:
         """用 AppId 和 ClientSecret 换 access_token。"""
-        cached = self._tokens.get(str(app.id))
+        cached = self._tokens.get(_token_key(app))
         if cached is not None and cached[1] > monotonic() + 60:
             return cached[0]
         try:
@@ -245,7 +258,7 @@ class QQBotClient:
         if response.status_code >= 400 or not token:
             raise ChannelSendError("token_failed", retryable=False)
         expire = float(loaded.get("expires_in") or 7200) if isinstance(loaded, dict) else 7200
-        self._tokens[str(app.id)] = (token, monotonic() + expire)
+        self._tokens[_token_key(app)] = (token, monotonic() + expire)
         return token
 
     async def _gateway(self, app: AppRecord, token: str) -> str:
@@ -334,6 +347,12 @@ async def _heartbeat(socket: Any, interval: float, sequence: dict[str, int | Non
             await socket.send(json.dumps({"op": 1, "d": sequence["s"]}))
     except asyncio.CancelledError:
         raise
+
+
+def _token_key(app: AppRecord) -> str:
+    """密钥变了就换缓存键。"""
+    digest = hashlib.sha256(app.secret.encode()).hexdigest()[:12]
+    return f"{app.id}:{digest}"
 
 
 def _mapping(value: object) -> dict[str, Any]:

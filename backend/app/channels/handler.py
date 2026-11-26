@@ -347,7 +347,7 @@ class InboundHandler:
                 "not_text",
                 event.text[:500],
             )
-            await self._send_unbound(app, event.peer_id, "目前只能处理文字消息。")
+            await self._send_unbound(app, event.peer_id, "目前只能处理文字消息。", event.reply_message_id)
             return
         inserted = await self.repo.record_app_event(
             app.id,
@@ -364,23 +364,37 @@ class InboundHandler:
             try:
                 account = await self.repo.redeem_bind_code(app.channel_type, event.peer_id, command.argument)
             except ApplicationError as exc:
-                await self._send_unbound(app, event.peer_id, exc.message)
+                await self._send_unbound(app, event.peer_id, exc.message, event.reply_message_id)
                 return
             if account is None:
-                await self._send_unbound(app, event.peer_id, "绑定码不正确或已过期。请在工作台重新生成。")
+                await self._send_unbound(
+                    app,
+                    event.peer_id,
+                    "绑定码不正确或已过期。请在工作台重新生成。",
+                    event.reply_message_id,
+                )
                 return
-            if await self._send_unbound(app, event.peer_id, welcome_text(app.channel_type)):
+            # /bind 本身就是一次单聊，钉钉之后的主动推送要能看见这次入站。
+            await self.repo.touch_inbound(
+                account.id,
+                account.workspace_id,
+                event.peer_id,
+                event.reply_message_id,
+                datetime.now(UTC),
+            )
+            if await self._send_unbound(app, event.peer_id, welcome_text(app.channel_type), event.reply_message_id):
                 await self.repo.clear_welcome(account.id)
             return
-        await self._send_unbound(app, event.peer_id, bind_instructions(app.channel_type))
+        await self._send_unbound(app, event.peer_id, bind_instructions(app.channel_type), event.reply_message_id)
 
-    async def _send_unbound(self, app: AppRecord, peer_id: str, text: str) -> bool:
+    async def _send_unbound(self, app: AppRecord, peer_id: str, text: str, msg_id: str = "") -> bool:
         """通过应用凭证回复还没绑定的用户。
 
         Args:
             app: 企业应用。
             peer_id: 平台用户。
             text: 说明。
+            msg_id: 刚收到的消息号。QQ 用它做被动回复。
 
         Returns:
             是否发送成功。
@@ -389,7 +403,7 @@ class InboundHandler:
         if sender is None:
             return False
         try:
-            await sender(app, peer_id, text)
+            await sender(app, peer_id, text, msg_id=msg_id)
         except ChannelSendError:
             return False
         except Exception:

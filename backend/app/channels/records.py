@@ -91,13 +91,14 @@ class AppRecord:
     """一个企业安装的飞书、钉钉或 QQ 机器人。secret 不进入日志。"""
 
     id: UUID
-    workspace_id: UUID
+    workspace_id: UUID | None
     channel_type: str
     external_app_id: str
     status: str
     robot_code: str = ""
     sandbox: bool = False
     secret: str = field(repr=False, default="")
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True)

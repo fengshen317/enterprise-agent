@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -29,6 +30,7 @@ _CONFIG_CODES = {
     "staffId.notExisted": "staff_missing",
 }
 Dispatch = Callable[[InboundEvent], Awaitable[None]]
+Refresh = Callable[[], Awaitable[AppRecord | None]]
 Connect = Callable[..., Any]
 
 
@@ -133,12 +135,15 @@ class DingTalkClient:
         if isinstance(body.get("invalidStaffIdList"), list) and user_id in body["invalidStaffIdList"]:
             raise ChannelSendError("staff_missing", retryable=False)
 
-    async def serve(self, app: AppRecord, dispatch: Dispatch) -> None:
+    async def serve(self, app: AppRecord, dispatch: Dispatch, refresh: Refresh | None = None) -> None:
         """订阅 /v1.0/im/bot/messages/get。断线后退避重连，直到任务被取消。
+
+        每次重连都重新读取凭证，避免保存新密钥后仍用旧的 AppSecret。
 
         Args:
             app: 企业应用的 Client ID / Secret。
             dispatch: 归一化后的入站处理。
+            refresh: 重连前重新读取应用。返回空或已停用时退出。
         """
         connect = self._connect
         if connect is None:
@@ -146,9 +151,17 @@ class DingTalkClient:
 
             connect = websockets.connect
         delay = 1.0
+        current = app
         while True:
             try:
-                opened = await self._open_connection(app)
+                if refresh is not None:
+                    loaded = await refresh()
+                    if loaded is None or loaded.status != "active" or not loaded.secret:
+                        return
+                    if loaded.secret != current.secret:
+                        self._tokens.pop(_token_key(current), None)
+                    current = loaded
+                opened = await self._open_connection(current)
                 endpoint = str(opened.get("endpoint") or "")
                 ticket = str(opened.get("ticket") or "")
                 if not endpoint or not ticket:
@@ -187,7 +200,7 @@ class DingTalkClient:
 
     async def _access_token(self, app: AppRecord) -> str:
         """企业内部应用 accessToken。"""
-        cached = self._tokens.get(str(app.id))
+        cached = self._tokens.get(_token_key(app))
         if cached is not None and cached[1] > monotonic() + 60:
             return cached[0]
         try:
@@ -201,7 +214,7 @@ class DingTalkClient:
         token = str(body.get("accessToken") or "")
         if response.status_code >= 400 or not token:
             raise ChannelSendError("token_failed", retryable=False)
-        self._tokens[str(app.id)] = (token, monotonic() + float(body.get("expireIn") or 7200))
+        self._tokens[_token_key(app)] = (token, monotonic() + float(body.get("expireIn") or 7200))
         return token
 
     async def _throttle(self, user_id: str) -> None:
@@ -241,6 +254,12 @@ async def _handle_frame(socket: Any, raw: str | bytes, dispatch: Dispatch) -> No
             return
     if isinstance(data, dict):
         await dispatch(parse_dingtalk_message(data))
+
+
+def _token_key(app: AppRecord) -> str:
+    """密钥变了就换缓存键。"""
+    digest = hashlib.sha256(app.secret.encode()).hexdigest()[:12]
+    return f"{app.id}:{digest}"
 
 
 def _mapping(value: object) -> dict[str, Any]:

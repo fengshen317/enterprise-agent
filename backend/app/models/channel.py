@@ -37,13 +37,14 @@ class ChannelApp(Base):
         ),
     )
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"))
+    # 只记录是谁配的。删空间不能把全公司正在用的机器人一起删掉。
+    workspace_id: Mapped[UUID | None] = mapped_column(ForeignKey("workspaces.id", ondelete="SET NULL"))
     channel_type: Mapped[str] = mapped_column(String(16))
     external_app_id: Mapped[str] = mapped_column(String(128), default="", server_default="")
     credentials_ciphertext: Mapped[str] = mapped_column(Text, default="", server_default="")
     public_config: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, server_default=text("'{}'::json"))
     status: Mapped[str] = mapped_column(String(16), default="active", server_default="active")
-    created_by_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    created_by_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

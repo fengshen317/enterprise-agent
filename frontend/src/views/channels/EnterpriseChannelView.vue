@@ -23,7 +23,7 @@ const copy: Record<EnterpriseChannel, { title: string, lead: string, limits: str
       '只处理单聊。群消息会记下来，但不会进入问答。',
       '飞书没有 24 小时回复窗口。可用范围内的员工可以接收主动推送。',
       '同一用户发送大约限制在 5 次/秒。不在可用范围时，页面和日志会提示调整可见范围，而不是反复重试。',
-      '长连接是集群模式：同一应用只有一个进程会收到事件。修改凭证后需要重启服务。',
+      '长连接是集群模式：同一应用只有一个进程会收到事件。保存新凭证后会重新连接。',
     ],
   },
   dingtalk: {
@@ -102,9 +102,7 @@ async function save(): Promise<void> {
       sandbox: props.channel === 'qq' ? sandbox.value : false,
     })
     secret.value = ''
-    notice.value = props.channel === 'feishu'
-      ? '已保存。飞书长连接会在重启服务后使用新凭证。'
-      : '已保存。新的连接会使用这份凭证。'
+    notice.value = '已保存。正在使用的连接会改用这份凭证。'
     await load()
   } catch (value) {
     showError(value)

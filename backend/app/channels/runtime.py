@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 from uuid import UUID
 
 from sqlalchemy import select, text
@@ -311,6 +312,8 @@ class ChannelRuntime:
         self._supervisor: asyncio.Task[None] | None = None
         self._pollers: dict[UUID, asyncio.Task[None]] = {}
         self._app_tasks: dict[UUID, asyncio.Task[None]] = {}
+        self._app_stamps: dict[UUID, str] = {}
+        self._reminded_at = 0.0
         self._timeouts: dict[UUID, float] = {}
 
     async def start(self) -> None:
@@ -514,12 +517,18 @@ class ChannelRuntime:
                     apps = await self.repo.list_active_apps()
                     live = {app.id for app in apps}
                     for app in apps:
+                        stamp = app.updated_at.isoformat() if app.updated_at is not None else ""
                         running = self._app_tasks.get(app.id)
+                        if running is not None and not running.done() and self._app_stamps.get(app.id) != stamp:
+                            running.cancel()
+                            continue
                         if running is None or running.done():
+                            self._app_stamps[app.id] = stamp
                             self._app_tasks[app.id] = asyncio.create_task(self._consume_app(app.id))
                     for app_id, task in list(self._app_tasks.items()):
                         if app_id not in live and not task.done():
                             task.cancel()
+                    await self._remind_qq()
                 await self._sleep(2)
             except asyncio.CancelledError:
                 return
@@ -529,6 +538,26 @@ class ChannelRuntime:
             except Exception:
                 logger.warning("wechat_supervisor_failed")
                 await self._sleep(2)
+
+    async def _remind_qq(self) -> None:
+        """QQ 的 60 分钟窗口不在微信轮询里，单独按大约半分钟看一次。"""
+        now = monotonic()
+        if now - self._reminded_at < 30:
+            return
+        self._reminded_at = now
+        listed = getattr(self.repo, "list_open_accounts", None)
+        if listed is None:
+            return
+        try:
+            accounts = await listed("qq")
+        except Exception:
+            logger.warning("qq_reminder_list_failed")
+            return
+        for account in accounts:
+            try:
+                await self.handler.remind_if_due(account)
+            except Exception:
+                logger.warning("qq_reminder_failed", extra={"account_id": str(account.id)})
 
     async def _consume_app(self, app_id: UUID) -> None:
         """一个企业机器人只保留一条长连接。集群模式下也只有拿到锁的进程会收到事件。
@@ -550,14 +579,19 @@ class ChannelRuntime:
                 return
 
             async def dispatch(event: InboundEvent) -> None:
-                await self._on_enterprise(app, event)
+                fresh = await self.repo.get_app(app_id)
+                current = fresh if fresh is not None and fresh.status == "active" else app
+                await self._on_enterprise(current, event)
+
+            async def refresh() -> AppRecord | None:
+                return await self.repo.get_app(app_id)
 
             if app.channel_type == "feishu":
                 await bus.feishu.serve(app, dispatch)
             elif app.channel_type == "dingtalk":
-                await bus.dingtalk.serve(app, dispatch)
+                await bus.dingtalk.serve(app, dispatch, refresh)
             elif app.channel_type == "qq":
-                await bus.qq.serve(app, dispatch)
+                await bus.qq.serve(app, dispatch, refresh)
         except asyncio.CancelledError:
             raise
         except Exception:

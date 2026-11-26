@@ -853,6 +853,24 @@ class ChannelStore:
             raise ApplicationError("CHANNEL_BIND_NOT_FOUND", "绑定会话不存在", 404)
         return row
 
+    async def list_open_accounts(self, channel_type: str) -> list[AccountRecord]:
+        """列出某个渠道上仍未解绑的员工，供窗口提醒使用。
+
+        Args:
+            channel_type: 渠道类型。
+
+        Returns:
+            未解绑账号。
+        """
+        async with self.factory() as session:
+            rows = await session.scalars(
+                select(ChannelAccount).where(
+                    ChannelAccount.channel_type == channel_type,
+                    ChannelAccount.status != "unbound",
+                )
+            )
+            return [self._account(row) for row in rows]
+
     async def list_active_apps(self) -> list[AppRecord]:
         """列出仍需维持长连接的企业机器人。
 
@@ -1238,6 +1256,7 @@ class ChannelStore:
             robot_code=robot_code,
             sandbox=sandbox,
             secret=secret,
+            updated_at=row.updated_at,
         )
 
     def _app_account(self, row: ChannelAccount) -> AccountRecord:

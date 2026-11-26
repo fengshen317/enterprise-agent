@@ -178,15 +178,10 @@ class _Repo:
     def __init__(self) -> None:
         self.events: list[tuple[str, str | None]] = []
         self.cleared = False
+        self.touched = False
 
     async def record_app_event(
-        self,
-        app_id: object,
-        message_id: str,
-        peer_id: str,
-        status: str,
-        reason: str | None,
-        excerpt: str,
+        self, app_id: object, message_id: str, peer_id: str, status: str, reason: str | None, excerpt: str,
     ) -> bool:
         del app_id, peer_id, excerpt
         self.events.append((message_id, reason if status == "skipped" else status))
@@ -197,17 +192,7 @@ class _Repo:
         if code != "ABCD2345":
             return None
         return AccountRecord(
-            uuid4(),
-            uuid4(),
-            uuid4(),
-            "feishu",
-            "cli",
-            peer_id,
-            "",
-            "",
-            "active",
-            None,
-            datetime.now(UTC),
+            uuid4(), uuid4(), uuid4(), "feishu", "cli", peer_id, "", "", "active", None, datetime.now(UTC),
             welcome_pending=True,
         )
 
@@ -215,14 +200,22 @@ class _Repo:
         del account_id
         self.cleared = True
 
+    async def touch_inbound(
+        self, account_id: object, workspace_id: object, peer_id: str, context_token: str, at: datetime,
+    ) -> None:
+        del account_id, workspace_id, peer_id, context_token, at
+        self.touched = True
+
 
 class _Bus:
     def __init__(self) -> None:
         self.sent: list[str] = []
+        self.msg_ids: list[str] = []
 
-    async def send_app_text(self, app: AppRecord, peer_id: str, text: str) -> None:
+    async def send_app_text(self, app: AppRecord, peer_id: str, text: str, msg_id: str = "") -> None:
         del app, peer_id
         self.sent.append(text)
+        self.msg_ids.append(msg_id)
 
     async def send_text(self, account: AccountRecord, to_user_id: str, context_token: str, text: str) -> None:
         del account, to_user_id, context_token
@@ -263,7 +256,9 @@ async def test_unbound_user_gets_instructions_and_bind_does_not_guess() -> None:
     assert not any(item[0] == "m1" and item[1] not in {"received", None} for item in repo.events)
     await handler.handle_unbound(app, InboundEvent("m2", "ou", "/bind NOPE1234", False))
     assert "不正确或已过期" in bus.sent[-1]
-    await handler.handle_unbound(app, InboundEvent("m3", "ou", "/bind ABCD2345", False))
+    await handler.handle_unbound(app, InboundEvent("m3", "ou", "/bind ABCD2345", False, reply_message_id="om-bind"))
     assert bus.sent[-1].startswith("已绑定飞书")
     assert "超过 24 小时没有发消息" not in bus.sent[-1]
     assert repo.cleared is True
+    assert repo.touched is True
+    assert bus.msg_ids[-1] == "om-bind"

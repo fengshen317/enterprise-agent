@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime, timedelta
 
 from app.channels.capabilities import ChannelCapabilities, capability_for
 from app.channels.dingtalk import DingTalkClient
@@ -133,32 +134,38 @@ class ChannelBus:
             if account.channel_type == "qq":
                 app = await self._require_app(account)
                 seq = None
-                if context_token:
+                msg_id = ""
+                if context_token and await self._qq_window_open(account, to_user_id):
                     seq = await self.repo.next_passive_seq(
                         account.id,
                         account.workspace_id,
                         to_user_id,
                         context_token,
                     )
-                await self.qq.send_keyboard(
-                    app,
-                    to_user_id,
-                    qq_keyboard(text, code),
-                    msg_id=context_token if seq else "",
-                    msg_seq=seq,
-                )
+                    msg_id = context_token if seq else ""
+                try:
+                    await self.qq.send_keyboard(
+                        app,
+                        to_user_id,
+                        qq_keyboard(text, code),
+                        msg_id=msg_id,
+                        msg_seq=seq,
+                    )
+                except ChannelSendError:
+                    await self.qq.send_text(app, to_user_id, text)
                 return
         except ChannelSendError:
             logger.info("channel_card_fallback", extra={"channel": account.channel_type})
         await self.send_text(account, to_user_id, context_token, text)
 
-    async def send_app_text(self, app: AppRecord, peer_id: str, text: str) -> None:
+    async def send_app_text(self, app: AppRecord, peer_id: str, text: str, msg_id: str = "") -> None:
         """给尚未绑定的平台用户回绑定说明。
 
         Args:
             app: 企业应用。
             peer_id: 平台用户。
             text: 说明。
+            msg_id: QQ 刚收到的消息号。有它时走被动回复。
 
         Raises:
             ChannelSendError: 平台拒绝。
@@ -168,7 +175,11 @@ class ChannelBus:
         elif app.channel_type == "dingtalk":
             await self.dingtalk.send_text(app, peer_id, text)
         elif app.channel_type == "qq":
-            await self.qq.send_text(app, peer_id, text)
+            # 用户刚发来消息，用这条消息做被动回复，避免没开主动消息时看不到绑定说明。
+            if msg_id:
+                await self.qq.send_text(app, peer_id, text, msg_id=msg_id, msg_seq=1)
+            else:
+                await self.qq.send_text(app, peer_id, text)
         else:
             raise ChannelSendError("unsupported_channel", retryable=False)
 
@@ -180,14 +191,30 @@ class ChannelBus:
         msg_id: str,
         text: str,
     ) -> None:
-        """被动次数用完后改发主动消息，避免进度文本把 4 次额度占满后最终回答发不出去。"""
+        """60 分钟窗口外改发主动消息。窗口内次数用完，或被动回复被拒绝，也同样改主动。"""
+        usable = msg_id if await self._qq_window_open(account, openid) else ""
         seq = None
-        if msg_id:
-            seq = await self.repo.next_passive_seq(account.id, account.workspace_id, openid, msg_id)
+        if usable:
+            seq = await self.repo.next_passive_seq(account.id, account.workspace_id, openid, usable)
         if seq is None:
             await self.qq.send_text(app, openid, text)
             return
-        await self.qq.send_text(app, openid, text, msg_id=msg_id, msg_seq=seq)
+        try:
+            await self.qq.send_text(app, openid, text, msg_id=usable, msg_seq=seq)
+        except ChannelSendError as exc:
+            if exc.reason != "passive_rejected":
+                raise
+            await self.qq.send_text(app, openid, text)
+
+    async def _qq_window_open(self, account: AccountRecord, openid: str) -> bool:
+        """这条用户消息是否还在 60 分钟被动回复窗口里。"""
+        peer = await self.repo.latest_peer(account.id)
+        if peer is None or peer.peer_id != openid or peer.last_inbound_at is None:
+            return False
+        inbound = peer.last_inbound_at
+        if inbound.tzinfo is None:
+            inbound = inbound.replace(tzinfo=UTC)
+        return datetime.now(UTC) - inbound <= timedelta(minutes=60)
 
     async def _require_app(self, account: AccountRecord) -> AppRecord:
         """企业绑定必须能解密到应用密钥。"""
