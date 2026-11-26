@@ -197,11 +197,13 @@ docker compose logs --tail=100 api web db
 
 `chore/github-windows-rehearsal` 分支的 Actions 从通过验收的发布包按摘要拉取 API 和 Web，生成 `enterprise-agent-windows-rehearsal` 验收包。验收包包含独立镜像标签、镜像 ID、Compose 配置和 CMD 脚本，运行时不需要部署机登录 GHCR。
 
-在 Windows 部署机解压验收包后，从该目录运行 `windows-release-rehearsal.cmd`。脚本使用 `desktop-linux` 引擎、随机 Compose 项目名、独立卷和回环端口 `28080`，依次验证 `0026 → 0027`、旧消息保留和恢复到空库后的 `0026`。脚本退出时停止验收服务，保留测试卷、备份和日志以便复查。输出 `PASS` 后记录日志路径。部署机直连 GHCR、业务实例切换和 `main` 自动发布仍需验收。
+在 Windows 部署机解压验收包后，从该目录运行 `windows-release-rehearsal.cmd`。脚本使用 `desktop-linux` 引擎、随机 Compose 项目名、独立卷和回环端口 `28080`，依次验证 `0026 → 0027`、旧消息保留和恢复到空库后的 `0026`。脚本退出时停止验收服务，保留测试卷、备份和日志以便复查。输出 `PASS` 后记录日志路径。业务实例切换和 `main` 自动发布仍需验收。
 
 从旧验收包续跑时，可以单独替换 `windows-release-rehearsal.cmd`，继续使用已经下载的镜像和 Compose 配置。脚本校验兼容 Linux 生成的 LF 和 Windows 的 CRLF。失败输出会标明版本文件、Docker 引擎或 Compose 配置等具体阶段，并附日志路径。
 
 2026-11-26，Windows 部署机运行修复后的验收脚本并返回 `PASS`。隔离项目从 `0026` 升级至 `0027`，保留了测试消息，随后从备份恢复到空数据库并验证旧 API 就绪。验收后通过只读 SSH 核对，业务 Compose 项目仍有 10 个容器在运行。
+
+2026-11-26，部署机的 `desktop-linux` 引擎从 GHCR 按同一发布清单的摘要拉取 API 和 Web 测试镜像，两项均输出 `PASS` 并通过本地镜像检查。两项合计约 8 秒，部署机此前已导入相同镜像，本次耗时按已有镜像层缓存记录。拉取完成后通过只读 SSH 核对，业务 Compose 项目仍有 10 个容器在运行。
 
 ### 启动排障
 
