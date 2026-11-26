@@ -4,7 +4,7 @@ export type Role = 'admin' | 'member'
 export type MemberStatus = 'active' | 'revoked'
 export interface Member { user_id: string; username: string; display_name: string; user_status: string; role: Role; status: MemberStatus; joined_at: string; updated_at: string }
 export interface MemberPage { items: Member[]; total: number; offset: number; limit: number }
-export interface MemberCreate { username: string; display_name: string; password: string; role: Role }
+export interface MemberCreate { username: string; display_name: string; role: Role }
 export interface MemberUpdate { role: Role; status: MemberStatus }
 export interface Audit { id: string; actor_username: string; target_username: string; action: string; before_role: string | null; before_status: string | null; after_role: string; after_status: string; created_at: string }
 function record(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null }
@@ -23,6 +23,9 @@ export async function createMember(body: MemberCreate): Promise<Member> {
 }
 export async function updateMember(id: string, body: MemberUpdate): Promise<Member> {
   return member(await requestJson('/api/admin/members/' + encodeURIComponent(id), { method: 'POST', body: JSON.stringify(body) }))
+}
+export async function resetMemberPassword(id: string): Promise<void> {
+  await requestJson('/api/admin/members/' + encodeURIComponent(id) + '/reset-password', { method: 'POST' })
 }
 export async function listAudits(offset = 0): Promise<Audit[]> {
   const body = await requestJson('/api/admin/audits?limit=20&offset=' + offset)

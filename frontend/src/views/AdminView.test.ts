@@ -7,7 +7,7 @@ import * as api from '../api/admin'
 import { useAuthStore } from '../stores/auth'
 import { ApiError } from '../api/client'
 
-vi.mock('../api/admin', () => ({ listMembers: vi.fn(), listAudits: vi.fn(), createMember: vi.fn(), updateMember: vi.fn() }))
+vi.mock('../api/admin', () => ({ listMembers: vi.fn(), listAudits: vi.fn(), createMember: vi.fn(), updateMember: vi.fn(), resetMemberPassword: vi.fn() }))
 const owner: api.Member = { user_id: 'u1', username: 'admin', display_name: '管理员', user_status: 'active', role: 'admin', status: 'active', joined_at: '', updated_at: '' }
 const alice: api.Member = { ...owner, user_id: 'u2', username: 'alice', display_name: '成员甲', role: 'member' }
 beforeEach(() => {
@@ -17,6 +17,11 @@ beforeEach(() => {
   vi.mocked(api.listAudits).mockResolvedValue([])
   vi.mocked(api.createMember).mockResolvedValue(alice)
   vi.mocked(api.updateMember).mockResolvedValue({ ...alice, role: 'admin' })
+  vi.mocked(api.resetMemberPassword).mockResolvedValue()
+  Object.defineProperties(HTMLDialogElement.prototype, {
+    showModal: { configurable: true, value(this: HTMLDialogElement) { this.open = true } },
+    close: { configurable: true, value(this: HTMLDialogElement) { this.open = false } },
+  })
 })
 async function setup(role: api.Role = 'admin') {
   const pinia = createPinia()
@@ -43,22 +48,37 @@ it('普通成员不能读取管理列表或创建用户', async () => {
   expect(wrapper.find('.admin__create').exists()).toBe(false)
   wrapper.unmount()
 })
-it('管理员创建用户，密码明文且不施加字符长度限制', async () => {
+it('管理员创建用户，使用部署的统一初始密码', async () => {
   const { wrapper } = await setup()
   expect(wrapper.text()).toContain('成员甲')
   expect(wrapper.get('.admin__logs-link').attributes('href')).toBe('/admin/system-logs')
   await wrapper.get('.admin__heading button').trigger('click')
   await wrapper.get('[name="username"]').setValue('alice')
   await wrapper.get('[name="displayName"]').setValue('成员甲')
-  const password = wrapper.get('[name="newPassword"]')
-  expect(password.attributes('type')).toBe('text')
-  expect(password.attributes('maxlength')).toBeUndefined()
-  await password.setValue('1')
+  expect(wrapper.find('[name="newPassword"]').exists()).toBe(false)
   await wrapper.get('.admin__create').trigger('submit')
   await flushPromises()
-  expect(api.createMember).toHaveBeenCalledWith({ username: 'alice', display_name: '成员甲', password: '1', role: 'member' })
+  expect(api.createMember).toHaveBeenCalledWith({ username: 'alice', display_name: '成员甲', role: 'member' })
   expect(wrapper.text()).toContain('用户已创建')
   expect(wrapper.find('.admin__create').exists()).toBe(false)
+  wrapper.unmount()
+})
+it('管理员确认后才重置其他成员的密码，并刷新审计', async () => {
+  const { wrapper } = await setup()
+  expect(wrapper.find('button[aria-label="重置 admin 的密码"]').exists()).toBe(false)
+  const reset = wrapper.get('button[aria-label="重置 alice 的密码"]')
+  await reset.trigger('click')
+  const dialog = wrapper.get<HTMLDialogElement>('dialog')
+  expect(dialog.element.open).toBe(true)
+  await dialog.get('button[type="button"]').trigger('click')
+  expect(api.resetMemberPassword).not.toHaveBeenCalled()
+  await reset.trigger('click')
+  await dialog.get('form').trigger('submit')
+  await flushPromises()
+  expect(api.resetMemberPassword).toHaveBeenCalledExactlyOnceWith('u2')
+  expect(dialog.element.open).toBe(false)
+  expect(wrapper.get('[role="status"]').text()).toContain('已重置 alice 的密码')
+  expect(api.listAudits).toHaveBeenCalledTimes(2)
   wrapper.unmount()
 })
 it('设置角色和停用状态后提交并刷新审计', async () => {

@@ -1,4 +1,4 @@
-"""管理用于加密持久凭证的本地密钥文件。"""
+"""管理需要跨重启保留的本地敏感配置文件。"""
 
 import os
 from pathlib import Path
@@ -7,18 +7,18 @@ from tempfile import NamedTemporaryFile
 from cryptography.fernet import Fernet
 
 
-def cipher_for(path: Path, *, create: bool) -> Fernet:
-    """读取部署密钥，首次写入时原子创建并复用同一文件。"""
+def read_or_create_secret(path: Path, value: bytes | None) -> bytes:
+    """读取已有密钥，提供备用值时才原子创建文件。"""
     try:
-        return Fernet(path.read_bytes().strip())
+        return path.read_bytes()
     except FileNotFoundError:
-        if not create:
+        if value is None:
             raise
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with NamedTemporaryFile(dir=path.parent, delete=False) as output:
         temporary = Path(output.name)
         try:
-            output.write(Fernet.generate_key())
+            output.write(value)
             output.flush()
             os.fsync(output.fileno())
             output.close()
@@ -29,4 +29,9 @@ def cipher_for(path: Path, *, create: bool) -> Fernet:
                 pass
         finally:
             temporary.unlink(missing_ok=True)
-    return Fernet(path.read_bytes().strip())
+    return path.read_bytes()
+
+
+def cipher_for(path: Path, *, create: bool) -> Fernet:
+    """读取部署加密密钥，首次写入时复用同一文件。"""
+    return Fernet(read_or_create_secret(path, Fernet.generate_key() if create else None).strip())

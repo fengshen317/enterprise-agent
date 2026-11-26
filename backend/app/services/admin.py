@@ -7,27 +7,30 @@ from uuid import UUID
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import Settings
 from app.core.errors import ApplicationError
 from app.core.security import hash_password, normalize_username
 from app.models.admin_audit import AdminAudit
 from app.models.identity import User, Workspace, WorkspaceMembership
+from app.models.system import FIRST_ADMIN_KEY, SystemMetadata
 from app.schemas.admin import AdminAuditView, MemberCreate, MemberPage, MemberUpdate, MemberView
 from app.schemas.auth import ResourceScope
-from app.services.accounts import ACCOUNT_LOCK
+from app.services.accounts import ACCOUNT_LOCK, member_initial_password, replace_password_hash
 
 
 class AdminService:
     """角色只作用于当前空间，不能改变用户在其他空间的权限。"""
 
-    def __init__(self, factory: async_sessionmaker[AsyncSession], reserved_username: str = "") -> None:
+    def __init__(self, factory: async_sessionmaker[AsyncSession], settings: Settings) -> None:
         """保存独立会话工厂。
 
         Args:
             factory: 应用数据库会话。
-            reserved_username: 仅部署操作者可以创建的系统账号。
+            settings: 系统管理员和成员初始密码的部署配置。
         """
         self.factory = factory
-        self.reserved_username = reserved_username.strip().lower()
+        self.settings = settings
+        self.reserved_username = settings.system_admin_username.strip().lower()
 
     async def _authorize(self, session: AsyncSession, scope: ResourceScope, lock: bool = False) -> User:
         """写入先锁空间再重验角色，使并发撤权和末位管理员保护一致。
@@ -49,6 +52,7 @@ class AdminService:
             .where(
                 User.id == scope.user_id,
                 User.status == "active",
+                User.must_change_password.is_(False),
                 Workspace.id == scope.workspace_id,
                 Workspace.status == "active",
                 WorkspaceMembership.status == "active",
@@ -142,14 +146,17 @@ class AdminService:
         username = normalize_username(body.username)
         if username == self.reserved_username:
             raise ApplicationError("ACCOUNT_RESERVED", "系统管理员账号由部署操作者初始化", 409)
-        encoded = await asyncio.to_thread(hash_password, body.password.get_secret_value())
+        initial = await asyncio.to_thread(member_initial_password, self.settings, create=True)
+        encoded = await asyncio.to_thread(hash_password, initial)
         async with self.factory.begin() as session:
             # 与本机 CLI 使用相同锁顺序，避免重复用户名和交叉创建死锁。
             await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": ACCOUNT_LOCK})
             actor = await self._authorize(session, scope, lock=True)
             if await session.scalar(select(User.id).where(User.username == username)) is not None:
                 raise ApplicationError("ACCOUNT_EXISTS", "账号已存在，请使用新的账号名；未修改已有账号", 409)
-            user = User(username=username, display_name=body.display_name, password_hash=encoded)
+            user = User(
+                username=username, display_name=body.display_name, password_hash=encoded, must_change_password=True
+            )
             session.add(user)
             await session.flush()
             member = WorkspaceMembership(workspace_id=scope.workspace_id, user_id=user.id, role=body.role)
@@ -168,6 +175,55 @@ class AdminService:
                 )
             )
             return self._view(user, member)
+
+    async def reset_password(self, scope: ResourceScope, user_id: UUID) -> None:
+        """重置当前空间的单空间账号，并在同一事务记录审计。"""
+        await self.authorize(scope)
+        if user_id == scope.user_id:
+            raise ApplicationError("PASSWORD_RESET_SELF", "请在个人账户中修改自己的密码", 409)
+        initial = await asyncio.to_thread(member_initial_password, self.settings, create=True)
+        encoded = await asyncio.to_thread(hash_password, initial)
+        async with self.factory.begin() as session:
+            actor = await self._authorize(session, scope, lock=True)
+            row = (
+                await session.execute(
+                    select(User, WorkspaceMembership)
+                    .join(WorkspaceMembership, WorkspaceMembership.user_id == User.id)
+                    .where(User.id == user_id, WorkspaceMembership.workspace_id == scope.workspace_id)
+                    .with_for_update(of=User)
+                )
+            ).one_or_none()
+            if row is None:
+                raise ApplicationError("MEMBER_NOT_FOUND", "当前空间中不存在该成员", 404)
+            user, member = row
+            if user.status != "active" or member.status != "active":
+                raise ApplicationError("PASSWORD_RESET_INACTIVE", "只能重置当前空间已启用成员的密码", 409)
+            first_admin = await session.get(SystemMetadata, FIRST_ADMIN_KEY)
+            other_workspace = await session.scalar(
+                select(WorkspaceMembership.workspace_id)
+                .where(WorkspaceMembership.user_id == user_id, WorkspaceMembership.workspace_id != scope.workspace_id)
+                .limit(1)
+            )
+            protected_admin = user.username == self.reserved_username or (
+                first_admin is not None and first_admin.value == str(user_id)
+            )
+            if protected_admin or other_workspace is not None:
+                raise ApplicationError("PASSWORD_RESET_PROTECTED", "系统管理员或跨空间账号请联系部署管理员重置", 409)
+            replace_password_hash(user, encoded, must_change=True)
+            session.add(
+                AdminAudit(
+                    workspace_id=scope.workspace_id,
+                    actor_user_id=actor.id,
+                    actor_username=actor.username,
+                    target_user_id=user.id,
+                    target_username=user.username,
+                    action="reset_password",
+                    before_role=member.role,
+                    before_status=member.status,
+                    after_role=member.role,
+                    after_status=member.status,
+                )
+            )
 
     async def update(self, scope: ResourceScope, user_id: UUID, body: MemberUpdate) -> MemberView:
         """修改当前空间角色或成员状态，保护最后一名有效管理员。

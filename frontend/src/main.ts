@@ -2,6 +2,7 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import { useAuthStore } from './stores/auth'
 import LoginView from './views/LoginView.vue'
+import ChangePasswordView from './views/ChangePasswordView.vue'
 import { createRouter, createWebHistory } from 'vue-router'
 import App from './App.vue'
 import SystemStatusView from './views/SystemStatusView.vue'
@@ -28,6 +29,7 @@ const router = createRouter({
   routes: [
     { path: '/', redirect: '/chat' },
     { path: '/login', name: 'login', component: LoginView },
+    { path: '/account/password', name: 'change-password', component: ChangePasswordView, meta: { title: '修改密码' } },
     { path: '/chat/:conversationId?', component: ChatView, meta: { title: '问答' } },
     { path: '/agents', component: AgentListView, meta: { title: '智能体' } },
     { path: '/agents/new', component: AgentEditorView, meta: { title: '智能体' } },
@@ -61,6 +63,7 @@ router.beforeEach(async to => {
     try { await auth.restore() } catch { auth.clear() }
   }
   if (to.name !== 'login' && !auth.authenticated) return '/login'
+  if (auth.session?.must_change_password && to.name !== 'change-password') return { name: 'change-password' }
   if (to.name === 'login' && auth.authenticated) return '/chat'
   if (to.meta.systemAdmin && auth.session?.system_admin !== true) return '/chat'
   if (to.meta.admin) {

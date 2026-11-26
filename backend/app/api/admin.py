@@ -26,9 +26,7 @@ def service(request: Request) -> AdminService:
     Returns:
         使用应用会话工厂的服务。
     """
-    return AdminService(
-        request.app.state.database.session_factory, request.app.state.settings.system_admin_username
-    )
+    return AdminService(request.app.state.database.session_factory, request.app.state.settings)
 
 
 @router.get("/members", response_model=MemberPage)
@@ -86,6 +84,13 @@ async def update_member(user_id: UUID, body: MemberUpdate, request: Request, sco
         更新后的成员。
     """
     return await service(request).update(scope, user_id, body)
+
+
+@router.post("/members/{user_id}/reset-password", status_code=204)
+async def reset_member_password(user_id: UUID, request: Request, scope: ScopeDependency) -> Response:
+    """授权后将目标成员重置为部署的统一初始密码。"""
+    await service(request).reset_password(scope, user_id)
+    return Response(status_code=204, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/audits", response_model=list[AdminAuditView])

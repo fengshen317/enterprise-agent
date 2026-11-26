@@ -12,11 +12,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
 from app.core.errors import ApplicationError
-from app.core.security import csrf_token, digest_token, verify_password
+from app.core.security import csrf_token, digest_token, hash_password, verify_password
 from app.models.conversation import Conversation, Run
 from app.models.identity import AuthSession, LoginLimit, User, Workspace, WorkspaceMembership
 from app.models.system import FIRST_ADMIN_KEY, SystemMetadata
-from app.schemas.auth import AuthContext, ResourceScope, SessionView, UserView, WorkspaceView
+from app.schemas.auth import AuthContext, PasswordChange, ResourceScope, SessionView, UserView, WorkspaceView
+from app.services.accounts import (
+    MAX_MEMBER_PASSWORD_LENGTH,
+    MIN_MEMBER_PASSWORD_LENGTH,
+    member_initial_password,
+    replace_password_hash,
+)
 
 
 async def require_membership(session: AsyncSession, scope: ResourceScope, write: bool = False) -> None:
@@ -167,7 +173,15 @@ class AuthService:
             if row is None:
                 raise ApplicationError("AUTH_REQUIRED", "登录已失效，请重新登录", 401)
             stored, user, first_admin = row
-            return AuthContext(user.id, stored.id, user.username, user.display_name, stored.expires_at, first_admin)
+            return AuthContext(
+                user.id,
+                stored.id,
+                user.username,
+                user.display_name,
+                stored.expires_at,
+                first_admin,
+                user.must_change_password,
+            )
 
     async def view(self, context: AuthContext, token: str) -> SessionView:
         """只向当前用户返回自己的成员空间与 CSRF 值。
@@ -179,6 +193,15 @@ class AuthService:
         Returns:
             安全会话信息。
         """
+        user = UserView(id=context.user_id, username=context.username, display_name=context.display_name)
+        if context.must_change_password:
+            return SessionView(
+                user=user,
+                workspaces=[],
+                expires_at=context.expires_at,
+                csrf_token=csrf_token(token),
+                must_change_password=True,
+            )
         async with self.factory() as session:
             rows = (
                 await session.execute(
@@ -189,7 +212,7 @@ class AuthService:
                 )
             ).all()
             return SessionView(
-                user=UserView(id=context.user_id, username=context.username, display_name=context.display_name),
+                user=user,
                 system_admin=self.is_system_admin(context),
                 workspaces=[
                     WorkspaceView(
@@ -200,6 +223,39 @@ class AuthService:
                 expires_at=context.expires_at,
                 csrf_token=csrf_token(token),
             )
+
+    async def change_password(self, context: AuthContext, body: PasswordChange) -> None:
+        """核验当前密码，写入时再次确认会话未被其他改密或重置撤销。"""
+        current = body.current_password.get_secret_value()
+        new = body.new_password.get_secret_value()
+        if not (MIN_MEMBER_PASSWORD_LENGTH <= len(new) <= MAX_MEMBER_PASSWORD_LENGTH and new.strip()):
+            raise ApplicationError("PASSWORD_INVALID", "新密码需为 8 至 128 个字符，且不能全为空白", 422)
+        async with self.factory() as session:
+            old_hash = await session.scalar(select(User.password_hash).where(User.id == context.user_id))
+        if not await asyncio.to_thread(verify_password, current, old_hash):
+            raise ApplicationError("CURRENT_PASSWORD_INVALID", "当前密码不正确", 422)
+        initial = await asyncio.to_thread(member_initial_password, self.settings)
+        if new == current or new == initial:
+            raise ApplicationError("PASSWORD_REUSED", "新密码不能与当前密码或统一初始密码相同", 422)
+        encoded = await asyncio.to_thread(hash_password, new)
+        async with self.factory.begin() as session:
+            user = await session.scalar(
+                select(User)
+                .join(AuthSession)
+                .where(
+                    User.id == context.user_id,
+                    User.status == "active",
+                    User.password_hash == old_hash,
+                    AuthSession.id == context.session_id,
+                    AuthSession.session_version == User.session_version,
+                    AuthSession.revoked_at.is_(None),
+                    AuthSession.expires_at > datetime.now(UTC),
+                )
+                .with_for_update(of=(User, AuthSession))
+            )
+            if user is None:
+                raise ApplicationError("AUTH_REQUIRED", "登录已失效，请重新登录", 401)
+            replace_password_hash(user, encoded)
 
     async def logout(self, token: str) -> None:
         """幂等撤销本会话，不取消仍有资源权限的后台生成。

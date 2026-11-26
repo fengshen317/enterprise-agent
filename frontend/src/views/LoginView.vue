@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { ApiError } from '../api/client'
 import { createInitialAdmin, getInitialSetup, type InitialSetupStatus } from '../api/initialSetup'
 
 const MIN_PASSWORD_LENGTH = 4
 const router = useRouter()
+const route = useRoute()
 const auth = useAuthStore()
 const username = ref('')
 const password = ref('')
@@ -20,7 +21,7 @@ const setupPassword = ref('')
 const confirmPassword = ref('')
 const setupBusy = ref(false)
 const setupError = ref('')
-const notice = ref('')
+const notice = ref(route.query.password_changed === '1' ? '密码已修改，请使用新密码登录。' : '')
 
 async function loadSetup(): Promise<void> {
   try {

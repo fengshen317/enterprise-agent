@@ -128,6 +128,8 @@ class Settings(BaseSettings):
     system_log_retention_days: int = Field(default=30, ge=1, le=365)
     auth_session_hours: int = Field(default=12, ge=1, le=168)
     system_admin_username: str = Field(default="", max_length=64)
+    member_initial_password: SecretStr = SecretStr("")
+    member_initial_password_file: Path = Path.home() / ".enterprise-agent" / "member-initial-password"
     initial_setup_token: SecretStr = SecretStr("")
     initial_setup_token_file: Path | None = None
     auth_cookie_secure: bool = False

@@ -2,7 +2,10 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { ApiError } from '../api/client'
-import { createMember, listAudits, listMembers, updateMember, type Audit, type Member, type MemberUpdate, type Role } from '../api/admin'
+import {
+  createMember, listAudits, listMembers, resetMemberPassword, updateMember,
+  type Audit, type Member, type MemberUpdate, type Role,
+} from '../api/admin'
 import { useAuthStore } from '../stores/auth'
 
 const auth = useAuthStore()
@@ -19,12 +22,15 @@ const appliedQuery = ref('')
 const loading = ref(false)
 const saving = ref('')
 const creating = ref(false)
+const resetDialog = ref<HTMLDialogElement | null>(null)
+const resetTarget = ref<Member | null>(null)
+const resetting = ref(false)
+const resetError = ref('')
 const showCreate = ref(false)
 const error = ref('')
 const notice = ref('')
 const username = ref('')
 const displayName = ref('')
-const password = ref('')
 const role = ref<Role>('member')
 const PAGE_SIZE = 20
 let alive = true
@@ -60,14 +66,40 @@ async function create(): Promise<void> {
   if (creating.value) return
   creating.value = true; error.value = ''; notice.value = ''
   try {
-    await createMember({ username: username.value, display_name: displayName.value, password: password.value, role: role.value })
+    await createMember({ username: username.value, display_name: displayName.value, role: role.value })
     if (!alive) return
-    username.value = ''; displayName.value = ''; password.value = ''; role.value = 'member'; showCreate.value = false
+    username.value = ''; displayName.value = ''; role.value = 'member'; showCreate.value = false
     query.value = ''; appliedQuery.value = ''; offset.value = 0; auditOffset.value = 0
-    notice.value = '用户已创建，可使用设置的密码登录。'
+    notice.value = '用户已创建。请将统一初始密码告知本人，首次登录时需修改。'
     await load()
   } catch (value) { if (alive) await handleError(value) }
   finally { creating.value = false }
+}
+function openReset(item: Member): void {
+  resetTarget.value = item
+  resetError.value = ''
+  resetDialog.value?.showModal()
+}
+async function confirmReset(): Promise<void> {
+  if (!resetTarget.value || resetting.value) return
+  const target = resetTarget.value
+  resetting.value = true; resetError.value = ''; notice.value = ''
+  try {
+    await resetMemberPassword(target.user_id)
+    if (!alive) return
+    resetDialog.value?.close()
+    notice.value = `已重置 ${target.username} 的密码，请通知成员使用统一初始密码登录。`
+    auditOffset.value = 0
+    await load()
+  } catch (value) {
+    if (!alive) return
+    if (value instanceof ApiError && value.status === 403) {
+      resetDialog.value?.close()
+      await handleError(value)
+    } else {
+      resetError.value = value instanceof Error ? value.message : '重置失败，请重试。'
+    }
+  } finally { resetting.value = false }
 }
 async function save(item: Member): Promise<void> {
   const body = drafts.value[item.user_id]
@@ -95,7 +127,7 @@ function roleName(value: string | null): string { return value === 'admin' ? '�
 function stateName(value: string | null): string { return value === 'active' ? '启用' : value === 'revoked' ? '停用' : '无' }
 function timeLabel(value: string): string { return new Date(value).toLocaleString('zh-CN') }
 void load()
-onBeforeUnmount(() => { alive = false; revision++; password.value = '' })
+onBeforeUnmount(() => { alive = false; revision++ })
 </script>
 
 <template>
@@ -172,14 +204,6 @@ onBeforeUnmount(() => { alive = false; revision++; password.value = '' })
             :disabled="creating"
             placeholder="输入成员姓名"
           /></label>
-          <label>初始密码<input
-            v-model="password"
-            name="newPassword"
-            type="text"
-            autocomplete="off"
-            :disabled="creating"
-            placeholder="明文显示，不限制长度或字符"
-          /></label>
           <label>空间角色<select
             v-model="role"
             name="newRole"
@@ -187,7 +211,7 @@ onBeforeUnmount(() => { alive = false; revision++; password.value = '' })
           ><option value="member">普通成员</option><option value="admin">管理员</option></select></label>
         </div>
         <p class="admin__hint">
-          新用户加入当前空间。已有同名账号不会被覆盖，密码不会保存在管理记录中。
+          新用户加入当前空间，使用统一初始密码登录后需修改密码。
         </p>
         <button
           class="admin__primary"
@@ -275,6 +299,16 @@ onBeforeUnmount(() => { alive = false; revision++; password.value = '' })
                   >
                     {{ saving === item.user_id ? '保存中…' : '保存权限' }}
                   </button>
+                  <button
+                    v-if="item.user_id !== auth.session?.user.id && item.status === 'active' && item.user_status === 'active'"
+                    type="button"
+                    class="admin__reset"
+                    :aria-label="'重置 ' + item.username + ' 的密码'"
+                    :disabled="loading || !!saving || creating || resetting"
+                    @click="openReset(item)"
+                  >
+                    重置密码
+                  </button>
                 </td>
               </tr>
             </tbody>
@@ -304,6 +338,50 @@ onBeforeUnmount(() => { alive = false; revision++; password.value = '' })
           </div>
         </div>
       </section>
+      <dialog
+        ref="resetDialog"
+        class="admin__reset-dialog"
+        aria-labelledby="reset-password-title"
+        aria-describedby="reset-password-description"
+        @cancel="resetting && $event.preventDefault()"
+      >
+        <form @submit.prevent="confirmReset">
+          <h2 id="reset-password-title">
+            重置 {{ resetTarget?.username }} 的密码？
+          </h2>
+          <p
+            id="reset-password-description"
+            class="admin__hint"
+          >
+            成员将退出所有会话。下次使用统一初始密码登录后，需重新设置个人密码。
+          </p>
+          <p
+            v-if="resetError"
+            class="admin__error"
+            role="alert"
+          >
+            {{ resetError }}
+          </p>
+          <div class="admin__reset-actions">
+            <button
+              type="button"
+              class="admin__save"
+              autofocus
+              :disabled="resetting"
+              @click="resetDialog?.close()"
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              class="admin__primary"
+              :disabled="resetting"
+            >
+              {{ resetting ? '正在重置…' : '确认重置' }}
+            </button>
+          </div>
+        </form>
+      </dialog>
       <section
         class="admin__card"
         aria-label="管理操作记录"
@@ -316,7 +394,13 @@ onBeforeUnmount(() => { alive = false; revision++; password.value = '' })
             v-for="item in audits"
             :key="item.id"
           >
-            <p><strong>{{ item.actor_username }}</strong> {{ item.action === 'create_user' ? '创建了' : '更新了' }} <strong>{{ item.target_username }}</strong></p><p>{{ roleName(item.before_role) }} / {{ stateName(item.before_status) }} → {{ roleName(item.after_role) }} / {{ stateName(item.after_status) }}</p><time>{{ timeLabel(item.created_at) }}</time>
+            <p v-if="item.action === 'reset_password'">
+              <strong>{{ item.actor_username }}</strong> 重置了 <strong>{{ item.target_username }}</strong> 的密码
+            </p>
+            <template v-else>
+              <p><strong>{{ item.actor_username }}</strong> {{ item.action === 'create_user' ? '创建了' : '更新了' }} <strong>{{ item.target_username }}</strong></p><p>{{ roleName(item.before_role) }} / {{ stateName(item.before_status) }} → {{ roleName(item.after_role) }} / {{ stateName(item.after_status) }}</p>
+            </template>
+            <time>{{ timeLabel(item.created_at) }}</time>
           </li>
         </ol>
         <p
@@ -362,7 +446,16 @@ onBeforeUnmount(() => { alive = false; revision++; password.value = '' })
   &__fields { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; label { color: $green; font-size: 12px; } input, select { display: block; margin-top: 8px; width: 100%; } }
   input, select { border: 1px solid $line; border-radius: 5px; padding: 9px 11px; background: $paper; color: $ink; font: inherit; font-size: 12px; &:focus { outline: 2px solid $green; outline-offset: 2px; } }
   &__toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 20px; label { font-size: 14px; span { color: $muted; margin-left: 6px; } } div { display: flex; flex-wrap: wrap; gap: 8px; } }
-  &__toolbar button, &__pagination button, &__save { border: 1px solid $line; background: $paper; border-radius: 5px; padding: 8px 12px; color: $green; font-size: 12px; }
+  &__toolbar button, &__pagination button, &__save, &__reset { border: 1px solid $line; background: $paper; border-radius: 5px; padding: 8px 12px; color: $green; font-size: 12px; }
+  &__reset { margin-inline-start: 6px; }
+  &__reset-dialog {
+    width: min(430px, calc(100% - 32px)); margin: auto; padding: 24px;
+    border: 1px solid $line; border-radius: $panel-radius; background: $surface; color: $ink;
+    &::backdrop { background: rgb(32 59 51 / 40%); }
+    h2 { margin-bottom: 8px; font-size: 18px; overflow-wrap: anywhere; }
+    .admin__error { margin-top: 12px; }
+  }
+  &__reset-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
   &__table-wrap { overflow-x: auto; }
   &__table { width: 100%; border-collapse: collapse; text-align: left; th { background: $sidebar; color: $muted; font-size: 12px; font-weight: 600; padding: 13px 20px; white-space: nowrap; } td { padding: 17px 20px; border-bottom: 1px solid $line; font-size: 12px; white-space: nowrap; } tbody tr:hover, tbody tr:focus-within { background: $paper; } strong { font-weight: 600; } small { display: block; color: $muted; margin-top: 7px; } }
   &__pagination { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 16px 20px; color: $muted; font-size: 11px; div { display: flex; gap: 8px; } }

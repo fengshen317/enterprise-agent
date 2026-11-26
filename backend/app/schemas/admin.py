@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 Role = Literal["admin", "member"]
 MemberStatus = Literal["active", "revoked"]
@@ -16,13 +16,12 @@ class MemberCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     username: str = Field(min_length=3, max_length=64)
     display_name: str = Field(min_length=1, max_length=100)
-    password: SecretStr
     role: Role = "member"
 
     @field_validator("display_name")
     @classmethod
     def nonempty_name(cls, value: str) -> str:
-        """显示名需可辨认，密码则保持原始输入。
+        """显示名需可辨认。
 
         Args:
             value: 用户显示名。

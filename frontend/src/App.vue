@@ -38,7 +38,7 @@ async function changeWorkspace(event: Event): Promise<void> {
 </script>
 
 <template>
-  <RouterView v-if="route.name === 'login'" />
+  <RouterView v-if="route.name === 'login' || route.name === 'change-password' && auth.session?.must_change_password" />
   <div
     v-else
     class="workspace"
@@ -157,7 +157,7 @@ async function changeWorkspace(event: Event): Promise<void> {
           >API 配置</RouterLink>
         </nav>
         <div class="workspace__account">
-          <span>{{ auth.session?.user.display_name }}</span><button
+          <span>{{ auth.session?.user.display_name }}</span><RouterLink to="/account/password">修改密码</RouterLink><button
             type="button"
             @click="signOut"
           >
@@ -209,7 +209,7 @@ async function changeWorkspace(event: Event): Promise<void> {
 .workspace__space label { display: block; font-size: 12px; margin-bottom: 7px; color: $muted; }
 .workspace__space select { width: 100%; background: $surface; color: $ink; border: 1px solid $line; border-radius: 7px; padding: 8px; font: inherit; }
 .workspace__account { margin: auto 6px 8px; padding-top: 14px; color: $muted; font-size: 12px; display: flex; flex-wrap: wrap; gap: 9px; align-items: center; }
-.workspace__account button { border: 0; background: none; color: $green; padding: 0; font: inherit; text-decoration: underline; }
+.workspace__account button, .workspace__account a { border: 0; background: none; color: $green; padding: 0; font: inherit; text-decoration: underline; }
 .workspace__nav--admin-child {
   margin-left: 9px; padding: 7px 9px; border: 1px solid transparent; background: transparent;
   &::before { content: ''; display: inline-block; width: 5px; height: 5px; margin: 0 8px 2px 0; border-radius: 50%; background: currentColor; }

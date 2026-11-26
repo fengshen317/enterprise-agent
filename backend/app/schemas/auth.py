@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
 @dataclass(frozen=True)
@@ -17,6 +17,7 @@ class AuthContext:
     display_name: str
     expires_at: datetime
     first_admin: bool = False
+    must_change_password: bool = False
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,14 @@ class LoginRequest(BaseModel):
 
     username: str = Field(min_length=1, max_length=64)
     password: SecretStr
+
+
+class PasswordChange(BaseModel):
+    """本人改密必须提供当前密码，账号始终由会话确定。"""
+
+    model_config = ConfigDict(extra="forbid")
+    current_password: SecretStr
+    new_password: SecretStr
 
 
 class WorkspaceView(BaseModel):
@@ -60,3 +69,4 @@ class SessionView(BaseModel):
     expires_at: datetime
     csrf_token: str
     system_admin: bool = False
+    must_change_password: bool = False

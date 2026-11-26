@@ -8,7 +8,7 @@ from fastapi.security import APIKeyCookie
 
 from app.core.errors import ApplicationError
 from app.core.security import COOKIE_NAME
-from app.schemas.auth import AuthContext, LoginRequest, ResourceScope, SessionView, WorkspaceView
+from app.schemas.auth import AuthContext, LoginRequest, PasswordChange, ResourceScope, SessionView, WorkspaceView
 from app.services.auth import AuthService, validate_csrf, validate_origin
 
 router = APIRouter(prefix="/api", tags=["登录与工作空间"])
@@ -28,12 +28,12 @@ def auth_service(request: Request) -> AuthService:
     return service
 
 
-async def get_identity(
+async def get_session_identity(
     request: Request,
     cookie: Annotated[str | None, Depends(cookie_scheme)],
     x_csrf_token: Annotated[str | None, Header()] = None,
 ) -> AuthContext:
-    """业务入口统一要求会话，写入额外校验来源和 CSRF。
+    """验证会话及写入来源，允许使用初始密码的会话访问改密入口。
 
     Args:
         request: 当前请求。
@@ -49,6 +49,16 @@ async def get_identity(
         validate_origin(request.headers.get("origin"), request.app.state.settings)
         validate_csrf(token, x_csrf_token)
     return context
+
+
+SessionIdentityDependency = Annotated[AuthContext, Depends(get_session_identity)]
+
+
+async def get_identity(identity: SessionIdentityDependency) -> AuthContext:
+    """统一在业务入口拦截尚未设置个人密码的账号。"""
+    if identity.must_change_password:
+        raise ApplicationError("PASSWORD_CHANGE_REQUIRED", "请先修改初始密码", 403)
+    return identity
 
 
 IdentityDependency = Annotated[AuthContext, Depends(get_identity)]
@@ -134,7 +144,7 @@ async def login(body: LoginRequest, request: Request, response: Response) -> Ses
 
 
 @router.get("/auth/me", response_model=SessionView)
-async def current_user(request: Request, identity: IdentityDependency, response: Response) -> SessionView:
+async def current_user(request: Request, identity: SessionIdentityDependency, response: Response) -> SessionView:
     """恢复登录状态，凭证不进入本地存储。
 
     Args:
@@ -147,6 +157,20 @@ async def current_user(request: Request, identity: IdentityDependency, response:
     """
     response.headers["Cache-Control"] = "no-store"
     return await auth_service(request).view(identity, request.cookies[COOKIE_NAME])
+
+
+@router.post("/auth/change-password", status_code=204)
+async def change_password(body: PasswordChange, request: Request, identity: SessionIdentityDependency) -> Response:
+    """让当前用户改密并清除当前浏览器已失效的 Cookie。"""
+    await auth_service(request).change_password(identity, body)
+    return clear_session_cookie()
+
+
+def clear_session_cookie() -> Response:
+    """沿用会话 Cookie 的作用域，兼容所有登录部署配置。"""
+    response = Response(status_code=204, headers={"Cache-Control": "no-store"})
+    response.delete_cookie(COOKIE_NAME, path="/api", httponly=True, samesite="lax")
+    return response
 
 
 @router.post("/auth/logout", status_code=204)
@@ -164,9 +188,7 @@ async def logout(request: Request) -> Response:
     if token:
         validate_csrf(token, request.headers.get("x-csrf-token"))
         await auth_service(request).logout(token)
-    response = Response(status_code=204, headers={"Cache-Control": "no-store"})
-    response.delete_cookie(COOKIE_NAME, path="/api", httponly=True, samesite="lax")
-    return response
+    return clear_session_cookie()
 
 
 @router.get("/workspaces", response_model=list[WorkspaceView])
