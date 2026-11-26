@@ -146,11 +146,22 @@ if [[ "$(container_image api '{{.Config.Image}}')" == "$api" && "$(container_ima
   exit 0
 fi
 
-phase=pull
+phase=anonymous_registry_setup
+desktop_endpoint="$(docker_engine context inspect desktop-linux --format '{{.Endpoints.docker.Host}}' | tr -d '\r')"
+[[ "$desktop_endpoint" == 'npipe:////./pipe/dockerDesktopLinuxEngine' ]]
+mkdir "$work/anonymous-docker"
+# 空的 GHCR 条目会保留匿名拉取，并阻止 Windows CLI 自动选择凭据助手。
+printf '%s\n' '{"auths":{"ghcr.io":{}}}' > "$work/anonymous-docker/config.json"
+anonymous_config="$(native_path "$work/anonymous-docker")"
+
 for image in "$api" "$web"; do
-  docker_engine image pull --platform linux/amd64 "$image"
+  phase=pull
+  env -u DOCKER_CONTEXT -u DOCKER_HOST -u DOCKER_AUTH_CONFIG "${EA_DOCKER_BIN:-docker.exe}" \
+    --config "$anonymous_config" --host "$desktop_endpoint" image pull --platform linux/amd64 "$image"
+  phase=check_image_revision
   [[ "$(docker_engine image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image" | tr -d '\r')" == "$commit" ]]
 done
+phase=prepare_migration
 old_revision="$(printf 'SELECT version_num FROM alembic_version;\n' | sql | tr -d '\r')"
 [[ "$old_revision" =~ ^[a-zA-Z0-9_]+$ ]]
 new_revision="$(docker_engine run --rm --pull never --network none --entrypoint alembic "$api" heads | tr -d '\r' | awk 'NF { print $1 }')"
