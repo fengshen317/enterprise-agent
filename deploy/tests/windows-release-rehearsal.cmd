@@ -1,15 +1,17 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 pushd "%~dp0" || exit /b 1
-set "STEP=verify bundle and Docker Desktop"
+set "STEP=create evidence directory"
 set "STARTED="
 set "LOG="
-findstr /x /l "afc1b53620fe8961ce492f4d1ed1ef7be0d627ab" source-revision >nul || goto :failed
-set "SUFFIX=afc1b53620fe"
 set "PROJECT=ea-win-rehearsal-%RANDOM%%RANDOM%%RANDOM%"
 set "WORK=%TEMP%\%PROJECT%"
 mkdir "%WORK%" || goto :failed
 set "LOG=%WORK%\result.log"
+
+set "STEP=verify package version"
+call :assert_line source-revision afc1b53620fe8961ce492f4d1ed1ef7be0d627ab >>"%LOG%" 2>&1 || goto :failed
+set "SUFFIX=afc1b53620fe"
 set "DB=enterprise_agent_rehearsal"
 set "RESTORED_DB=enterprise_agent_restored"
 set "EA_DEPLOY_DOMAIN=release-test.invalid"
@@ -24,14 +26,16 @@ set "EA_WINDOWS_TEST_INIT_IMAGE=ea-windows-rehearsal-init:%SUFFIX%"
 set "BASELINE=ea-windows-rehearsal-baseline:%SUFFIX%"
 set "CANDIDATE=%EA_RELEASE_API_IMAGE%"
 type nul > "%EA_DEPLOY_ENV_FILE%"
+set "STEP=check Docker Desktop Linux engine"
 docker --context desktop-linux version --format "{{.Server.Os}}/{{.Server.Arch}}" > "%WORK%\engine.txt" 2>>"%LOG%" || goto :failed
-findstr /x /l "linux/amd64" "%WORK%\engine.txt" >nul || goto :failed
+call :assert_line "%WORK%\engine.txt" linux/amd64 >>"%LOG%" 2>&1 || goto :failed
+set "STEP=validate isolated Compose configuration"
 call :compose config --quiet >>"%LOG%" 2>&1 || goto :failed
 
 set "STEP=load and verify five isolated images"
 docker --context desktop-linux image load --input images.tar.gz >>"%LOG%" 2>&1 || goto :failed
 for %%I in (api web db init baseline) do (
-    call :verify_image %%I || goto :failed
+    call :verify_image %%I >>"%LOG%" 2>&1 || goto :failed
 )
 
 rem 使用随机项目名和独立数据库，只在本机回环端口提供测试入口。
@@ -93,7 +97,7 @@ exit /b %errorlevel%
 
 :assert_sql
 call :sql "%~1" -c "%~2" > "%WORK%\query.txt" 2>>"%LOG%" || exit /b 1
-findstr /x /l /c:"%~3" "%WORK%\query.txt" >nul
+call :assert_line "%WORK%\query.txt" "%~3" >>"%LOG%" 2>&1
 exit /b %errorlevel%
 
 :check_message
@@ -107,7 +111,22 @@ curl.exe --fail --silent --show-error --max-time 5 "http://127.0.0.1:%EA_FUNNEL_
 findstr /l /c:"id=\"app\"" "%WORK%\login.html" >nul
 exit /b %errorlevel%
 
+:assert_line
+rem GitHub Actions 和容器会输出 LF，读取单行后比较可以兼容 Windows 的 CRLF。
+setlocal EnableDelayedExpansion
+set "actual="
+set /p "actual=" < "%~1"
+if "!actual!"=="%~2" exit /b 0
+echo Expected "%~2" in "%~1", got "!actual!".
+exit /b 1
+
 :verify_image
-docker --context desktop-linux image inspect --format "{{.Id}}" "ea-windows-rehearsal-%~1:%SUFFIX%" > "%WORK%\image.id" 2>>"%LOG%" || exit /b 1
-findstr /x /l /g:"%~1.id" "%WORK%\image.id" >nul
-exit /b %errorlevel%
+setlocal EnableDelayedExpansion
+docker --context desktop-linux image inspect --format "{{.Id}}" "ea-windows-rehearsal-%~1:%SUFFIX%" > "%WORK%\image.id" || exit /b 1
+set "expected="
+set "actual="
+set /p "expected=" < "%~1.id"
+set /p "actual=" < "%WORK%\image.id"
+if defined expected if "!actual!"=="!expected!" exit /b 0
+echo Image ID mismatch for %~1. Expected "!expected!", got "!actual!".
+exit /b 1

@@ -199,6 +199,8 @@ docker compose logs --tail=100 api web db
 
 在 Windows 部署机解压验收包后，从该目录运行 `windows-release-rehearsal.cmd`。脚本使用 `desktop-linux` 引擎、随机 Compose 项目名、独立卷和回环端口 `28080`，依次验证 `0026 → 0027`、旧消息保留和恢复到空库后的 `0026`。脚本退出时停止验收服务，保留测试卷、备份和日志以便复查。输出 `PASS` 后记录日志路径。部署机直连 GHCR、业务实例切换和 `main` 自动发布仍需验收。
 
+从旧验收包续跑时，可以单独替换 `windows-release-rehearsal.cmd`，继续使用已经下载的镜像和 Compose 配置。脚本校验兼容 Linux 生成的 LF 和 Windows 的 CRLF。失败输出会标明版本文件、Docker 引擎或 Compose 配置等具体阶段，并附日志路径。
+
 ### 启动排障
 
 页面迟迟打不开时，用 `docker compose config --quiet` 检查配置，用 `docker compose ps` 查看服务状态。
