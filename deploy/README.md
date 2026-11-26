@@ -185,6 +185,16 @@ docker compose logs --tail=100 api web db
 
 回滚前检查旧应用与当前数据库结构的兼容性。若不兼容，先在独立环境将备份恢复到空数据库并验证，再切回对应应用版本。应用容器可以重建，日常停止使用 `docker compose stop`，保留 PostgreSQL、Caddy 和 API 的命名卷。
 
+### `main` 自动发布和部署
+
+GitHub Actions 从 `main` 构建 API 和 Web 镜像，推送到已验收的 GHCR 镜像包，并生成包含源码提交、镜像摘要和 Compose 基线的发布包。独立 Runner 拉取实际发布镜像，演练 PostgreSQL 升级、页面与 API 就绪检查，以及从备份恢复旧版。通过后，GitHub 托管 Runner 通过 Tailscale OIDC 和固定命令的 OpenSSH 密钥访问 Windows 部署机。
+
+生产环境 `deploy-production` 只允许 `main`，部署开关 `EA_PRODUCTION_AUTODEPLOY_ENABLED` 设为 `true` 后才会执行更新。部署节点只需 TCP 22，仓库凭据使用环境 Secret 保存，主机指纹按已确认值校验。部署机应以管理员身份安装 `deploy/production` 中的固定接收脚本，部署 SSH 密钥指向 `windows-entry.cmd`，具体安装由运维人员执行。接收脚本和备份写入部署机受管理员与系统账号保护的 `C:\ProgramData\ssh\enterprise-agent-auto`。
+
+每次更新前，部署机核对 `main` 当前提交、基础 Compose 文件、镜像摘要及构建提交。镜像下载、在线备份和空闲检查完成后暂停 Web 和 API，再确认维护窗口备份可读。先启动 API 并核对数据和数据库迁移版本，再启动 Web 验证入口。基础服务和数据卷沿用现有部署。一旦基础 Compose 或 RAGFlow 配置发生变更，应先安排对应配置更新，再执行发布。仅文档提交不会触发应用发布。
+
+GitHub 串行运行发布，部署机另持有更新锁。若部署机离线，可在上线后对 `main` 手动触发工作流。新版失败时，数据库仍在旧迁移版本则自动恢复旧镜像和入口；数据库版本变化或回退失败时，入口保持维护状态，保留旧镜像、备份及本地日志，等待恢复检查。Windows 部署机的 `current-compose-override` 记录当前发布的 Compose 覆盖文件，手动重建服务时需要追加该文件。
+
 ### 启动排障
 
 页面迟迟打不开时，用 `docker compose config --quiet` 检查配置，用 `docker compose ps` 查看服务状态。
