@@ -73,27 +73,26 @@ class RagflowModelService:
 
         async with self._lock:
             await self._ensure_provider(provider)
+            native_probe = setup.preset == "siliconflow_bge_m3"
+            if native_probe:
+                # bge-m3 使用固定维度。通用 embeddings 接口会将维度转发给供应商，
+                # 而 RAGFlow 的原生连接测试和实际入库调用都使用模型的默认输出。
+                try:
+                    await self.client.model_request("POST", f"{PREFIX}/providers/{provider}/connection", {
+                        "api_key": body["api_key"],
+                        "model_info": [{"model_name": name, "model_type": ["embedding"]}],
+                    })
+                except ApplicationError as exc:
+                    if exc.code != "RAGFLOW_REJECTED":
+                        raise
+                    raise ApplicationError(
+                        "RAGFLOW_EMBEDDING_PROBE_FAILED",
+                        "硅基流动连接测试失败，请检查 API Key、模型权限和 RAGFlow 容器的外网连接",
+                        422,
+                    ) from exc
             await self.client.model_request("POST", path, body)
-            try:
-                result = await self.client.model_request("POST", f"{PREFIX}/embeddings", {
-                    "provider_name": provider,
-                    "instance_name": instance,
-                    "model_name": name,
-                    "texts": [PROBE_TEXT],
-                    "dimension": dimension,
-                })
-                # 上游可能返回成功却没有向量，不能因此切换现有工作负载。
-                row = result[0] if isinstance(result, list) and result else None
-                vector = row.get("embedding") if isinstance(row, dict) else None
-                if not isinstance(vector, list) or len(vector) != dimension:
-                    raise ApplicationError("RAGFLOW_EMBEDDING_DIMENSION", "模型返回的向量维度与配置不一致", 422)
-            except ApplicationError as exc:
-                await self._discard_candidate(path, instance)
-                if exc.code == "RAGFLOW_EMBEDDING_DIMENSION":
-                    raise
-                raise ApplicationError(
-                    "RAGFLOW_EMBEDDING_PROBE_FAILED", "Embedding 测试失败，请检查供应商、密钥、模型和连接地址", 422
-                ) from exc
+            if not native_probe:
+                await self._verify_dimension(path, provider, instance, name, dimension)
             # 默认更新超时时无法确定是否已提交，保留候选以免删除当前默认模型。
             await self.client.model_request("PATCH", f"{PREFIX}/models/default", {
                 "model_provider": provider, "model_instance": instance, "model_name": name, "model_type": "embedding"
@@ -101,6 +100,28 @@ class RagflowModelService:
             return EmbeddingStatus(
                 state="ready", model=ActiveEmbedding(provider=provider, name=name, instance=instance)
             )
+
+    async def _verify_dimension(self, path: str, provider: str, instance: str, name: str, dimension: int) -> None:
+        """用候选实例检查向量长度，失败时删除候选以保留当前默认配置。"""
+        try:
+            result = await self.client.model_request("POST", f"{PREFIX}/embeddings", {
+                "provider_name": provider,
+                "instance_name": instance,
+                "model_name": name,
+                "texts": [PROBE_TEXT],
+                "dimension": dimension,
+            })
+            row = result[0] if isinstance(result, list) and result else None
+            vector = row.get("embedding") if isinstance(row, dict) else None
+            if not isinstance(vector, list) or len(vector) != dimension:
+                raise ApplicationError("RAGFLOW_EMBEDDING_DIMENSION", "模型返回的向量维度与配置不一致", 422)
+        except ApplicationError as exc:
+            await self._discard_candidate(path, instance)
+            if exc.code != "RAGFLOW_REJECTED":
+                raise
+            raise ApplicationError(
+                "RAGFLOW_EMBEDDING_PROBE_FAILED", "Embedding 测试失败，请检查供应商、密钥、模型和连接地址", 422
+            ) from exc
 
     async def _ensure_provider(self, provider: str) -> None:
         """新租户必须先登记供应商，已有供应商可直接复用。"""

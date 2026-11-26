@@ -111,6 +111,7 @@ class Settings(BaseSettings):
     # channel_version 前三段必须是 openclaw-weixin 插件版本，宿主版本放在斜杠后面。
     channel_enabled: bool = True
     channel_token_key: SecretStr = SecretStr("")
+    channel_token_key_file: Path | None = None
     channel_reply_window_hours: int = Field(default=24, ge=1, le=168)
     channel_window_reminder_hours: int = Field(default=2, ge=0, le=23)
     channel_progress_after_seconds: float = Field(default=10, ge=0, le=120)

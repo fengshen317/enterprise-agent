@@ -105,7 +105,7 @@ FastAPI 默认使用 Compose 内网地址 `http://ragflow:80`。内置部署的 
 
 1. 使用工作台系统管理员登录，从「API 配置」进入「管理知识库模型」。
 2. 选择硅基流动 BGE-M3、OpenAI Embedding 或自定义 OpenAI 兼容服务，并填写供应商 API Key。自定义服务还需填写 Base URL、模型 ID、向量维度、批量上限和最大 Token 数。
-3. 点击「验证并启用」。后端用 RAGFlow 发起 Embedding 调用并核对维度，成功后设置新知识库的默认模型。已创建的知识库继续使用原模型及其供应商凭据。若已有部署设置了 `EA_RAGFLOW_EMBEDDING_MODEL`，先移除该覆盖值并应用容器配置，再在工作台切换默认模型。
+3. 点击「验证并启用」。硅基流动 BGE-M3 通过 RAGFlow 的供应商连接检查调用模型，使用原生的 1024 维输出。其他选项会检查测试调用返回的向量长度。测试成功后设置新知识库的默认模型，已有知识库继续使用各自的模型和凭据。若部署设置了 `EA_RAGFLOW_EMBEDDING_MODEL`，先移除该覆盖值并应用容器配置，再在工作台切换默认模型。
 4. 在工作台新建知识库，上传小文档，等待解析完成，再执行检索测试。
 
 已有独立 RAGFlow 的部署可填写原实例的 `EA_RAGFLOW_BASE_URL` 和 `EA_RAGFLOW_API_KEY`，保留原服务账号和数据集。沿用已有内置实例时也可直接填原 Key。若希望初始化任务接管已有内置实例，使用 `EA_RAGFLOW_ADMIN_PASSWORD` 提供原 RAGFlow 超级管理员密码。
@@ -128,7 +128,8 @@ docker compose exec ragflow cat /var/lib/ea-ragflow-admin/admin-password
 
 ## 可选集成
 
-- 微信 iLink 和个人连接器的部署加密密钥沿用 `backend/.env.example` 中的后端配置项，填写在根目录 `.env`。首次启用时分别生成 Fernet 密钥并持久保存。迁移数据库时须沿用原有的 `EA_CHANNEL_TOKEN_KEY` 和 `EA_CONNECTOR_CREDENTIAL_KEY`，供已有凭证解密。
+- 微信 iLink 默认随 Compose 启用。首次启动时，API 在 `api_home` 卷的 `.enterprise-agent/wechat-token.key` 保存本实例的加密密钥。启动后可直接在「通讯通道 → 微信」点「绑定微信」。迁移已绑定的实例时，保留该卷，或在根目录 `.env` 填写原有的 `EA_CHANNEL_TOKEN_KEY`。显式配置优先，用于兼容以前手动设置密钥的实例。
+- 个人连接器使用 `EA_CONNECTOR_CREDENTIAL_KEY`。启用时在根目录 `.env` 填写独立密钥。迁移数据库时沿用原值。
 
   ```bash
   docker compose exec api python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
@@ -172,7 +173,7 @@ docker compose exec -T db sh -ec 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" 
 docker compose exec -T db pg_restore --list < "$backup"
 ```
 
-将数据库备份和生成的部署密钥保存在受限位置。备份 `postgres_credentials` 和 `api_home`，后者保存 CLI 授权及解密工作台 API 配置所需的 `.enterprise-agent/integration-config.key`。若使用知识库，应同时保存 RAGFlow 的持久化数据卷与 `ragflow_service_credentials`、`ragflow_admin_state`、`ragflow_api_credentials`。只恢复工作台数据库时，其中的知识库仍会引用原 RAGFlow dataset。数据库卷初始化后，轮换密码时须同步修改服务账号和根目录 `.env`。
+将数据库备份和生成的部署密钥保存在受限位置。备份 `postgres_credentials` 和 `api_home`，后者保存 CLI 授权、工作台 API 配置密钥 `.enterprise-agent/integration-config.key` 和微信绑定密钥 `.enterprise-agent/wechat-token.key`。若使用知识库，应同时保存 RAGFlow 的持久化数据卷与 `ragflow_service_credentials`、`ragflow_admin_state`、`ragflow_api_credentials`。只恢复工作台数据库时，其中的知识库仍会引用原 RAGFlow dataset。数据库卷初始化后，轮换密码时须同步修改服务账号和根目录 `.env`。
 
 更新到目标应用版本后构建镜像，安排短暂停机以确保迁移期间没有旧 API 写入。
 
@@ -198,6 +199,8 @@ docker compose logs --tail=100 api web db
 | RAGFlow 未就绪 | 检查 `docker compose ps`、`docker compose logs ragflow ragflow-search ragflow-db`、内存和 `vm.max_map_count` |
 | 服务账号初始化失败 | 检查 `docker compose logs ragflow-init ragflow`。已有内置实例可提供原 API Key，或核对原超级管理员密码 |
 | 工作台知识库无法创建或检索 | 先在「知识库模型」查看默认 Embedding 和验证结果，再检查 RAGFlow 日志 |
+| 硅基流动验证失败 | 检查供应商 API Key、`BAAI/bge-m3` 模型权限和 RAGFlow 容器的外网连接。若页面提示域名解析成非公网地址，在部署机运行 `docker compose exec -T ragflow getent ahostsv4 api.siliconflow.cn`。若返回 `198.18.*` 等 Fake-IP，给 `api.siliconflow.cn` 添加代理 Fake-IP 排除规则，或为容器使用能返回公网地址的 DNS，然后重新验证 |
+| 微信绑定提示未配置密钥 | 查看 `docker compose logs api`。迁移已绑定实例后出现此提示时，恢复原 `api_home` 卷或设置原 `EA_CHANNEL_TOKEN_KEY` |
 | 登录报请求来源不受信任 | 检查浏览器实际地址是否为 `https://` 加 `EA_DEPLOY_DOMAIN` |
 | 页面可打开但真实问答失败 | 检查「API 配置」中的供应商、模型 ID 和密钥，再检查容器出站网络和 API 日志 |
 

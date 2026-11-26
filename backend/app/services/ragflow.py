@@ -13,6 +13,23 @@ from app.core.errors import ApplicationError
 logger = logging.getLogger(__name__)
 
 
+def _model_rejection(message: object) -> ApplicationError:
+    """把已知供应商错误映射为固定提示，避免返回带凭据的上游正文。"""
+    reason = message.lower() if isinstance(message, str) else ""
+    if "url resolves to a non-public address" in reason:
+        return ApplicationError(
+            "RAGFLOW_MODEL_DNS_BLOCKED",
+            "RAGFlow 将供应商域名解析到了非公网地址，请检查容器 DNS 或代理的 Fake-IP 排除规则",
+            422,
+        )
+    key_errors = ("401 unauthorized", "invalid token", "invalid api key", "incorrect api key")
+    if any(marker in reason for marker in key_errors):
+        return ApplicationError("RAGFLOW_MODEL_API_KEY_REJECTED", "供应商拒绝了 API Key，请检查密钥和模型权限", 422)
+    if any(marker in reason for marker in ("429 too many requests", "rate limiting", "rate limit reached")):
+        return ApplicationError("RAGFLOW_MODEL_RATE_LIMITED", "供应商触发了调用频率限制，请稍后重试", 429)
+    return ApplicationError("RAGFLOW_REJECTED", "知识库服务拒绝了本次操作，请检查配置或文档", 502)
+
+
 @dataclass(frozen=True)
 class DatasetInfo:
     """创建知识库后需要保存的 RAGFlow 信息。"""
@@ -233,15 +250,18 @@ class RagflowClient:
             raise ApplicationError("RAGFLOW_INVALID_RESPONSE", "知识库服务返回格式不正确", 502)
         code = payload.get("code")
         if response.status_code >= 400 or (code is not None and code != 0):
+            message = payload.get("message", "")
             logger.warning(
                 "ragflow_rejected",
                 extra={
                     "path": path,
                     "status": response.status_code,
-                    "code": code,
-                    "ragflow_message": str(payload.get("message", ""))[:300] if log_details else "",
+                    "code": code if log_details or type(code) is int else None,
+                    "ragflow_message": str(message)[:300] if log_details else "",
                 },
             )
+            if not log_details:
+                raise _model_rejection(message)
             raise ApplicationError("RAGFLOW_REJECTED", "知识库服务拒绝了本次操作，请检查配置或文档", 502)
         return payload
 

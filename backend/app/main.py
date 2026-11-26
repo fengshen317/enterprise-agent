@@ -167,7 +167,7 @@ def create_app(
         schedule_runtime = ScheduleRuntime(database, config, runtime, schedule_store)
         app.state.schedule_runtime = schedule_runtime
         await schedule_runtime.start()
-        channel_crypto = ChannelCrypto(config)
+        channel_crypto = await ChannelCrypto.load(config, database.session_factory)
         ilink = ILinkClient(config)
         channel_store = ChannelStore(database.session_factory, channel_crypto)
         app.state.channel_service = ChannelService(channel_store, ilink, channel_crypto, config)

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -22,6 +23,40 @@ from app.core.errors import ApplicationError
 from app.schemas.auth import ResourceScope
 from app.schemas.chat import MessageView, RunSnapshot, RunView
 from app.services.approvals import ApprovalNotice
+
+
+async def test_deployment_channel_key_survives_restart(tmp_path: Path) -> None:
+    """空安装自动保存密钥，已有绑定重启后仍能解密，显式密钥优先。"""
+    path = tmp_path / ".enterprise-agent" / "wechat-token.key"
+    settings = _settings(channel_token_key=SecretStr(""), channel_token_key_file=path)
+    factory = MagicMock()
+    factory.return_value.__aenter__.return_value.scalar = AsyncMock(return_value=False)
+
+    first = await ChannelCrypto.load(settings, factory)
+    ciphertext = first.encrypt("fixture-bot-token")
+    stored_key = path.read_bytes()
+
+    factory.reset_mock()
+    restarted = await ChannelCrypto.load(settings, factory)
+    assert restarted.decrypt(ciphertext) == "fixture-bot-token"
+    factory.assert_not_called()
+
+    override_key = Fernet.generate_key()
+    override = settings.model_copy(update={"channel_token_key": SecretStr(override_key.decode())})
+    explicit = await ChannelCrypto.load(override, factory)
+    assert Fernet(override_key).decrypt(explicit.encrypt("fixture-bot-token").encode()) == b"fixture-bot-token"
+    assert path.read_bytes() == stored_key
+
+
+async def test_missing_channel_key_does_not_replace_key_for_existing_bindings(tmp_path: Path) -> None:
+    """数据库从备份还原后，缺失密钥时等待管理员恢复原密钥。"""
+    path = tmp_path / "wechat-token.key"
+    settings = _settings(channel_token_key=SecretStr(""), channel_token_key_file=path)
+    factory = MagicMock()
+    factory.return_value.__aenter__.return_value.scalar = AsyncMock(return_value=True)
+
+    assert not (await ChannelCrypto.load(settings, factory)).configured
+    assert not path.exists()
 
 
 class MemoryStore:
