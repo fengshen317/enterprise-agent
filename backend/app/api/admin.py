@@ -11,8 +11,10 @@ from app.capabilities.registry import ToolRegistry
 from app.core.errors import ApplicationError
 from app.schemas.admin import AdminAuditView, MemberCreate, MemberPage, MemberUpdate, MemberView
 from app.schemas.auth import ResourceScope
+from app.schemas.model_profiles import ModelProfileDraft, ModelProfileView
 from app.services.admin import AdminService
-from app.services.config_service import ConfigItem, ConfigService
+from app.services.config_probe import ConfigCheck, probe_connections
+from app.services.config_service import ConfigGroup, ConfigItem, ConfigService
 
 router = APIRouter(prefix="/api/admin", tags=["空间成员管理"])
 
@@ -162,6 +164,75 @@ class ConfigUpdateRequest(BaseModel):
     configs: list[ConfigUpdateItem] = Field(min_length=1, max_length=20)
 
 
+class ConfigTestRequest(BaseModel):
+    """配置分组与当前表单的临时覆盖值。"""
+
+    model_config = ConfigDict(extra="forbid")
+    group: ConfigGroup
+    configs: list[ConfigUpdateItem] = Field(default_factory=list, max_length=20)
+
+
+def _config_values(items: list[ConfigUpdateItem]) -> dict[str, str]:
+    """拒绝重复键，避免一条测试请求包含相互矛盾的输入。"""
+    values = {item.key: item.value for item in items}
+    if len(values) != len(items):
+        raise ApplicationError("CONFIG_KEY_DUPLICATE", "同一配置项只能提交一次", 422)
+    return values
+
+
+@router.post("/configs/test", response_model=list[ConfigCheck])
+async def test_configs(
+    body: ConfigTestRequest, request: Request, response: Response, identity: SystemAdminDependency
+) -> list[ConfigCheck]:
+    """以系统管理员权限测试当前表单值并返回脱敏的逐项结果。"""
+    response.headers["Cache-Control"] = "no-store"
+    config_service: ConfigService = request.app.state.config_service
+    candidate = await config_service.settings_for_test(body.group, _config_values(body.configs))
+    return await probe_connections(candidate, body.group)
+
+
+@router.get("/model-profiles", response_model=list[ModelProfileView])
+async def list_model_profiles(
+    request: Request, response: Response, identity: SystemAdminDependency
+) -> list[ModelProfileView]:
+    """列出保存的模型，返回配置状态而非明文凭据。"""
+    response.headers["Cache-Control"] = "no-store"
+    config_service: ConfigService = request.app.state.config_service
+    return await config_service.list_model_profiles()
+
+
+@router.post("/model-profiles", response_model=ModelProfileView, status_code=201)
+async def add_model_profile(
+    body: ModelProfileDraft, request: Request, response: Response, identity: SystemAdminDependency
+) -> ModelProfileView:
+    """保存独立模型，默认选择由管理员另行操作。"""
+    response.headers["Cache-Control"] = "no-store"
+    config_service: ConfigService = request.app.state.config_service
+    return await config_service.add_model_profile(body, identity.user_id)
+
+
+@router.post("/model-profiles/test", response_model=list[ConfigCheck])
+async def test_model_profile(
+    body: ModelProfileDraft, request: Request, response: Response, identity: SystemAdminDependency
+) -> list[ConfigCheck]:
+    """使用所填供应商和独立密钥验证模型，再由管理员自行保存。"""
+    response.headers["Cache-Control"] = "no-store"
+    config_service: ConfigService = request.app.state.config_service
+    candidate = await config_service.settings_for_test("llm", body.config_values())
+    return await probe_connections(candidate, "llm")
+
+
+@router.post("/model-profiles/{profile_id}/activate", response_model=list[ConfigItem])
+async def activate_model_profile(
+    profile_id: UUID, request: Request, response: Response, identity: SystemAdminDependency
+) -> list[ConfigItem]:
+    """切换默认模型并返回工作台生效配置，供前端同步表单。"""
+    response.headers["Cache-Control"] = "no-store"
+    config_service: ConfigService = request.app.state.config_service
+    await config_service.activate_model_profile(profile_id, identity.user_id)
+    return await config_service.list_configs()
+
+
 @router.post("/configs", response_model=list[ConfigItem])
 async def update_configs(
     body: ConfigUpdateRequest, request: Request, response: Response, identity: SystemAdminDependency
@@ -178,9 +249,7 @@ async def update_configs(
         更新后的配置项列表。
     """
     config_service: ConfigService = request.app.state.config_service
-    values = {item.key: item.value for item in body.configs}
-    if len(values) != len(body.configs):
-        raise ApplicationError("CONFIG_KEY_DUPLICATE", "同一配置项只能提交一次", 422)
+    values = _config_values(body.configs)
     await config_service.update(values, identity.user_id)
     if any(key.startswith(("tavily_", "web_search_")) for key in values):
         registry: ToolRegistry = request.app.state.tool_registry
