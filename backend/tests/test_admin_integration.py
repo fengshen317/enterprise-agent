@@ -1,12 +1,16 @@
 """空间管理员管理成员与角色的真实 PostgreSQL 验收。"""
 
 import asyncio
+from base64 import b64decode
+from io import BytesIO
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient, Response
+from httpx import ASGITransport, AsyncClient, HTTPStatusError, Request, Response
+from langchain_core.messages import AIMessage, HumanMessage
+from PIL import Image
 from pydantic import SecretStr
 from sqlalchemy import delete, func, select
 
@@ -15,8 +19,15 @@ from app.core.security import hash_password
 from app.models.admin_audit import AdminAudit
 from app.models.config import IntegrationConfig
 from app.models.identity import User, Workspace, WorkspaceMembership
+from app.services import config_probe
 from app.services.accounts import member_initial_password
-from app.services.config_service import ENCRYPTED_PREFIX, ConfigService
+from app.services.config_service import (
+    ACTIVE_PROFILE_KEY,
+    ENCRYPTED_PREFIX,
+    MODEL_CONNECTION_KEYS,
+    PROFILE_PREFIX,
+    ConfigService,
+)
 from tests.auth_helpers import add_identity, copied_headers
 from tests.test_chat_integration import ControlledProvider, new_conversation, settled, submit
 from tests.test_chat_integration import chat as chat
@@ -94,6 +105,155 @@ async def test_deployment_api_settings(chat: tuple[FastAPI, AsyncClient, Control
     finally:
         async with factory.begin() as session:
             await session.execute(delete(IntegrationConfig).where(IntegrationConfig.key.in_(tuple(values))))
+            for row in before:
+                await session.merge(row)
+
+
+async def test_api_settings_probe_uses_temporary_credentials(
+    chat: tuple[FastAPI, AsyncClient, ControlledProvider], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """串起真实 API 鉴权、临时配置合并和脱敏结果，不调用付费供应商。"""
+    app, client, _ = chat
+    settings: Settings = app.state.settings
+    path = "/api/admin/configs/test"
+    assert (await client.post(path, json={"group": "llm"})).status_code == 403
+    settings.system_admin_username = (await client.get("/api/auth/me")).json()["user"]["username"]
+    settings.llm_provider = "openai_compatible"
+    settings.llm_base_url = "https://configured.example.invalid/v1"
+    settings.llm_model = "old-text-model"
+    settings.llm_vision_model = "saved-image-model"
+    settings.llm_api_key = SecretStr("stored-model-key")
+    settings.tavily_api_key = SecretStr("stored-search-key")
+    calls: list[tuple[str, str, bool]] = []
+
+    class ProbeModel:
+        """验证探针使用正确的调用形态和可解码的内置图片。"""
+
+        def __init__(self, vision: bool) -> None:
+            """记录是文本还是图文调用。"""
+            self.vision = vision
+
+        async def ainvoke(self, messages: list[HumanMessage]) -> AIMessage:
+            """返回文本成功和带敏感正文的图文拒绝。"""
+            content = messages[0].content
+            if self.vision:
+                assert isinstance(content, list) and isinstance(content[1], dict)
+                url = content[1]["image_url"]["url"]
+                with Image.open(BytesIO(b64decode(url.split(",", 1)[1], validate=True))) as image:
+                    assert image.size == (64, 64)
+                    image.verify()
+                request = Request("POST", "https://configured.example.invalid/v1/chat/completions")
+                raise HTTPStatusError("upstream echoed stored-model-key", request=request, response=Response(403))
+            assert isinstance(content, str)
+            return AIMessage(content="OK")
+
+    def model(candidate: Settings, *, max_tokens: int, vision: bool) -> ProbeModel:
+        """记录发给模型客户端的实际配置快照。"""
+        assert max_tokens <= config_probe.PROBE_TOKENS
+        model_id = candidate.llm_vision_model if vision else candidate.llm_model
+        calls.append((model_id, candidate.llm_api_key.get_secret_value(), vision))
+        return ProbeModel(vision)
+
+    async def search(api_key: str, query: str, max_results: int, timeout_seconds: float) -> list[dict[str, str]]:
+        """检查 Tavily 使用已保存密钥和一条搜索结果上限。"""
+        assert api_key == "stored-search-key" and query and max_results == 1 and timeout_seconds > 0
+        return []
+
+    monkeypatch.setattr(config_probe, "create_llm", model)
+    monkeypatch.setattr(config_probe, "search_tavily", search)
+    del client.headers["X-Workspace-ID"]
+    wrong_csrf = await client.post(path, json={"group": "llm"}, headers={"X-CSRF-Token": "wrong"})
+    assert wrong_csrf.status_code == 403
+    changed_url = await client.post(path, json={
+        "group": "llm", "configs": [{"key": "llm_base_url", "value": "https://other.example.invalid/v1"}]
+    })
+    assert changed_url.status_code == 422 and changed_url.json()["error"]["code"] == "CONFIG_LLM_KEY_REQUIRED"
+    assert not calls
+    response = await client.post(path, json={
+        "group": "llm", "configs": [{"key": "llm_model", "value": "draft-text-model"}]
+    })
+    assert response.status_code == 200 and response.headers["Cache-Control"] == "no-store"
+    assert [(item["check"], item["ok"]) for item in response.json()] == [("text", True), ("vision", False)]
+    assert "stored-model-key" not in response.text and "API Key" in response.json()[1]["message"]
+    assert calls == [("draft-text-model", "stored-model-key", False), ("saved-image-model", "stored-model-key", True)]
+    assert settings.llm_model == "old-text-model"
+    assert (await client.post(path, json={"group": "search"})).json()[0]["ok"] is True
+    assert (await client.post(path, json={
+        "group": "search", "configs": [{"key": "tavily_api_key", "value": ""}]
+    })).json()[0]["ok"] is False
+    assert settings.tavily_api_key.get_secret_value() == "stored-search-key"
+
+
+async def test_add_test_and_switch_saved_models(
+    chat: tuple[FastAPI, AsyncClient, ControlledProvider], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """持久化两份独立配置并切换，保证测试和添加期间当前模型保持可用。"""
+    app, client, _ = chat
+    settings: Settings = app.state.settings
+    path = "/api/admin/model-profiles"
+    assert (await client.get(path)).status_code == 403
+    settings.system_admin_username = (await client.get("/api/auth/me")).json()["user"]["username"]
+    settings.integration_config_key_file = tmp_path / "configured-key"
+    original_model = settings.active_llm_model
+    factory = app.state.database.session_factory
+    keys = list(MODEL_CONNECTION_KEYS | {ACTIVE_PROFILE_KEY})
+    created: list[str] = []
+    async with factory() as session:
+        before = (await session.scalars(select(IntegrationConfig).where(IntegrationConfig.key.in_(keys)))).all()
+
+    async def probe(candidate: Settings, group: str) -> list[config_probe.ConfigCheck]:
+        """测试新模型始终使用表单凭据，空值表示本模型无鉴权。"""
+        assert group == "llm" and candidate.llm_model == "model-one"
+        assert candidate.llm_api_key.get_secret_value() == ""
+        return [config_probe.ConfigCheck(check="text", ok=True, message="调用成功")]
+
+    monkeypatch.setattr("app.api.admin.probe_connections", probe)
+    first = {
+        "name": "本地文本模型", "provider": "openai_compatible", "model_id": "model-one",
+        "base_url": "http://llm-one.invalid/v1", "api_key": "first-model-key",
+    }
+    second = {"name": "团队图片模型", "provider": "openai_compatible", "model_id": "model-two",
+              "base_url": "https://llm-two.invalid/v1", "api_key": "second-model-key", "vision_model_id": "vision-two"}
+    try:
+        invalid = await client.post(path, json={**first, "base_url": "https://user:pass@provider.invalid/v1"})
+        assert invalid.status_code == 422
+        for payload in (first, second):
+            response = await client.post(path, json=payload)
+            assert response.status_code == 201, response.text
+            assert response.headers["Cache-Control"] == "no-store"
+            assert payload["api_key"] not in response.text
+            item = response.json()
+            assert item["has_api_key"] and not item["active"]
+            created.append(item["id"])
+        assert settings.active_llm_model == original_model
+        probe_result = await client.post(f"{path}/test", json={**first, "api_key": ""})
+        assert probe_result.status_code == 200 and probe_result.json()[0]["ok"] is True
+        assert settings.active_llm_model == original_model
+        for profile_id, payload in zip(created, (first, second), strict=True):
+            response = await client.post(f"{path}/{profile_id}/activate")
+            assert response.status_code == 200 and payload["api_key"] not in response.text
+            assert settings.llm_api_key.get_secret_value() == payload["api_key"]
+            assert settings.active_llm_model == payload["model_id"]
+        profiles = await client.get(path)
+        assert "second-model-key" not in profiles.text
+        assert [item["id"] for item in profiles.json() if item["active"]] == [created[-1]]
+        async with factory() as session:
+            row = await session.get(IntegrationConfig, f"{PROFILE_PREFIX}{created[-1]}")
+            assert row is not None and row.value.startswith(ENCRYPTED_PREFIX) and "second-model-key" not in row.value
+        fresh = Settings(_env_file=None, integration_config_key_file=settings.integration_config_key_file)
+        await ConfigService(factory, fresh).load()
+        assert fresh.active_llm_model == "model-two" and fresh.llm_api_key.get_secret_value() == "second-model-key"
+        changed = await client.post("/api/admin/configs", json={"configs": [{"key": "llm_model", "value": "manual"}]})
+        assert changed.status_code == 200
+        assert not any(item["active"] for item in (await client.get(path)).json())
+        settings.integration_config_key_file = tmp_path / "missing-key"
+        assert (await client.post(path, json=first)).status_code == 503
+        assert not settings.integration_config_key_file.exists()
+    finally:
+        async with factory.begin() as session:
+            await session.execute(delete(IntegrationConfig).where(IntegrationConfig.key.in_(
+                [*keys, *(f"{PROFILE_PREFIX}{profile_id}" for profile_id in created)]
+            )))
             for row in before:
                 await session.merge(row)
 
