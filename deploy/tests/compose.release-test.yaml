@@ -1,0 +1,10 @@
+# 只隔离测试未用到的外部服务，沿用发布包的 API 启动、数据库和 Funnel 源站配置。
+services:
+  api:
+    restart: "no"
+    depends_on: !override
+      db:
+        condition: service_healthy
+    environment:
+      EA_KNOWLEDGE_ENABLED: "false"
+      EA_SCHEDULE_ENABLED: "false"
