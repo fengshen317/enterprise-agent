@@ -86,7 +86,6 @@ services:
       EA_AUTH_TRUSTED_ORIGINS: '["https://${EA_DEPLOY_DOMAIN:?请在 .env 中设置部署域名}"]'
       EA_PUBLIC_APP_BASE_URL: https://${EA_DEPLOY_DOMAIN:?请在 .env 中设置部署域名}
       EA_INITIAL_SETUP_TOKEN_FILE: /home/enterprise-agent/.enterprise-agent/setup-token
-      EA_CHANNEL_TOKEN_KEY_FILE: /home/enterprise-agent/.enterprise-agent/wechat-token.key
       EA_RAGFLOW_API_KEY_FILE: /var/lib/ea-ragflow-api/api-key
       # 工作台通过 API Key 访问，RAGFlow 内部服务密码只给其子栈。
       EA_RAGFLOW_SERVICE_PASSWORD: ""

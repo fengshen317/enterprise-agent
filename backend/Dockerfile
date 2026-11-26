@@ -10,9 +10,11 @@ RUN uv export --locked --no-dev --no-emit-project --output-file /tmp/requirement
     && uv pip sync --default-index "$EA_PYPI_INDEX_URL" --require-hashes /tmp/requirements.txt
 
 FROM python:3.13-slim-bookworm
+# 微信密钥保存在 API 主目录的持久卷中，镜像升级可沿用已安装的 Compose。
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    EA_CHANNEL_TOKEN_KEY_FILE=/home/enterprise-agent/.enterprise-agent/wechat-token.key
 RUN groupadd --gid 10001 enterprise-agent \
     && useradd --uid 10001 --gid enterprise-agent --create-home enterprise-agent
 WORKDIR /app

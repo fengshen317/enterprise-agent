@@ -20,7 +20,7 @@
 
 ## 配置
 
-见 `backend/.env.example` 的 `EA_CHANNEL_*` 和 `EA_ILINK_*`。Compose 通过 `EA_CHANNEL_TOKEN_KEY_FILE` 指定 `api_home` 卷里的持久密钥文件。启用渠道且没有已有微信绑定时，API 在密钥文件缺失时原子生成。显式 `EA_CHANNEL_TOKEN_KEY` 优先，适用于保留原来手动设置的密钥。本地开发可继续在 `backend/.env` 手动配置。
+见 `backend/.env.example` 的 `EA_CHANNEL_*` 和 `EA_ILINK_*`。API 镜像用 `EA_CHANNEL_TOKEN_KEY_FILE` 指定持久密钥文件，Compose 的 `api_home` 卷保存该文件。已安装的 Compose 可通过应用镜像升级获得此能力。启用渠道且没有已有微信绑定时，API 在密钥文件缺失时原子生成。显式 `EA_CHANNEL_TOKEN_KEY` 优先，适用于保留原来手动设置的密钥。本地开发可继续在 `backend/.env` 手动配置。
 
 数据库已有绑定但密钥缺失时，绑定接口返回 `CHANNEL_NOT_CONFIGURED`，轮询保持关闭。迁移时须恢复原密钥文件或提供原 `EA_CHANNEL_TOKEN_KEY`，已有密文才能继续使用。
 

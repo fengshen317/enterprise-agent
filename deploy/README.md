@@ -128,7 +128,7 @@ docker compose exec ragflow cat /var/lib/ea-ragflow-admin/admin-password
 
 ## 可选集成
 
-- 微信 iLink 默认随 Compose 启用。首次启动时，API 在 `api_home` 卷的 `.enterprise-agent/wechat-token.key` 保存本实例的加密密钥。启动后可直接在「通讯通道 → 微信」点「绑定微信」。迁移已绑定的实例时，保留该卷，或在根目录 `.env` 填写原有的 `EA_CHANNEL_TOKEN_KEY`。显式配置优先，用于兼容以前手动设置密钥的实例。
+- 微信 iLink 默认启用。API 镜像默认在 `api_home` 卷的 `.enterprise-agent/wechat-token.key` 保存本实例的加密密钥，已有部署可随镜像升级启用。启动后可直接在「通讯通道 → 微信」点「绑定微信」。迁移已绑定的实例时，保留该卷，或在根目录 `.env` 填写原有的 `EA_CHANNEL_TOKEN_KEY`。显式配置优先，用于兼容以前手动设置密钥的实例。
 - 个人连接器使用 `EA_CONNECTOR_CREDENTIAL_KEY`。启用时在根目录 `.env` 填写独立密钥。迁移数据库时沿用原值。
 
   ```bash
