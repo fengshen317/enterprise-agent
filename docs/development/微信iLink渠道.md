@@ -8,7 +8,7 @@
 
 - 工作台侧栏的「通讯通道」进入目录页 `/channels`。目录中的「管理微信」进入原配置页 `/channels/wechat`。飞书、QQ 聊天和钉钉在目录中标记为规划中的通道，接入、账号绑定和消息收发待实现。现有 QQ 邮箱仍在「能力中心 → 插件」管理。
 
-- 登录用户在 `/channels/wechat` 取码、轮询、查看和解绑。iLink 返回的 `qrcode_img_content` 是待编码的登录链接，不是图片地址；前端在本地生成二维码，并保留「在浏览器打开」作为失败降级。扫码确认后，iLink 账号绑定到该系统用户，初始空间是当时选中的工作空间。`bot_token` 用 Fernet 加密，密钥为 `EA_CHANNEL_TOKEN_KEY`。
+- 登录用户在 `/channels/wechat` 取码、轮询、查看和解绑。iLink 返回的 `qrcode_img_content` 是待编码的登录链接，不是图片地址；前端在本地生成二维码，并保留「在浏览器打开」作为失败降级。扫码确认后，iLink 账号绑定到该系统用户，初始空间是当时选中的工作空间。`bot_token` 使用本部署的 Fernet 密钥加密。
 - 绑定状态使用串行轮询：上一次请求完成后再等待 2 秒发起下一次，避免慢请求重叠。网页取码超时为 20 秒，状态轮询超时为 15 秒，均覆盖后端访问 iLink 的最长等待时间。
 - `ChannelRuntime` 在拥有问答 advisory lock 的同一进程里，按账号再拿一把锁（`782341920` + 账号散列）做 `getUpdates` 长轮询。这样审批等待能唤醒本进程的 `ApprovalBroker`。
 - 入站文本进入该用户当前空间的固定对话，并调用现有 `ChatRuntime.create_run`。生成过程中发 typing；超过 `EA_CHANNEL_PROGRESS_AFTER_SECONDS`（默认 10 秒）按当前工具发一句进度，相同内容按 `EA_CHANNEL_PROGRESS_INTERVAL_SECONDS` 节流。结束后把 Markdown 收成纯文本，超长时只发开头并附上 `EA_PUBLIC_APP_BASE_URL` 下的网页对话链接。
@@ -20,7 +20,9 @@
 
 ## 配置
 
-见 `backend/.env.example` 的 `EA_CHANNEL_*` 和 `EA_ILINK_*`。未配置密钥时，绑定接口返回 `CHANNEL_NOT_CONFIGURED`，也不会启动轮询。
+见 `backend/.env.example` 的 `EA_CHANNEL_*` 和 `EA_ILINK_*`。Compose 通过 `EA_CHANNEL_TOKEN_KEY_FILE` 指定 `api_home` 卷里的持久密钥文件。启用渠道且没有已有微信绑定时，API 在密钥文件缺失时原子生成。显式 `EA_CHANNEL_TOKEN_KEY` 优先，适用于保留原来手动设置的密钥。本地开发可继续在 `backend/.env` 手动配置。
+
+数据库已有绑定但密钥缺失时，绑定接口返回 `CHANNEL_NOT_CONFIGURED`，轮询保持关闭。迁移时须恢复原密钥文件或提供原 `EA_CHANNEL_TOKEN_KEY`，已有密文才能继续使用。
 
 `EA_ILINK_CHANNEL_VERSION` 默认 `3.0.0/enterprise-agent-0.1.0`。协议要求前三段是 openclaw-weixin 插件版本，本系统版本放在 `/` 后面。`iLink-App-ClientVersion` 只编码前三段，`3.0.0` 为十进制 `196608`。插件版本升级后要一起改这个配置。
 

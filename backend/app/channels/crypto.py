@@ -1,13 +1,18 @@
-"""用 Fernet 加密 iLink bot_token，密钥只来自配置。"""
+"""用部署持久保存的 Fernet 密钥加密 iLink bot_token。"""
 
 from __future__ import annotations
 
 import logging
 
 from cryptography.fernet import Fernet, InvalidToken
+from sqlalchemy import exists, select
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
 from app.core.errors import ApplicationError
+from app.core.secret_files import cipher_for
+from app.models.channel import ChannelAccount
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +24,7 @@ class ChannelCrypto:
         """从配置加载 Fernet 密钥。
 
         Args:
-            settings: 应用配置。空密钥表示不启用渠道。
+            settings: 应用配置。显式密钥优先于文件密钥。
         """
         raw = settings.channel_token_key.get_secret_value().strip()
         self._fernet: Fernet | None = None
@@ -29,6 +34,29 @@ class ChannelCrypto:
             self._fernet = Fernet(raw.encode())
         except (ValueError, TypeError):
             logger.error("channel_token_key_invalid")
+
+    @classmethod
+    async def load(cls, settings: Settings, factory: async_sessionmaker[AsyncSession]) -> ChannelCrypto:
+        """加载微信加密器，只为尚未绑定微信的部署生成密钥。"""
+        crypto = cls(settings)
+        path = settings.channel_token_key_file
+        if not settings.channel_enabled or settings.channel_token_key.get_secret_value().strip() or path is None:
+            return crypto
+        try:
+            try:
+                crypto._fernet = cipher_for(path, create=False)
+            except FileNotFoundError:
+                async with factory() as session:
+                    has_bindings = await session.scalar(select(exists().where(
+                        ChannelAccount.status != "unbound", ChannelAccount.bot_token_ciphertext != ""
+                    )))
+                if has_bindings:
+                    logger.error("channel_token_key_missing_for_existing_bindings")
+                else:
+                    crypto._fernet = cipher_for(path, create=True)
+        except (OSError, ValueError, SQLAlchemyError):
+            logger.error("channel_token_key_file_unavailable")
+        return crypto
 
     @property
     def configured(self) -> bool:

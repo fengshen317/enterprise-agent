@@ -2,10 +2,7 @@
 
 import asyncio
 import logging
-import os
 from datetime import UTC, datetime
-from pathlib import Path
-from tempfile import NamedTemporaryFile
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -17,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
 from app.core.errors import ApplicationError
+from app.core.secret_files import cipher_for
 from app.models.config import IntegrationConfig
 
 logger = logging.getLogger(__name__)
@@ -41,31 +39,6 @@ MANAGED_KEYS: dict[str, tuple[bool, str]] = {
     "web_search_timeout_seconds": (False, "搜索超时（秒）"),
     "web_search_max_results": (False, "搜索返回条数"),
 }
-
-
-def cipher_for(path: Path, *, create: bool) -> Fernet:
-    """读取部署密钥，首次写入时原子创建并复用同一文件。"""
-    try:
-        return Fernet(path.read_bytes().strip())
-    except FileNotFoundError:
-        if not create:
-            raise
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with NamedTemporaryFile(dir=path.parent, delete=False) as output:
-        temporary = Path(output.name)
-        try:
-            output.write(Fernet.generate_key())
-            output.flush()
-            os.fsync(output.fileno())
-            output.close()
-            try:
-                path.hardlink_to(temporary)
-            except FileExistsError:
-                # 另一进程创建的密钥优先，防止同一部署出现两个密钥。
-                pass
-        finally:
-            temporary.unlink(missing_ok=True)
-    return Fernet(path.read_bytes().strip())
 
 
 class ConfigItem(BaseModel):
