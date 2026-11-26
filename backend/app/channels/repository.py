@@ -932,47 +932,66 @@ class ChannelStore:
         Returns:
             保存后的应用。
         """
+        now = datetime.now(UTC)
+        identity = external_app_id[:128]
         async with self.factory.begin() as session:
             current = await session.scalar(
                 select(ChannelApp)
                 .where(ChannelApp.channel_type == channel_type, ChannelApp.status == "active")
                 .with_for_update()
             )
-            now = datetime.now(UTC)
-            identity = external_app_id[:128]
-            # 换成另一个平台应用时另起一行。旧绑定仍指向旧 app_id，不能被新企业的同号员工认走。
-            if current is not None and current.external_app_id != identity:
-                await session.execute(
-                    update(ChannelAccount)
-                    .where(ChannelAccount.app_id == current.id, ChannelAccount.status != "unbound")
-                    .values(status="unbound", bot_token_ciphertext="", updated_at=now)
-                )
-                await session.execute(
-                    update(ChannelBindCode)
-                    .where(ChannelBindCode.app_id == current.id, ChannelBindCode.status == "pending")
-                    .values(status="expired")
-                )
-                current.status = "disabled"
+            if current is not None and current.external_app_id == identity:
+                current.workspace_id = workspace_id
+                current.created_by_user_id = user_id
+                current.external_app_id = identity
+                current.credentials_ciphertext = ciphertext
+                current.public_config = public_config
+                current.status = "active"
                 current.updated_at = now
-                # 先把旧的 active 行刷出去，否则同一 flush 里 INSERT 会撞上唯一索引。
                 await session.flush()
-                current = None
+                return self._app(current)
             if current is None:
-                current = ChannelApp(
+                created = ChannelApp(
                     workspace_id=workspace_id,
                     channel_type=channel_type,
                     created_by_user_id=user_id,
+                    external_app_id=identity,
+                    credentials_ciphertext=ciphertext,
+                    public_config=public_config,
+                    status="active",
                 )
-                session.add(current)
-            current.workspace_id = workspace_id
-            current.created_by_user_id = user_id
-            current.external_app_id = identity
-            current.credentials_ciphertext = ciphertext
-            current.public_config = public_config
-            current.status = "active"
+                session.add(created)
+                await session.flush()
+                return self._app(created)
+            # 换成另一个平台应用时另起一行。旧绑定仍指向旧 app_id。
+            # 停用必须先提交，再插入新的 active 行。同一次 flush 里的 INSERT/UPDATE 顺序
+            # 不能保证，uq_channel_apps_type_active 会让整段事务回滚，旧绑定也解不掉。
+            await session.execute(
+                update(ChannelAccount)
+                .where(ChannelAccount.app_id == current.id, ChannelAccount.status != "unbound")
+                .values(status="unbound", bot_token_ciphertext="", updated_at=now)
+            )
+            await session.execute(
+                update(ChannelBindCode)
+                .where(ChannelBindCode.app_id == current.id, ChannelBindCode.status == "pending")
+                .values(status="expired")
+            )
+            current.status = "disabled"
             current.updated_at = now
             await session.flush()
-            return self._app(current)
+        async with self.factory.begin() as session:
+            created = ChannelApp(
+                workspace_id=workspace_id,
+                channel_type=channel_type,
+                created_by_user_id=user_id,
+                external_app_id=identity,
+                credentials_ciphertext=ciphertext,
+                public_config=public_config,
+                status="active",
+            )
+            session.add(created)
+            await session.flush()
+            return self._app(created)
 
     async def disable_app(self, channel_type: str) -> None:
         """停用企业机器人。已绑定的员工保留，但不再收消息。
@@ -1037,6 +1056,8 @@ class ChannelStore:
         normalized = code.strip().upper()
         if not normalized or not peer_id:
             return None
+        peer = peer_id[:128]
+        replacement: tuple[UUID, UUID, UUID, str] | None = None
         async with self.factory.begin() as session:
             row = await session.scalar(
                 select(ChannelBindCode)
@@ -1051,65 +1072,165 @@ class ChannelStore:
             app = await session.get(ChannelApp, row.app_id)
             if app is None or app.status != "active" or app.channel_type != channel_type:
                 return None
-            taken = await session.scalar(
-                select(ChannelAccount)
-                .where(
-                    ChannelAccount.channel_type == channel_type,
-                    ChannelAccount.ilink_user_id == peer_id[:128],
-                    ChannelAccount.status != "unbound",
-                )
-                .with_for_update()
-            )
-            if taken is not None and taken.app_id != app.id:
-                # 指向已停用机器人的旧绑定，不能挡住新企业里的同号员工。
-                taken.status = "unbound"
-                taken.bot_token_ciphertext = ""
-                taken.updated_at = now
-                taken = None
-            if taken is not None and taken.user_id != row.user_id:
+            taken = await self._open_account(session, channel_type, peer_id=peer)
+            previous = await self._open_account(session, channel_type, user_id=row.user_id)
+            if taken is not None and taken.app_id == app.id and taken.user_id != row.user_id:
                 raise ApplicationError("CHANNEL_ALREADY_BOUND", "这个账号已经绑定了其他成员", 409)
-            previous = await session.scalar(
-                select(ChannelAccount)
-                .where(
-                    ChannelAccount.user_id == row.user_id,
-                    ChannelAccount.channel_type == channel_type,
-                    ChannelAccount.status != "unbound",
-                )
-                .with_for_update()
-            )
             if previous is not None and previous is not taken and previous.app_id == app.id:
                 raise ApplicationError(
                     "CHANNEL_ALREADY_BOUND",
                     "你已经绑定过。请先在网页解除绑定，再使用新的绑定码。",
                     409,
                 )
-            if previous is not None and previous is not taken:
-                previous.status = "unbound"
-                previous.bot_token_ciphertext = ""
-                previous.updated_at = now
-            if taken is None:
-                # 旧的未解绑行还在唯一索引里时，不能和新建插在同一次 flush。
-                await session.flush()
-                taken = ChannelAccount(
-                    user_id=row.user_id,
-                    workspace_id=row.workspace_id,
-                    channel_type=channel_type,
-                    ilink_user_id=peer_id[:128],
-                    ilink_bot_id=app.external_app_id[:128],
-                    app_id=app.id,
-                    baseurl="",
-                    status="active",
-                    welcome_pending=True,
-                )
-                session.add(taken)
-            else:
-                taken.app_id = app.id
+            if taken is not None and taken.app_id == app.id:
                 taken.workspace_id = row.workspace_id
                 taken.welcome_pending = True
                 taken.updated_at = now
+                row.status = "used"
+                await session.flush()
+                return self._app_account(taken)
+            stale = [item.id for item in (taken, previous) if item is not None]
+            if stale:
+                # 旧的未解绑行还占着唯一索引。先提交解绑，再插入新行。
+                await self._mark_unbound(session, stale, now)
+                for item in (taken, previous):
+                    if item is not None:
+                        item.status = "unbound"
+                        item.bot_token_ciphertext = ""
+                        item.updated_at = now
+                await session.flush()
+                replacement = (row.user_id, row.workspace_id, app.id, app.external_app_id)
+            else:
+                created = self._new_bound_account(row.user_id, row.workspace_id, channel_type, peer, app)
+                session.add(created)
+                row.status = "used"
+                await session.flush()
+                return self._app_account(created)
+        if replacement is None:
+            return None
+        user_id, workspace_id, app_id, external_app_id = replacement
+        async with self.factory.begin() as session:
+            row = await session.scalar(
+                select(ChannelBindCode)
+                .where(
+                    ChannelBindCode.code == normalized,
+                    ChannelBindCode.status == "pending",
+                    ChannelBindCode.user_id == user_id,
+                    ChannelBindCode.app_id == app_id,
+                )
+                .with_for_update()
+            )
+            now = datetime.now(UTC)
+            if row is None or row.expires_at < now:
+                return None
+            app = await session.get(ChannelApp, app_id)
+            if app is None or app.status != "active" or app.channel_type != channel_type:
+                return None
+            taken = await self._open_account(session, channel_type, peer_id=peer)
+            previous = await self._open_account(session, channel_type, user_id=user_id)
+            if taken is not None and taken.app_id == app.id and taken.user_id != user_id:
+                raise ApplicationError("CHANNEL_ALREADY_BOUND", "这个账号已经绑定了其他成员", 409)
+            if previous is not None and previous is not taken and previous.app_id == app.id:
+                raise ApplicationError(
+                    "CHANNEL_ALREADY_BOUND",
+                    "你已经绑定过。请先在网页解除绑定，再使用新的绑定码。",
+                    409,
+                )
+            stale = [item.id for item in (taken, previous) if item is not None and item.app_id != app.id]
+            if stale:
+                await self._mark_unbound(session, stale, now)
+                await session.flush()
+            if taken is not None and taken.app_id == app.id and taken.user_id == user_id:
+                taken.workspace_id = workspace_id
+                taken.welcome_pending = True
+                taken.updated_at = now
+                created = taken
+            else:
+                created = self._new_bound_account(user_id, workspace_id, channel_type, peer, app)
+                created.ilink_bot_id = external_app_id[:128]
+                session.add(created)
             row.status = "used"
             await session.flush()
-            return self._app_account(taken)
+            return self._app_account(created)
+
+    async def _open_account(
+        self,
+        session: AsyncSession,
+        channel_type: str,
+        *,
+        peer_id: str | None = None,
+        user_id: UUID | None = None,
+    ) -> ChannelAccount | None:
+        """锁住一条尚未解绑的渠道账号。
+
+        Args:
+            session: 当前事务。
+            channel_type: 企业渠道。
+            peer_id: 平台用户标识。和 user_id 二选一。
+            user_id: 工作台用户。和 peer_id 二选一。
+
+        Returns:
+            仍占用唯一索引的账号；没有时为 None。
+        """
+        stmt = select(ChannelAccount).where(
+            ChannelAccount.channel_type == channel_type,
+            ChannelAccount.status != "unbound",
+        )
+        if peer_id is not None:
+            stmt = stmt.where(ChannelAccount.ilink_user_id == peer_id)
+        if user_id is not None:
+            stmt = stmt.where(ChannelAccount.user_id == user_id)
+        found = await session.scalar(stmt.with_for_update())
+        return found if isinstance(found, ChannelAccount) else None
+
+    @staticmethod
+    async def _mark_unbound(session: AsyncSession, account_ids: list[UUID], now: datetime) -> None:
+        """把仍占用唯一索引的旧绑定标成未绑定。
+
+        这条 UPDATE 立刻发到数据库，不和后面的 INSERT 挤在同一次 flush。
+
+        Args:
+            session: 当前事务。
+            account_ids: 要解开的账号。
+            now: 写入 updated_at 的时间。
+        """
+        await session.execute(
+            update(ChannelAccount)
+            .where(ChannelAccount.id.in_(account_ids))
+            .values(status="unbound", bot_token_ciphertext="", updated_at=now)
+        )
+
+    @staticmethod
+    def _new_bound_account(
+        user_id: UUID,
+        workspace_id: UUID,
+        channel_type: str,
+        peer_id: str,
+        app: ChannelApp,
+    ) -> ChannelAccount:
+        """组装一条新的员工绑定，调用方负责 add。
+
+        Args:
+            user_id: 工作台用户。
+            workspace_id: 绑定后的初始空间。
+            channel_type: 企业渠道。
+            peer_id: 平台用户标识。
+            app: 当前启用的企业应用。
+
+        Returns:
+            尚未插入的账号。
+        """
+        return ChannelAccount(
+            user_id=user_id,
+            workspace_id=workspace_id,
+            channel_type=channel_type,
+            ilink_user_id=peer_id,
+            ilink_bot_id=app.external_app_id[:128],
+            app_id=app.id,
+            baseurl="",
+            status="active",
+            welcome_pending=True,
+        )
 
     async def account_for_platform(self, channel_type: str, peer_id: str, app_id: UUID) -> AccountRecord | None:
         """按当前机器人下的平台用户标识找工作台绑定。
