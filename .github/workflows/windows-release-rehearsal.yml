@@ -1,0 +1,88 @@
+name: 准备 Windows 隔离验收包
+
+on:
+  push:
+    branches:
+      - chore/github-windows-rehearsal
+    paths:
+      - .github/workflows/windows-release-rehearsal.yml
+      - deploy/tests/windows-release-rehearsal.cmd
+      - deploy/tests/compose.windows-release-test.yaml
+
+permissions:
+  actions: read
+  contents: read
+  packages: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 下载通过验收的发布包
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          github-token: ${{ github.token }}
+          run-id: 45600551534
+          name: release-test
+          path: ${{ runner.temp }}/release-download
+
+      - name: 将已验收镜像和隔离验收脚本打包
+        shell: bash
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_revision=afc1b53620fe8961ce492f4d1ed1ef7be0d627ab
+          baseline_commit=0da2207856c0a155b865c8366f740697d807f283
+          bundle="$RUNNER_TEMP/windows-release-rehearsal"
+          mkdir -p "$bundle" "$RUNNER_TEMP/baseline"
+          tar -xzf "$RUNNER_TEMP/release-download/release-test.tar.gz" -C "$bundle"
+          [[ "$(cat "$bundle/source-revision")" == "$release_revision" ]]
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          suffix="${release_revision:0:12}"
+          tags=()
+          for service in api web; do
+            image="$(sed -n "s/^EA_RELEASE_${service^^}_IMAGE=//p" "$bundle/release.env")"
+            [[ "$image" == "ghcr.io/${GITHUB_REPOSITORY,,}-release-test-$service@sha256:"* ]]
+            [[ "$image" =~ @sha256:[a-f0-9]{64}$ ]]
+            docker pull --platform linux/amd64 "$image"
+            [[ "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" == "$release_revision" ]]
+            tag="ea-windows-rehearsal-$service:$suffix"
+            docker image tag "$image" "$tag"
+            tags+=("$tag")
+          done
+          # 使用隔离标签，导入包时不会替换部署机已有的基础镜像标签。
+          for mapping in 'db postgres:16-bookworm' 'init python:3.13-slim-bookworm'; do
+            read -r service image <<< "$mapping"
+            docker pull --platform linux/amd64 "$image"
+            tag="ea-windows-rehearsal-$service:$suffix"
+            docker image tag "$image" "$tag"
+            tags+=("$tag")
+          done
+          git archive "$baseline_commit" backend | tar -x -C "$RUNNER_TEMP/baseline"
+          baseline="ea-windows-rehearsal-baseline:$suffix"
+          docker build --platform linux/amd64 -t "$baseline" "$RUNNER_TEMP/baseline/backend"
+          tags+=("$baseline")
+          for tag in "${tags[@]}"; do
+            service="${tag#ea-windows-rehearsal-}"
+            docker image inspect --format '{{.Id}}' "$tag" > "$bundle/${service%%:*}.id"
+          done
+          docker image save "${tags[@]}" | gzip -1 > "$bundle/images.tar.gz"
+          cp deploy/tests/compose.release-test.yaml deploy/tests/compose.windows-release-test.yaml "$bundle/"
+          # CMD 脚本使用 CRLF，发布包中的容器内 Bash 脚本由原发布包保留 LF。
+          sed 's/$/\r/' deploy/tests/windows-release-rehearsal.cmd > "$bundle/windows-release-rehearsal.cmd"
+
+      - name: 上传 Windows 验收包
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: enterprise-agent-windows-rehearsal
+          path: ${{ runner.temp }}/windows-release-rehearsal
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

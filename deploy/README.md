@@ -193,6 +193,12 @@ docker compose logs --tail=100 api web db
 
 2026-11-25，两个独立 GitHub 托管 Runner 完成发布演练。API 和 Web 镜像按摘要发布及重新拉取，PostgreSQL 从 `0026` 升级到 `0027` 后保留测试对话，备份恢复至空数据库后旧 API 再次通过就绪检查，升级库保留 `0027`。两次切换均通过 Funnel 本地源站的页面和就绪检查。[GitHub Actions 验收记录](https://github.com/fengshen317/enterprise-agent/actions/runs/45600551534)
 
+### Windows Docker Desktop 隔离验收
+
+`chore/github-windows-rehearsal` 分支的 Actions 从通过验收的发布包按摘要拉取 API 和 Web，生成 `enterprise-agent-windows-rehearsal` 验收包。验收包包含独立镜像标签、镜像 ID、Compose 配置和 CMD 脚本，运行时不需要部署机登录 GHCR。
+
+在 Windows 部署机解压验收包后，从该目录运行 `windows-release-rehearsal.cmd`。脚本使用 `desktop-linux` 引擎、随机 Compose 项目名、独立卷和回环端口 `28080`，依次验证 `0026 → 0027`、旧消息保留和恢复到空库后的 `0026`。脚本退出时停止验收服务，保留测试卷、备份和日志以便复查。输出 `PASS` 后记录日志路径。部署机直连 GHCR、业务实例切换和 `main` 自动发布仍需验收。
+
 ### 启动排障
 
 页面迟迟打不开时，用 `docker compose config --quiet` 检查配置，用 `docker compose ps` 查看服务状态。

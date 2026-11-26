@@ -1,0 +1,6 @@
+# 验收包导入后的独立基础镜像标签与生产服务使用的标签隔离。
+services:
+  db:
+    image: ${EA_WINDOWS_TEST_DB_IMAGE:?缺少验收数据库镜像}
+  service-credentials-init:
+    image: ${EA_WINDOWS_TEST_INIT_IMAGE:?缺少验收初始化镜像}
