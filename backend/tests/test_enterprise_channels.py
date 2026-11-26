@@ -17,12 +17,15 @@ from app.channels.capabilities import (
 )
 from app.channels.commands import parse_inbound
 from app.channels.dingtalk import DingTalkClient, classify_dingtalk_send, parse_dingtalk_message
+from app.channels.enterprise import EnterpriseChannelService
 from app.channels.feishu import FeishuClient, parse_feishu_card, parse_feishu_event
 from app.channels.handler import InboundHandler
 from app.channels.qq_bot import QQBotClient, api_base, parse_qq_dispatch
 from app.channels.records import AccountRecord, AppRecord, PeerLink
 from app.channels.send_error import ChannelSendError
 from app.core.config import Settings
+from app.core.errors import ApplicationError
+from app.schemas.auth import ResourceScope
 from app.services.push_channels import apply_wechat_flag, normalize_push_channels
 
 
@@ -181,7 +184,13 @@ class _Repo:
         self.touched = False
 
     async def record_app_event(
-        self, app_id: object, message_id: str, peer_id: str, status: str, reason: str | None, excerpt: str,
+        self,
+        app_id: object,
+        message_id: str,
+        peer_id: str,
+        status: str,
+        reason: str | None,
+        excerpt: str,
     ) -> bool:
         del app_id, peer_id, excerpt
         self.events.append((message_id, reason if status == "skipped" else status))
@@ -192,7 +201,17 @@ class _Repo:
         if code != "ABCD2345":
             return None
         return AccountRecord(
-            uuid4(), uuid4(), uuid4(), "feishu", "cli", peer_id, "", "", "active", None, datetime.now(UTC),
+            uuid4(),
+            uuid4(),
+            uuid4(),
+            "feishu",
+            "cli",
+            peer_id,
+            "",
+            "",
+            "active",
+            None,
+            datetime.now(UTC),
             welcome_pending=True,
         )
 
@@ -201,7 +220,12 @@ class _Repo:
         self.cleared = True
 
     async def touch_inbound(
-        self, account_id: object, workspace_id: object, peer_id: str, context_token: str, at: datetime,
+        self,
+        account_id: object,
+        workspace_id: object,
+        peer_id: str,
+        context_token: str,
+        at: datetime,
     ) -> None:
         del account_id, workspace_id, peer_id, context_token, at
         self.touched = True
@@ -262,3 +286,40 @@ async def test_unbound_user_gets_instructions_and_bind_does_not_guess() -> None:
     assert repo.cleared is True
     assert repo.touched is True
     assert bus.msg_ids[-1] == "om-bind"
+
+
+class _BoundRepo:
+    """已经绑在当前机器人上的用户。"""
+
+    def __init__(self) -> None:
+        self.app = AppRecord(uuid4(), uuid4(), "feishu", "cli", "active", secret="sec")
+
+    async def active_app(self, channel_type: str) -> AppRecord:
+        del channel_type
+        return self.app
+
+    async def account_for_user(self, user_id: object, channel_type: str) -> AccountRecord:
+        del user_id
+        return AccountRecord(
+            uuid4(),
+            uuid4(),
+            uuid4(),
+            channel_type,
+            "cli",
+            "ou",
+            "",
+            "",
+            "active",
+            None,
+            datetime.now(UTC),
+            app_id=self.app.id,
+        )
+
+
+@pytest.mark.asyncio
+async def test_bound_user_cannot_mint_another_bind_code() -> None:
+    """已绑定的人不能再发绑定码，避免别人拿码把账号转走。"""
+    service = EnterpriseChannelService(_BoundRepo(), object())  # type: ignore[arg-type]
+    with pytest.raises(ApplicationError) as caught:
+        await service.issue_code(ResourceScope(uuid4(), uuid4()), "feishu")
+    assert caught.value.code == "CHANNEL_ALREADY_BOUND"

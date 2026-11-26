@@ -489,7 +489,7 @@ class ChannelRuntime:
         """长连接收到的消息：已绑定的进入问答，未绑定的只回绑定说明。"""
         account = None
         if event.peer_id:
-            account = await self.repo.account_for_platform(app.channel_type, event.peer_id)
+            account = await self.repo.account_for_platform(app.channel_type, event.peer_id, app.id)
         if account is None:
             await self.handler.handle_unbound(app, event)
             return

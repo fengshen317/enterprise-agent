@@ -147,6 +147,13 @@ class EnterpriseChannelService:
         app = await self.repo.active_app(channel_type)
         if app is None:
             raise ApplicationError("CHANNEL_NOT_CONFIGURED", "管理员还没有配置这个机器人", 409)
+        existing = await self.repo.account_for_user(scope.user_id, channel_type)
+        if existing is not None and existing.app_id == app.id:
+            raise ApplicationError(
+                "CHANNEL_ALREADY_BOUND",
+                "已经绑定。请先在网页解除绑定，再生成新的绑定码。",
+                409,
+            )
         issued = await self.repo.issue_bind_code(scope.user_id, scope.workspace_id, app.id)
         label = capability_for(channel_type).label
         return BindCodeView(

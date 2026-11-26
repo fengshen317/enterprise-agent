@@ -939,6 +939,22 @@ class ChannelStore:
                 .with_for_update()
             )
             now = datetime.now(UTC)
+            identity = external_app_id[:128]
+            # 换成另一个平台应用时另起一行。旧绑定仍指向旧 app_id，不能被新企业的同号员工认走。
+            if current is not None and current.external_app_id != identity:
+                await session.execute(
+                    update(ChannelAccount)
+                    .where(ChannelAccount.app_id == current.id, ChannelAccount.status != "unbound")
+                    .values(status="unbound", bot_token_ciphertext="", updated_at=now)
+                )
+                await session.execute(
+                    update(ChannelBindCode)
+                    .where(ChannelBindCode.app_id == current.id, ChannelBindCode.status == "pending")
+                    .values(status="expired")
+                )
+                current.status = "disabled"
+                current.updated_at = now
+                current = None
             if current is None:
                 current = ChannelApp(
                     workspace_id=workspace_id,
@@ -948,7 +964,7 @@ class ChannelStore:
                 session.add(current)
             current.workspace_id = workspace_id
             current.created_by_user_id = user_id
-            current.external_app_id = external_app_id[:128]
+            current.external_app_id = identity
             current.credentials_ciphertext = ciphertext
             current.public_config = public_config
             current.status = "active"
@@ -1042,6 +1058,12 @@ class ChannelStore:
                 )
                 .with_for_update()
             )
+            if taken is not None and taken.app_id != app.id:
+                # 指向已停用机器人的旧绑定，不能挡住新企业里的同号员工。
+                taken.status = "unbound"
+                taken.bot_token_ciphertext = ""
+                taken.updated_at = now
+                taken = None
             if taken is not None and taken.user_id != row.user_id:
                 raise ApplicationError("CHANNEL_ALREADY_BOUND", "这个账号已经绑定了其他成员", 409)
             previous = await session.scalar(
@@ -1053,8 +1075,15 @@ class ChannelStore:
                 )
                 .with_for_update()
             )
+            if previous is not None and previous is not taken and previous.app_id == app.id:
+                raise ApplicationError(
+                    "CHANNEL_ALREADY_BOUND",
+                    "你已经绑定过。请先在网页解除绑定，再使用新的绑定码。",
+                    409,
+                )
             if previous is not None and previous is not taken:
                 previous.status = "unbound"
+                previous.bot_token_ciphertext = ""
                 previous.updated_at = now
             if taken is None:
                 taken = ChannelAccount(
@@ -1078,12 +1107,15 @@ class ChannelStore:
             await session.flush()
             return self._app_account(taken)
 
-    async def account_for_platform(self, channel_type: str, peer_id: str) -> AccountRecord | None:
-        """按平台用户标识找工作台绑定。找不到就不能猜账号。
+    async def account_for_platform(self, channel_type: str, peer_id: str, app_id: UUID) -> AccountRecord | None:
+        """按当前机器人下的平台用户标识找工作台绑定。
+
+        钉钉 staffId 只在本企业内唯一，所以必须同时对上这次收消息的应用。
 
         Args:
             channel_type: 企业渠道。
             peer_id: open_id 或 userId。
+            app_id: 收到这条消息的企业应用。
 
         Returns:
             绑定；没有时为 None。
@@ -1095,6 +1127,7 @@ class ChannelStore:
                 select(ChannelAccount).where(
                     ChannelAccount.channel_type == channel_type,
                     ChannelAccount.ilink_user_id == peer_id[:128],
+                    ChannelAccount.app_id == app_id,
                     ChannelAccount.status != "unbound",
                 )
             )

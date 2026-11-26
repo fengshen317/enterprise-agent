@@ -234,7 +234,7 @@ onMounted(() => void load())
         管理员还没有启用这个机器人。
       </p>
       <p v-else-if="binding.bound">
-        已绑定平台用户 {{ binding.platform_user_id || '未知' }}。
+        已绑定平台用户 {{ binding.platform_user_id || '未知' }}。要换成另一个账号，请先解除绑定。
       </p>
       <p v-else>
         还没有绑定。生成绑定码后，在和机器人的单聊里发送它。
@@ -242,7 +242,7 @@ onMounted(() => void load())
       <div class="enterprise__actions">
         <button
           type="button"
-          :disabled="busy || !binding?.app_configured"
+          :disabled="busy || !binding?.app_configured || binding.bound"
           @click="issue"
         >
           生成绑定码
