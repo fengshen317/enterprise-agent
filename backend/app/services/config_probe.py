@@ -73,7 +73,11 @@ async def _check_model(settings: Settings, *, vision: bool) -> ConfigCheck:
         with tracing_context(enabled=False):
             async with asyncio.timeout(timeout):
                 model = create_llm(settings, max_tokens=min(settings.model_max_tokens, PROBE_TOKENS), vision=vision)
-                await model.ainvoke([message])
+                try:
+                    await model.ainvoke([message])
+                finally:
+                    await model.root_async_client.close()
+                    await asyncio.to_thread(model.root_client.close)
     except Exception as error:
         return ConfigCheck(check=check, ok=False, message=_failure_message(error))
     return ConfigCheck(check=check, ok=True, message="调用成功")

@@ -143,6 +143,11 @@ onBeforeUnmount(() => { alive = false; revision++ })
         class="admin__actions"
       >
         <RouterLink
+          v-if="auth.session?.system_admin"
+          class="admin__settings-link"
+          to="/admin/api-settings#member-initial-password"
+        >设置初始密码</RouterLink>
+        <RouterLink
           class="admin__logs-link"
           to="/admin/system-logs"
         >系统日志</RouterLink>
@@ -437,7 +442,7 @@ onBeforeUnmount(() => { alive = false; revision++ })
   max-width: 1200px; margin: 0 auto; padding: 40px clamp(20px, 4vw, 56px) 70px;
   &__heading { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 22px; h1 { @include page-title; margin-bottom: 7px; } }
   &__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-  &__logs-link { border: 1px solid $line; border-radius: 6px; padding: 10px 15px; background: $surface; color: $green; text-decoration: none; &:hover { border-color: $green; } }
+  &__logs-link, &__settings-link { border: 1px solid $line; border-radius: 6px; padding: 10px 15px; background: $surface; color: $green; text-decoration: none; &:hover { border-color: $green; } }
   &__description, &__hint, &__boundary { color: $muted; font-size: 12px; line-height: 1.9; }
   &__boundary { padding: 12px 14px; margin-bottom: 22px; border: 1px solid $line; border-radius: $panel-radius; background: linear-gradient(110deg, $hero, $paper); }
   &__primary { background: $green; color: $on-green; border: 0; border-radius: $control-radius; padding: 10px 14px; font-weight: 650; &:enabled:hover { background: $green-hover; } }

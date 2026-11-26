@@ -4,6 +4,7 @@ import asyncio
 from base64 import b64decode
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock
 from uuid import UUID, uuid4
 
 import pytest
@@ -35,6 +36,91 @@ from tests.test_chat_integration import chat as chat
 pytestmark = pytest.mark.integration
 INITIAL_PASSWORD = "shared-fixture-password"
 PERSONAL_PASSWORD = "personal-fixture-password"
+
+
+async def test_model_catalog_requires_system_admin_and_masks_key(
+    chat: tuple[FastAPI, AsyncClient, ControlledProvider], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """厂家查询服从系统管理员和请求来源权限，响应只含模型 ID。"""
+    app, client, _ = chat
+    presets = "/api/admin/model-providers"
+    path = f"{presets}/mimo/models"
+    body = {"api_key": "catalog-fixture-key"}
+    assert (await client.get(presets)).status_code == 403
+    assert (await client.post(path, json=body)).status_code == 403
+    app.state.settings.system_admin_username = (await client.get("/api/auth/me")).json()["user"]["username"]
+    response = await client.get(presets)
+    assert response.status_code == 200
+    assert any(item["id"] == "mimo" and item["supports_discovery"] for item in response.json())
+
+    async def discover(provider: str, key: SecretStr) -> list[str]:
+        """模拟供应商查询并校验选中的厂商。"""
+        assert provider == "mimo" and key.get_secret_value() == body["api_key"]
+        return ["fixture-model"]
+
+    monkeypatch.setattr("app.api.admin.discover_model_ids", discover)
+    assert (await client.post(path, json={**body, "base_url": "https://other.invalid"})).status_code == 422
+    assert (await client.post(path, json=body, headers={"X-CSRF-Token": "bad"})).status_code == 403
+    response = await client.post(path, json=body)
+    assert response.status_code == 200 and response.headers["Cache-Control"] == "no-store"
+    assert response.json() == ["fixture-model"] and body["api_key"] not in response.text
+
+
+async def test_system_admin_configures_initial_member_password(
+    chat: tuple[FastAPI, AsyncClient, ControlledProvider], tmp_path: Path
+) -> None:
+    """配置密文持久化，保存即生效，已有账号继续使用原凭证。"""
+    app, admin, _ = chat
+    settings: Settings = app.state.settings
+    settings.integration_config_key_file = tmp_path / "member-password.key"
+    settings.member_initial_password = SecretStr(INITIAL_PASSWORD)
+    previous = await create_user(app, admin)
+    key = "member_initial_password"
+    password = " new-shared-fixture-password "
+    body = {"configs": [{"key": key, "value": password}]}
+    assert (await admin.post("/api/admin/configs", json=body)).status_code == 403
+    settings.system_admin_username = (await admin.get("/api/auth/me")).json()["user"]["username"]
+    settings.llm_provider, settings.llm_model = "openai_compatible", ""
+    factory = app.state.database.session_factory
+    async with factory() as session:
+        original = await session.get(IntegrationConfig, key)
+    try:
+        for invalid in ("", "short", "password\nwith-break", " " * 8):
+            rejected = await admin.post("/api/admin/configs", json={"configs": [{"key": key, "value": invalid}]})
+            assert rejected.status_code == 422
+        rejected = await admin.post("/api/admin/configs/test", json={"group": "llm", **body})
+        assert rejected.status_code == 422
+        response = await admin.post("/api/admin/configs", json=body)
+        assert response.status_code == 200 and password.strip() not in response.text
+        item = next(item for item in response.json() if item["key"] == key)
+        assert item["value_masked"] == "已配置" and item["is_secret"] and item["updated_by"]
+        async with factory() as session:
+            stored = await session.get(IntegrationConfig, key)
+            assert stored is not None and stored.value.startswith(ENCRYPTED_PREFIX)
+            assert password.strip() not in stored.value
+        fresh = Settings(
+            _env_file=None,
+            integration_config_key_file=settings.integration_config_key_file,
+            member_initial_password=SecretStr(INITIAL_PASSWORD),
+        )
+        await ConfigService(factory, fresh).load()
+        assert member_initial_password(fresh) == password
+        created = await admin.post("/api/admin/members", json={
+            "username": "settingsqa_" + uuid4().hex, "display_name": "配置后创建的成员",
+        })
+        assert created.status_code == 201, created.text
+        app.state.test_users.append(UUID(created.json()["user_id"]))
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as member:
+            await sign_in(member, admin, previous["username"], INITIAL_PASSWORD)
+            await sign_in(member, admin, created.json()["username"], password)
+            reset = await admin.post(f"/api/admin/members/{previous['user_id']}/reset-password")
+            assert reset.status_code == 204, reset.text
+            await sign_in(member, admin, previous["username"], password)
+    finally:
+        async with factory.begin() as session:
+            await session.execute(delete(IntegrationConfig).where(IntegrationConfig.key == key))
+            if original is not None:
+                await session.merge(original)
 
 
 async def test_generated_initial_password_is_shared_and_persisted(tmp_path: Path) -> None:
@@ -132,6 +218,8 @@ async def test_api_settings_probe_uses_temporary_credentials(
         def __init__(self, vision: bool) -> None:
             """记录是文本还是图文调用。"""
             self.vision = vision
+            self.root_async_client = Mock(close=AsyncMock())
+            self.root_client = Mock()
 
         async def ainvoke(self, messages: list[HumanMessage]) -> AIMessage:
             """返回文本成功和带敏感正文的图文拒绝。"""

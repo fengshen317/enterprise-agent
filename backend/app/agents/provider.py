@@ -3,7 +3,7 @@
 import asyncio
 import json
 from base64 import b64encode
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from importlib import import_module
 from typing import TYPE_CHECKING, Protocol
 
@@ -16,6 +16,8 @@ if TYPE_CHECKING:
     from app.services.tools import ToolExecutor
 
 ChatHistory = list[tuple[str, str]]
+_PREVIEW_START = "assistant_preview_start"
+_PREVIEW_CLEAR = "assistant_preview_clear"
 
 
 def load_agent_sdk() -> None:
@@ -93,13 +95,15 @@ class DeepSeekProvider:
         validate_llm(self.settings)
 
     async def stream(
-        self, history: ChatHistory, *, images: tuple[tuple[str, bytes], ...] = ()
+        self, history: ChatHistory, *, images: tuple[tuple[str, bytes], ...] = (),
+        on_preview: Callable[[str], None] | None = None,
     ) -> AsyncIterator[str]:
         """每次运行建立独立图，不跨对话共享可变状态。
 
         Args:
             history: 由业务消息重建的上下文。
             images: 本轮用户消息关联的已鉴权图片原件。
+            on_preview: 接收本次模型尝试的累计、可撤回正文。
 
         Yields:
             主模型生成的可展示正文。
@@ -108,16 +112,17 @@ class DeepSeekProvider:
             raise ApplicationError("CONTEXT_TOO_LONG", "对话或子任务资料超过上下文限制", 422)
         # 首次导入较慢，放到线程中，避免并发状态查询耗尽数据库连接超时。
         await asyncio.to_thread(load_agent_sdk)
-        from collections.abc import Awaitable, Callable
+        from collections.abc import Awaitable
         from typing import Any
 
         from deepagents import create_deep_agent
         from langchain.agents.middleware import ModelRequest, ModelResponse, wrap_model_call, wrap_tool_call
         from langchain.agents.middleware.types import InputAgentState
         from langchain.tools.tool_node import ToolCallRequest
-        from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
+        from langchain_core.messages import AIMessage, AIMessageChunk, AnyMessage, ToolMessage
         from langchain_core.tools import BaseTool, StructuredTool
-        from langgraph.types import Command
+        from langgraph.config import get_stream_writer
+        from langgraph.types import Command, StreamMode
 
         from app.capabilities.prompts import BASE_SYSTEM_PROMPT
         from app.services.chat_agent import ChatAgentExecutor
@@ -203,7 +208,16 @@ class DeepSeekProvider:
                     characters += len(str(request.system_message.content))
                 if characters > self.settings.model_context_characters:
                     raise ApplicationError("CONTEXT_TOO_LONG", "工具或子任务上下文超过限制，请缩小范围", 422)
-                return await handler(request.override(tools=list(allowed_tools)))
+                if on_preview is None:
+                    return await handler(request.override(tools=list(allowed_tools)))
+                # 重试边界与 SDK 文本片段共用同一个事件流，保证清除旧草稿后才接收下一次输出。
+                writer = get_stream_writer()
+                writer(_PREVIEW_START)
+                try:
+                    return await handler(request.override(tools=list(allowed_tools)))
+                except Exception:
+                    writer(_PREVIEW_CLEAR)
+                    raise
 
             response = (
                 await executor.model_call(invoke_model)
@@ -241,19 +255,48 @@ class DeepSeekProvider:
                 ]
             input_messages: list[AnyMessage | dict[str, Any]] = list(messages)
             state: InputAgentState = {"messages": input_messages}
-            # 完整动作提交后再发布正文，避免失败请求的半段正文与重试结果重复拼接。
-            async for update in agent.astream(state, stream_mode="updates", config={"recursion_limit": 40}):
-                node = update.get("model") if isinstance(update, dict) else None
+            modes: list[StreamMode] = ["updates"] if on_preview is None else ["updates", "messages", "custom"]
+            preview = ""
+            publishing = False
+            async for event in agent.astream(
+                state, stream_mode=modes, version="v2", config={"recursion_limit": 40}
+            ):
+                # 独立运行的子图会继承父图命名空间，正文过滤只用于根对话的公开预览。
+                if on_preview is not None and event["ns"]:
+                    continue
+                if event["type"] == "custom" and on_preview is not None:
+                    if event["data"] in (_PREVIEW_START, _PREVIEW_CLEAR):
+                        preview = ""
+                        publishing = event["data"] == _PREVIEW_START
+                        on_preview("")
+                    continue
+                if event["type"] == "messages" and on_preview is not None and publishing:
+                    chunk, metadata = event["data"]
+                    if metadata.get("langgraph_node") != "model" or not isinstance(chunk, AIMessageChunk):
+                        continue
+                    if chunk.tool_call_chunks or chunk.tool_calls:
+                        publishing = False
+                        on_preview("")
+                    elif chunk.text and len(preview) < self.settings.model_output_characters:
+                        preview = (preview + chunk.text)[: self.settings.model_output_characters]
+                        on_preview(preview)
+                    continue
+                if event["type"] != "updates":
+                    continue
+                node = event["data"].get("model")
                 if not isinstance(node, dict):
                     continue
+                publishing = False
                 for message in node.get("messages", []):
                     if isinstance(message, AIMessage):
                         if message.response_metadata.get("finish_reason") == "length":
                             raise ApplicationError(
                                 "MODEL_OUTPUT_TRUNCATED", "模型回答达到长度限制，请缩小问题范围", 422
                             )
-                        if not message.tool_calls and isinstance(message.content, str) and message.content:
-                            yield message.content
+                        if not message.tool_calls and message.text:
+                            yield message.text
+                if on_preview is not None:
+                    on_preview("")
         finally:
             await model.root_async_client.close()
             await asyncio.to_thread(model.root_client.close)

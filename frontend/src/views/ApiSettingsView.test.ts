@@ -4,10 +4,40 @@ import { listConfigs, testConfigs, updateConfigs, type ConfigItem } from '../api
 import ApiSettingsView from './ApiSettingsView.vue'
 
 vi.mock('../api/config', () => ({ listConfigs: vi.fn(), testConfigs: vi.fn(), updateConfigs: vi.fn() }))
+vi.mock('vue-router', async importOriginal => ({
+  ...await importOriginal<typeof import('vue-router')>(), useRoute: () => ({ hash: '' }),
+}))
 
 function item(key: string, value: string, isSecret = false): ConfigItem {
   return { key, value_masked: value, is_secret: isSecret, description: '', updated_at: null, updated_by: null }
 }
+
+it('单独保存统一初始密码，只显示配置状态', async () => {
+  const key = 'member_initial_password'
+  vi.mocked(listConfigs).mockResolvedValue([item(key, '', true)])
+  vi.mocked(updateConfigs).mockResolvedValue([item(key, '已配置', true)])
+  const view = mount(ApiSettingsView, { global: { stubs: ['RouterLink', 'ModelProfilesPanel'] } })
+  await flushPromises()
+  await view.get('.api-settings__nav button:last-child').trigger('click')
+  const form = view.get('#member-initial-password')
+  const password = form.get<HTMLInputElement>('#member-initial-password-input')
+  const confirmation = form.get<HTMLInputElement>('#member-initial-password-confirm')
+  expect(password.attributes('type')).toBe('password')
+  await password.setValue(' shared-fixture-password ')
+  await confirmation.setValue('wrong-password')
+  await form.trigger('submit')
+  expect(updateConfigs).not.toHaveBeenCalled()
+  expect(form.get('[role="alert"]').text()).toContain('两次输入')
+  await confirmation.setValue(' shared-fixture-password ')
+  await form.trigger('submit')
+  await flushPromises()
+  expect(updateConfigs).toHaveBeenCalledExactlyOnceWith([{ key, value: ' shared-fixture-password ' }])
+  expect(password.element.value).toBe('')
+  expect(confirmation.element.value).toBe('')
+  expect(form.text()).toContain('已配置')
+  expect(form.text()).not.toContain('shared-fixture-password')
+  view.unmount()
+})
 
 it('提交兼容 LLM 配置并清除输入框中的密钥', async () => {
   vi.mocked(listConfigs).mockResolvedValue([
@@ -23,6 +53,7 @@ it('提交兼容 LLM 配置并清除输入框中的密钥', async () => {
   ])
   const view = mount(ApiSettingsView, { global: { stubs: ['RouterLink', 'ModelProfilesPanel'] } })
   await flushPromises()
+  await view.get('summary').trigger('click')
   await view.get('select').setValue('openai_compatible')
   const form = view.findAll('form')[0]
   await form.get('input[placeholder="供应商提供的模型标识"]').setValue('fixture-model')
@@ -53,6 +84,7 @@ it('以当前表单测试文本与图片模型，不提交保存', async () => {
   ])
   const view = mount(ApiSettingsView, { global: { stubs: ['RouterLink', 'ModelProfilesPanel'] } })
   await flushPromises()
+  await view.get('summary').trigger('click')
   const form = view.findAll('form')[0]
   const key = form.get<HTMLInputElement>('input[type="password"]')
   expect(key.element.value).toBe('')
@@ -75,6 +107,7 @@ it('单独测试 Tavily，保留密钥草稿且使用密码框', async () => {
   vi.mocked(testConfigs).mockResolvedValue([{ check: 'search', ok: true, message: '搜索成功' }])
   const view = mount(ApiSettingsView, { global: { stubs: ['RouterLink', 'ModelProfilesPanel'] } })
   await flushPromises()
+  await view.get('.api-settings__nav button:nth-child(2)').trigger('click')
   const form = view.findAll('form')[1]
   const key = form.get<HTMLInputElement>('input[type="password"]')
   await key.setValue('new-search-key')

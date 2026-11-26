@@ -609,8 +609,11 @@ class InboundHandler:
             conversation_id: 网页上打开完整回答的对话。
             workspace_id: 接到该消息时的空间，防止切换空间后诊断串到另一空间。
         """
+        page_url = self._page_url(conversation_id, workspace_id)
         stop_progress = asyncio.Event()
-        progress = asyncio.create_task(self._progress(account, to_user_id, context_token, run_id, stop_progress))
+        progress = asyncio.create_task(
+            self._progress(account, to_user_id, context_token, run_id, stop_progress, page_url)
+        )
         try:
             await self.ilink.send_typing(account, to_user_id, context_token, True)
             deadline = monotonic() + self.settings.chat_run_timeout_seconds + 15
@@ -626,7 +629,7 @@ class InboundHandler:
             body = wechat_reply(
                 _final_text(snapshot),
                 preview_characters=self.settings.channel_reply_preview_characters,
-                page_url=self._page_url(conversation_id),
+                page_url=page_url,
             )
             await self.send_text(account, to_user_id, context_token, body, run_id=run_id, workspace_id=workspace_id)
         finally:
@@ -644,6 +647,7 @@ class InboundHandler:
         context_token: str,
         run_id: UUID,
         stop: asyncio.Event,
+        page_url: str,
     ) -> None:
         """运行偏久时发一句进度，相同内容不重复刷屏。
 
@@ -653,6 +657,7 @@ class InboundHandler:
             context_token: 当前会话令牌。
             run_id: 问答运行。
             stop: 运行结束后置位，进度任务发完手头的一句就退出。
+            page_url: 可实时查看同一条回答的工作台链接。
         """
         try:
             await asyncio.wait_for(stop.wait(), self.settings.channel_progress_after_seconds)
@@ -660,12 +665,15 @@ class InboundHandler:
         except TimeoutError:
             pass
         last = ""
+        linked = False
         while not stop.is_set():
             label = await self.chat.activity(run_id)
             if stop.is_set():
                 return
             if label and label != last and context_token:
-                await self.send_text(account, to_user_id, context_token, label, run_id=None)
+                text = label if linked else f"{label}\n\n实时查看回答：{page_url}"
+                if await self.send_text(account, to_user_id, context_token, text, run_id=None):
+                    linked = True
                 await self.ilink.send_typing(account, to_user_id, context_token, True)
                 last = label
             if stop.is_set():
@@ -741,11 +749,12 @@ class InboundHandler:
         name = ticket.tool_name or "这项操作"
         return f"{name}属于删除或外发，只能在网页确认：{self._page_url(None)}"
 
-    def _page_url(self, conversation_id: UUID | None) -> str:
+    def _page_url(self, conversation_id: UUID | None, workspace_id: UUID | None = None) -> str:
         """拼网页地址。没有对话时回到问答首页。
 
         Args:
             conversation_id: 对话标识。
+            workspace_id: 对话所属空间，避免网页沿用另一个已选空间。
 
         Returns:
             绝对地址。
@@ -753,7 +762,8 @@ class InboundHandler:
         base = self.settings.public_app_base_url.rstrip("/")
         if conversation_id is None:
             return f"{base}/chat"
-        return f"{base}/chat/{conversation_id}"
+        suffix = f"?workspace_id={workspace_id}" if workspace_id is not None else ""
+        return f"{base}/chat/{conversation_id}{suffix}"
 
     async def _ensure_conversation(self, account: AccountRecord, peer_id: str) -> UUID:
         """保证当前空间有一条微信对话。

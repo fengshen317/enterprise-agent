@@ -76,7 +76,13 @@ onMounted(loadSetup)
 async function signIn(): Promise<void> {
   if (busy.value) return
   busy.value = true; error.value = ''
-  try { await auth.signIn(username.value, password.value); password.value = ''; await router.replace('/chat') }
+  try {
+    await auth.signIn(username.value, password.value)
+    password.value = ''
+    const target = route.query.return_to
+    const conversation = typeof target === 'string' && target.startsWith('/chat/') && router.resolve(target).name === 'chat'
+    await router.replace(conversation ? target : '/chat')
+  }
   catch (value) {
     error.value = value instanceof Error ? value.message : '登录失败，请稍后重试'
     if (value instanceof ApiError && value.requestId) error.value += ' · 请求标识：' + value.requestId

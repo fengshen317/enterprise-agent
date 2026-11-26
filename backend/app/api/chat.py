@@ -257,7 +257,7 @@ async def run_snapshot(
         运行快照。
     """
     await auth_service(request).run(scope, run_id)
-    return await runtime.store.snapshot(run_id)
+    return await runtime.snapshot(run_id)
 
 
 @router.post("/runs/{run_id}/cancel", response_model=RunSnapshot)
@@ -310,7 +310,7 @@ async def events(
             except ApplicationError:
                 yield 'event: access_revoked\ndata: {"code":"ACCESS_REVOKED"}\n\n'
                 return
-            snapshot = await runtime.store.snapshot(run_id)
+            snapshot = await runtime.snapshot(run_id)
             payload = snapshot.model_dump_json()
             terminal = snapshot.run.status not in ACTIVE
             if payload != previous or terminal:

@@ -1009,9 +1009,12 @@ async def test_long_answer_is_plain_text_with_link_and_progress() -> None:
         FakeMembers(found=True, allowed=True),
         FakeApprovals(),
     )
-    await handler.handle(_account(), _message("总结一下", "long"))
+    account = _account()
+    await handler.handle(account, _message("总结一下", "long"))
     await handler.drain()
-    assert "正在查知识库…" in ilink.sent
+    progress = [item for item in ilink.sent if item.startswith("正在查知识库…")]
+    assert len(progress) == 1 and "实时查看回答：" in progress[0]
+    assert f"?workspace_id={account.workspace_id}" in progress[0]
     final = ilink.sent[-1]
     assert "# 标题" not in final
     assert "**" not in final

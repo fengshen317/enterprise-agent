@@ -30,7 +30,7 @@ const router = createRouter({
     { path: '/', redirect: '/chat' },
     { path: '/login', name: 'login', component: LoginView },
     { path: '/account/password', name: 'change-password', component: ChangePasswordView, meta: { title: '修改密码' } },
-    { path: '/chat/:conversationId?', component: ChatView, meta: { title: '问答' } },
+    { path: '/chat/:conversationId?', name: 'chat', component: ChatView, meta: { title: '问答' } },
     { path: '/agents', component: AgentListView, meta: { title: '智能体' } },
     { path: '/agents/new', component: AgentEditorView, meta: { title: '智能体' } },
     { path: '/agents/:agentId', component: AgentEditorView, meta: { title: '智能体' } },
@@ -62,13 +62,21 @@ router.beforeEach(async to => {
   if (!auth.initialized) {
     try { await auth.restore() } catch { auth.clear() }
   }
-  if (to.name !== 'login' && !auth.authenticated) return '/login'
+  const linkedConversation = to.name === 'chat' && !!to.params.conversationId
+  if (to.name !== 'login' && !auth.authenticated) {
+    return linkedConversation ? { name: 'login', query: { return_to: to.fullPath } } : '/login'
+  }
   if (auth.session?.must_change_password && to.name !== 'change-password') return { name: 'change-password' }
   if (to.name === 'login' && auth.authenticated) return '/chat'
   if (to.meta.systemAdmin && auth.session?.system_admin !== true) return '/chat'
   if (to.meta.admin) {
     try { await auth.restore() } catch { return '/chat' }
     if (auth.activeWorkspace?.role !== 'admin' || auth.activeWorkspace.status !== 'active') return '/chat'
+  }
+  const workspaceId = to.query.workspace_id
+  if (linkedConversation && typeof workspaceId === 'string' && workspaceId !== auth.selectedWorkspaceId
+    && auth.session?.workspaces.some(workspace => workspace.id === workspaceId)) {
+    auth.selectWorkspace(workspaceId)
   }
 })
 function expire(): void { auth.clear(); void router.replace('/login') }

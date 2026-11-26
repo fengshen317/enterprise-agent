@@ -41,8 +41,17 @@ export interface ModelProfile extends ModelProfileFields {
   has_api_key: boolean
 }
 
+export interface ModelProviderPreset {
+  id: string
+  label: string
+  base_url: string
+  docs_url: string
+  supports_discovery: boolean
+}
+
 // 文本和图文分别发起请求，每次最多等待 15 秒。
 const CONFIG_TEST_TIMEOUT_MS = 35000
+const MODEL_CATALOG_TIMEOUT_MS = 15000
 
 function record(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null }
 function invalid(): never { throw new ApiError('配置接口返回格式不正确', 502) }
@@ -98,6 +107,25 @@ export async function listModelProfiles(): Promise<ModelProfile[]> {
   const body = await requestJson('/api/admin/model-profiles')
   if (!Array.isArray(body)) return invalid()
   return body.map(parseProfile)
+}
+
+export async function listModelProviders(): Promise<ModelProviderPreset[]> {
+  const body = await requestJson('/api/admin/model-providers')
+  if (!Array.isArray(body)) return invalid()
+  return body.map((item: unknown) => {
+    if (!record(item) || typeof item.id !== 'string' || typeof item.label !== 'string'
+      || typeof item.base_url !== 'string' || typeof item.docs_url !== 'string'
+      || typeof item.supports_discovery !== 'boolean') return invalid()
+    return { id: item.id, label: item.label, base_url: item.base_url, docs_url: item.docs_url, supports_discovery: item.supports_discovery }
+  })
+}
+
+export async function discoverModelCatalog(providerId: string, apiKey: string): Promise<string[]> {
+  const body = await requestJson(`/api/admin/model-providers/${encodeURIComponent(providerId)}/models`, {
+    method: 'POST', body: JSON.stringify({ api_key: apiKey }),
+  }, MODEL_CATALOG_TIMEOUT_MS)
+  if (!Array.isArray(body) || !body.every((id: unknown) => typeof id === 'string')) return invalid()
+  return body as string[]
 }
 
 export async function addModelProfile(profile: ModelProfileDraft): Promise<ModelProfile> {

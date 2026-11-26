@@ -15,6 +15,12 @@ from app.schemas.model_profiles import ModelProfileDraft, ModelProfileView
 from app.services.admin import AdminService
 from app.services.config_probe import ConfigCheck, probe_connections
 from app.services.config_service import ConfigGroup, ConfigItem, ConfigService
+from app.services.model_catalog import (
+    ModelCatalogRequest,
+    ModelProviderPreset,
+    discover_model_ids,
+    list_model_providers,
+)
 
 router = APIRouter(prefix="/api/admin", tags=["空间成员管理"])
 
@@ -194,6 +200,22 @@ async def test_configs(
     config_service: ConfigService = request.app.state.config_service
     candidate = await config_service.settings_for_test(body.group, _config_values(body.configs))
     return await probe_connections(candidate, body.group)
+
+
+@router.get("/model-providers", response_model=list[ModelProviderPreset])
+async def model_providers(response: Response, identity: SystemAdminDependency) -> list[ModelProviderPreset]:
+    """列出系统管理员可以选择的模型供应商。"""
+    response.headers["Cache-Control"] = "no-store"
+    return list_model_providers()
+
+
+@router.post("/model-providers/{provider_id}/models", response_model=list[str])
+async def discover_models(
+    provider_id: str, body: ModelCatalogRequest, response: Response, identity: SystemAdminDependency
+) -> list[str]:
+    """仅向选中厂商查询模型，查询凭据不写入数据库。"""
+    response.headers["Cache-Control"] = "no-store"
+    return await discover_model_ids(provider_id, body.api_key)
 
 
 @router.get("/model-profiles", response_model=list[ModelProfileView])

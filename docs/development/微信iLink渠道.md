@@ -11,7 +11,7 @@
 - 登录用户在 `/channels/wechat` 取码、轮询、查看和解绑。iLink 返回的 `qrcode_img_content` 是待编码的登录链接，不是图片地址；前端在本地生成二维码，并保留「在浏览器打开」作为失败降级。扫码确认后，iLink 账号绑定到该系统用户，初始空间是当时选中的工作空间。`bot_token` 使用本部署的 Fernet 密钥加密。
 - 绑定状态使用串行轮询：上一次请求完成后再等待 2 秒发起下一次，避免慢请求重叠。网页取码超时为 20 秒，状态轮询超时为 15 秒，均覆盖后端访问 iLink 的最长等待时间。
 - `ChannelRuntime` 在拥有问答 advisory lock 的同一进程里，按账号再拿一把锁（`782341920` + 账号散列）做 `getUpdates` 长轮询。这样审批等待能唤醒本进程的 `ApprovalBroker`。
-- 入站文本进入该用户当前空间的固定对话，并调用现有 `ChatRuntime.create_run`。生成过程中发 typing；超过 `EA_CHANNEL_PROGRESS_AFTER_SECONDS`（默认 10 秒）按当前工具发一句进度，相同内容按 `EA_CHANNEL_PROGRESS_INTERVAL_SECONDS` 节流。结束后把 Markdown 收成纯文本，超长时只发开头并附上 `EA_PUBLIC_APP_BASE_URL` 下的网页对话链接。
+- 入站文本进入该用户当前空间的固定对话，并调用现有问答运行。生成过程中发 typing。超过 `EA_CHANNEL_PROGRESS_AFTER_SECONDS`（默认 10 秒）时，第一条进度附带可实时查看正文的工作台对话链接，后续相同进度沿用原节流机制。链接携带公开的对话和空间标识，登录后回到原对话，服务端继续校验成员资格和对话归属。结束后把 Markdown 收成纯文本，超长时附上同一个完整回答链接。
 - 指令：`/new` 新对话，`/ws <slug>` 切换空间（必须是有效成员），`/agent` 列出或切换 Agent，`/help` 查看说明。扫码确认时还没有 `context_token`，欢迎说明在用户第一条微信消息时发出。
 - 写操作审批会在 24 小时窗口内推送工具名和参数预览。`write` 可以回复 `同意 CODE` / `拒绝 CODE 原因`；只有一项时也可以只回复 `同意`、`1`、`拒绝` 或 `2`（可带原因）。多项时列出确认码。`delete` 和 `external` 只在网页确认，微信里不会代为决定。
 - 普通网页问答的成功或失败结果仅保留在网页，不自动转发到微信；微信入站问答由原消息处理链路回复。Cron `schedule_` / 手动 `manual_` 只有对应定时任务显式开启 `push_to_wechat` 才推送；任务级关闭不是投递错误。窗口外不发送并在 `channel_messages` 记下原因。绑定页显示「推送可用至 …」或「推送已暂停」，并列出这些未推送记录。窗口剩余不足 `EA_CHANNEL_WINDOW_REMINDER_HOURS`（默认 2 小时）时，每个窗口提醒一次「回复任意内容可继续接收推送」。网页里的回答始终保留。
@@ -40,6 +40,7 @@
 
 - 超过 24 小时后发送是否真的被静默丢弃、且不返回错误。这是 weilink 文档和官方说明里的平台限制，本仓库用本地入站时间提前拦住，没有对生产环境发过包。
 - `message_state=1` 的流式增量之后，服务端会不会用同一个 `message_id` 再推一条完成态。实现上忽略状态 1，完成态才去重；若服务端只推一次且状态就是 1，这条消息会被跳过。
+- 腾讯公开的 iLink 协议提供 `sendTyping` 和 `sendMessage`。当前项目使用已验证的完成态发送方式，生成中的正文通过工作台链接查看。 [腾讯 iLink 协议](https://github.com/Tencent/openclaw-weixin/blob/main/docs/protocol_zh_CN.md)
 - 没有 `context_token` 时 `sendMessage` 是否被接受。官方客户端会警告后继续发送，但不能证明服务端接受。主动推送在缺少 token 时直接不发。
 - `-14` 暂停一小时后是否必须先 `notifyStart` 才能恢复。当前官方主线仍是暂停一小时；曾有 PR 建议先 `notifyStart` 再短退避，那次修改没有体现在本次读到的 `monitor.ts` 里。本实现在开始和停止轮询时调用 `notifyStart` / `notifyStop`，暂停到期后直接重新 `getUpdates`。
 - 发送成功（`ret=0`）但手机收不到的情况。协议和社区问题都提到过，本渠道只根据返回码记账。

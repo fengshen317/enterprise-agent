@@ -19,9 +19,11 @@ from app.core.errors import ApplicationError
 from app.core.secret_files import cipher_for
 from app.models.config import IntegrationConfig
 from app.schemas.model_profiles import ModelProfileDraft, ModelProfileView
+from app.services.accounts import MAX_MEMBER_PASSWORD_LENGTH, MIN_MEMBER_PASSWORD_LENGTH
 
 logger = logging.getLogger(__name__)
 ENCRYPTED_PREFIX = "fernet:v1:"
+MEMBER_INITIAL_PASSWORD_KEY = "member_initial_password"
 LEGACY_NUMERIC_KEYS = {
     "model_timeout_seconds",
     "model_max_tokens",
@@ -41,6 +43,7 @@ MANAGED_KEYS: dict[str, tuple[bool, str]] = {
     "tavily_api_key": (True, "Tavily API Key"),
     "web_search_timeout_seconds": (False, "搜索超时（秒）"),
     "web_search_max_results": (False, "搜索返回条数"),
+    MEMBER_INITIAL_PASSWORD_KEY: (True, "统一初始密码"),
 }
 ConfigGroup = Literal["llm", "search"]
 SEARCH_KEYS = frozenset({"tavily_api_key", "web_search_timeout_seconds", "web_search_max_results"})
@@ -102,8 +105,16 @@ class ConfigService:
 
     def _validate(self, values: dict[str, str], *, enforce_profile: bool) -> Settings:
         """验证输入类型和供应商地址，拦截密钥跨服务复用。"""
+        password = values.get(MEMBER_INITIAL_PASSWORD_KEY)
+        if password is not None and not (
+            MIN_MEMBER_PASSWORD_LENGTH <= len(password) <= MAX_MEMBER_PASSWORD_LENGTH and password.strip()
+        ):
+            raise ApplicationError("INITIAL_PASSWORD_INVALID", "统一初始密码需为 8 至 128 个字符，且不能全为空白", 422)
         try:
             candidate = Settings.model_validate({**self._settings.model_dump(), **values})
+            # 成员密码单独保存时不依赖模型配置是否齐备。
+            if values.keys() == {MEMBER_INITIAL_PASSWORD_KEY}:
+                return candidate
             if "llm_base_url" in values or candidate.llm_provider == "openai_compatible":
                 url = urlsplit(candidate.llm_base_url)
                 _ = url.port
@@ -180,14 +191,21 @@ class ConfigService:
         """统一检查保存和测试提交的配置值。"""
         if not values.keys() <= allowed:
             raise ApplicationError("CONFIG_KEY_UNKNOWN", "存在不可管理的配置项", 422)
-        values = {key: value.strip() for key, value in values.items()}
-        if any(any(ch in value for ch in "\r\n\0") for value in values.values()):
+        if any(ch in values.get(MEMBER_INITIAL_PASSWORD_KEY, "") for ch in "\r\n\0"):
+            raise ApplicationError("INITIAL_PASSWORD_INVALID", "统一初始密码需为单行文本", 422)
+        # 密码原样保存，其他配置继续沿用原有的首尾空白处理。
+        normalized = {
+            key: value if key == MEMBER_INITIAL_PASSWORD_KEY else value.strip() for key, value in values.items()
+        }
+        if any(any(ch in value for ch in "\r\n\0") for value in normalized.values()):
             raise ApplicationError("CONFIG_VALUE_INVALID", "配置值不能包含控制字符", 422)
-        return values
+        return normalized
 
     async def settings_for_test(self, group: ConfigGroup, values: dict[str, str]) -> Settings:
         """按组构造独立快照，仅在地址匹配时复用已保存的模型密钥。"""
-        allowed = set(SEARCH_KEYS) if group == "search" else MANAGED_KEYS.keys() - SEARCH_KEYS
+        allowed = (
+            set(SEARCH_KEYS) if group == "search" else MANAGED_KEYS.keys() - SEARCH_KEYS - {MEMBER_INITIAL_PASSWORD_KEY}
+        )
         values = self._normalize(values, allowed)
         async with self._lock:
             await self._ensure_loaded()

@@ -57,6 +57,90 @@ def response(content: str = "", name: str | None = None, arguments: dict[str, An
     )
 
 
+async def test_live_answer_is_visible_before_completion_and_replaced_on_retry(
+    chat: tuple[FastAPI, httpx.AsyncClient, ControlledProvider], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """真实 SDK 在失败前发布临时正文，重试和终态不会拼入旧尝试。"""
+    from langchain_deepseek import ChatDeepSeek
+
+    app, client, _ = chat
+    runtime = app.state.chat_runtime
+    runtime.settings = runtime.settings.model_copy(update={
+        "deepseek_api_key": SecretStr("test-only"),
+        "task_retry_base_seconds": 0.001,
+        "task_retry_max_seconds": 0.001,
+    })
+    runtime.provider = DeepSeekProvider(runtime.settings)
+    fail_first = asyncio.Event()
+    retry_started = asyncio.Event()
+    release_retry = asyncio.Event()
+    finish_retry = asyncio.Event()
+    attempts = 0
+
+    class PartialResponse(httpx.AsyncByteStream):
+        """模拟收到第一段后断线或继续等待后续片段。"""
+
+        def __init__(self, failing: bool) -> None:
+            """绑定本次模拟响应的终止方式。"""
+            self.failing = failing
+
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            """先发正文片段，再根据测试信号报告失败或结束。"""
+            text = "旧尝试片段" if self.failing else "新回答"
+            first = response(text).content.split(b"data: [DONE]", 1)[0]
+            yield first.replace(b'"finish_reason": "stop"', b'"finish_reason": null')
+            if self.failing:
+                await fail_first.wait()
+                raise httpx.ReadError("fixture stream interrupted")
+            await finish_retry.wait()
+            yield response("已完成").content
+
+    async def transport(request: httpx.Request) -> httpx.Response:
+        """为两次模型调用提供独立的流连接。"""
+        nonlocal attempts
+        assert json.loads(request.content)["stream"] is True
+        attempts += 1
+        if attempts > 1:
+            retry_started.set()
+            await release_retry.wait()
+        return httpx.Response(
+            200, stream=PartialResponse(attempts == 1), headers={"Content-Type": "text/event-stream"}
+        )
+
+    def model(**kwargs: Any) -> ChatDeepSeek:
+        """以模拟 HTTP 注入实际 SDK。"""
+        return ChatDeepSeek(**kwargs, http_async_client=httpx.AsyncClient(transport=httpx.MockTransport(transport)))
+
+    monkeypatch.setattr("langchain_deepseek.ChatDeepSeek", model)
+    conversation = await new_conversation(client)
+    created = await submit(client, conversation)
+    run_id = created["run"]["id"]
+
+    async def wait_for_preview(expected: str) -> None:
+        """检查运行未终止时的可恢复快照。"""
+        async with asyncio.timeout(10):
+            while True:
+                result = await client.get(f"/api/runs/{run_id}")
+                snapshot = result.json()
+                assert result.status_code == 200 and snapshot["run"]["status"] in {"pending", "running"}, snapshot
+                if snapshot["run"]["status"] == "running" and snapshot["message"]["content"] == expected:
+                    return
+                await asyncio.sleep(0.05)
+
+    await wait_for_preview("旧尝试片段")
+    assert (await runtime.store.snapshot(UUID(run_id))).message.content == ""
+    fail_first.set()
+    await asyncio.wait_for(retry_started.wait(), 10)
+    await wait_for_preview("")
+    release_retry.set()
+    await wait_for_preview("新回答")
+    finish_retry.set()
+    terminal = await settled(client, run_id)
+    assert terminal["run"]["status"] == "completed" and terminal["message"]["content"] == "新回答已完成"
+    assert (await runtime.store.snapshot(UUID(run_id))).message.content == "新回答已完成"
+    assert attempts == 2
+
+
 async def test_chat_plan_parallel_agents_retry_and_private_history(
     chat: tuple[FastAPI, httpx.AsyncClient, ControlledProvider], monkeypatch: pytest.MonkeyPatch
 ) -> None:
