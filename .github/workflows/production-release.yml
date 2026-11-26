@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - chore/main-auto-deploy
     paths:
       - .github/workflows/production-release.yml
       - backend/**
