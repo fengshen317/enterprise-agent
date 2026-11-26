@@ -201,6 +201,8 @@ docker compose logs --tail=100 api web db
 
 从旧验收包续跑时，可以单独替换 `windows-release-rehearsal.cmd`，继续使用已经下载的镜像和 Compose 配置。脚本校验兼容 Linux 生成的 LF 和 Windows 的 CRLF。失败输出会标明版本文件、Docker 引擎或 Compose 配置等具体阶段，并附日志路径。
 
+2026-11-26，Windows 部署机运行修复后的验收脚本并返回 `PASS`。隔离项目从 `0026` 升级至 `0027`，保留了测试消息，随后从备份恢复到空数据库并验证旧 API 就绪。验收后通过只读 SSH 核对，业务 Compose 项目仍有 10 个容器在运行。
+
 ### 启动排障
 
 页面迟迟打不开时，用 `docker compose config --quiet` 检查配置，用 `docker compose ps` 查看服务状态。
