@@ -21,6 +21,7 @@ export interface Schedule {
   revision: number
   enabled: boolean
   push_to_wechat: boolean
+  push_channels: string[]
   next_run_at: string | null
   last_run_at: string | null
   last_run_id: string | null
@@ -40,6 +41,7 @@ export interface ScheduleInput {
   revision?: number
   enabled: boolean
   push_to_wechat: boolean
+  push_channels?: string[]
 }
 
 function record(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null }
@@ -51,7 +53,10 @@ function parseSchedule(value: unknown): Schedule {
   if (typeof value.calendar_mode !== 'string' || !Object.hasOwn(scheduleCalendars, value.calendar_mode)
     || (value.calendar_waiting_year !== null && !Number.isInteger(value.calendar_waiting_year))
     || typeof value.revision !== 'number' || !Number.isInteger(value.revision) || value.revision < 1) return invalid()
-  return value as unknown as Schedule
+  const channels = Array.isArray(value.push_channels)
+    ? value.push_channels.filter((item): item is string => typeof item === 'string')
+    : (value.push_to_wechat ? ['ilink'] : [])
+  return { ...(value as unknown as Schedule), push_channels: channels }
 }
 
 export async function listSchedules(offset = 0, limit = 50): Promise<Schedule[]> {

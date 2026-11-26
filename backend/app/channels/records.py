@@ -24,6 +24,7 @@ class AccountRecord:
     created_at: datetime
     welcome_pending: bool = False
     token: str = field(repr=False, default="")
+    app_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,7 @@ class RunDelivery:
     schedule_id: UUID | None = None
     schedule_name: str = ""
     push_to_wechat: bool = False
+    push_channels: tuple[str, ...] = ()
 
 
 @dataclass
@@ -82,6 +84,32 @@ class BindSessionRecord:
     status: str
     refresh_count: int
     account_id: UUID | None
+
+
+@dataclass
+class AppRecord:
+    """一个企业安装的飞书、钉钉或 QQ 机器人。secret 不进入日志。"""
+
+    id: UUID
+    workspace_id: UUID
+    channel_type: str
+    external_app_id: str
+    status: str
+    robot_code: str = ""
+    sandbox: bool = False
+    secret: str = field(repr=False, default="")
+
+
+@dataclass(frozen=True)
+class BindCodeRecord:
+    """员工发给机器人的一次性绑定码。"""
+
+    id: UUID
+    user_id: UUID
+    workspace_id: UUID
+    app_id: UUID
+    code: str
+    expires_at: datetime
 
 
 @dataclass(frozen=True)

@@ -22,6 +22,7 @@ const schedule: api.Schedule = {
   revision: 1,
   enabled: true,
   push_to_wechat: false,
+  push_channels: [],
   next_run_at: '2026-11-12T01:00:00Z',
   last_run_at: null,
   last_run_id: null,
@@ -78,6 +79,7 @@ it('创建任务时提交固定对话、Cron 和时区', async () => {
     calendar_mode: 'cn_workday',
     enabled: true,
     push_to_wechat: false,
+    push_channels: [],
   })
   expect(wrapper.text()).toContain('定时任务已创建')
   wrapper.unmount()
@@ -140,6 +142,7 @@ it('编辑会回填并提交完整字段', async () => {
     revision: 1,
     enabled: true,
     push_to_wechat: false,
+    push_channels: [],
   })
   wrapper.unmount()
 })

@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { RouterLink } from 'vue-router'
 
-const plannedChannels = [
-  { key: 'feishu', name: '飞书', mark: '飞', description: '团队消息与 Agent 对话' },
-  { key: 'qq', name: 'QQ', mark: 'QQ', description: 'QQ 聊天消息' },
-  { key: 'dingtalk', name: '钉钉', mark: '钉', description: '企业协作消息' },
+const enterpriseChannels = [
+  { key: 'feishu', name: '飞书', mark: '飞', description: '企业自建应用机器人。管理员配置后，员工用绑定码在单聊里对应到自己的工作台账号。' },
+  { key: 'dingtalk', name: '钉钉', mark: '钉', description: '企业内部机器人。员工通常需要先打开与机器人的单聊，定时结果才会送达。' },
+  { key: 'qq', name: 'QQ', mark: 'QQ', description: '官方 QQ 机器人。被动回复 60 分钟、每条消息 4 次；主动消息需要好友且用户允许。' },
 ]
 </script>
 
@@ -42,16 +42,16 @@ const plannedChannels = [
       </RouterLink>
     </article>
 
-    <section aria-labelledby="channel-planned-title">
+    <section aria-labelledby="channel-enterprise-title">
       <h2
-        id="channel-planned-title"
+        id="channel-enterprise-title"
         class="channel-directory__section-title"
       >
-        规划中的通道
+        企业机器人
       </h2>
       <ul class="channel-directory__list">
         <li
-          v-for="channel in plannedChannels"
+          v-for="channel in enterpriseChannels"
           :key="channel.key"
           class="channel-directory__item"
         >
@@ -64,6 +64,12 @@ const plannedChannels = [
             <h3>{{ channel.name }}</h3>
             <p>{{ channel.description }}</p>
           </div>
+          <RouterLink
+            class="channel-directory__manage"
+            :to="'/channels/' + channel.key"
+          >
+            管理{{ channel.name }}
+          </RouterLink>
         </li>
       </ul>
     </section>
@@ -151,6 +157,18 @@ const plannedChannels = [
     margin: 0;
     list-style: none;
   }
-  &__item { padding: .85rem; background: $surface; }
+  &__item { flex-wrap: wrap; padding: .85rem; background: $surface; }
+  &__manage {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.25rem;
+    padding: .3rem .65rem;
+    border-radius: $control-radius;
+    background: $sidebar;
+    color: $ink;
+    font-weight: 650;
+    text-decoration: none;
+    &:hover { background: $line; }
+  }
 }
 </style>

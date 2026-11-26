@@ -12,7 +12,7 @@ _APPROVE = re.compile(r"^同意\s+([A-Za-z0-9]{4})$")
 _REJECT = re.compile(r"^拒绝\s+([A-Za-z0-9]{4})(?:\s+(.{1,200}))?$")
 _BARE_APPROVE = re.compile(r"^(?:同意|1)$")
 _BARE_REJECT = re.compile(r"^(?:拒绝|2)(?:\s+(.{1,200}))?$")
-CommandKind = Literal["chat", "new", "workspace", "agent", "help", "approve", "reject"]
+CommandKind = Literal["chat", "new", "workspace", "agent", "help", "approve", "reject", "bind"]
 
 
 @dataclass(frozen=True)
@@ -34,6 +34,15 @@ def new_approval_code() -> str:
     return "".join(secrets.choice(_CODE_ALPHABET) for _ in range(4))
 
 
+def new_bind_code() -> str:
+    """生成员工在单聊里发送的一次性绑定码。
+
+    Returns:
+        八位大写绑定码。
+    """
+    return "".join(secrets.choice(_CODE_ALPHABET) for _ in range(8))
+
+
 def parse_inbound(text: str) -> InboundCommand:
     """识别 /new、/ws、/agent 和审批回复。
 
@@ -48,6 +57,8 @@ def parse_inbound(text: str) -> InboundCommand:
         return InboundCommand("new")
     if stripped == "/help":
         return InboundCommand("help")
+    if stripped.startswith("/bind ") or stripped.startswith("/bind\t"):
+        return InboundCommand("bind", argument=stripped[5:].strip())
     if stripped.startswith("/ws ") or stripped.startswith("/ws\t"):
         return InboundCommand("workspace", argument=stripped[3:].strip())
     if stripped == "/agent":

@@ -85,8 +85,7 @@ def scheduled_spec(settings: Settings) -> ToolSpec:
         if arguments.agent_profile_id is not None:
             name = await store.private_agent_name(context.scope, arguments.agent_profile_id)
             effect = (
-                f"新建专用对话「{arguments.name.strip()}」，绑定私有 Agent「{name}」"
-                f"（{arguments.agent_profile_id}）"
+                f"新建专用对话「{arguments.name.strip()}」，绑定私有 Agent「{name}」（{arguments.agent_profile_id}）"
             )
         return {
             "summary": f"创建定时任务「{arguments.name}」",
@@ -175,6 +174,7 @@ def list_scheduled_tasks_spec(settings: Settings) -> ToolSpec:
                 "calendar_mode": item.calendar_mode,
                 "enabled": item.enabled,
                 "push_to_wechat": item.push_to_wechat,
+                "push_channels": item.push_channels,
                 "next_run_at": item.next_run_at.isoformat() if item.next_run_at is not None else None,
             }
             for item in items
@@ -298,13 +298,17 @@ def scheduled_specs(settings: Settings) -> tuple[ToolSpec, ...]:
         按只读与写入顺序排列的工具声明。
     """
     return (
-        list_scheduled_tasks_spec(settings), get_scheduled_task_spec(settings), scheduled_spec(settings),
-        update_scheduled_task_spec(settings), set_scheduled_task_enabled_spec(settings),
+        list_scheduled_tasks_spec(settings),
+        get_scheduled_task_spec(settings),
+        scheduled_spec(settings),
+        update_scheduled_task_spec(settings),
+        set_scheduled_task_enabled_spec(settings),
     )
 
 
 def get_scheduled_task_spec(settings: Settings) -> ToolSpec:
     """注册仅主 Agent 使用的本人任务详情工具。"""
+
     async def handler(context: ToolContext, arguments: BaseModel) -> object:
         """读取任务指令、调度配置与编辑版本。"""
         assert isinstance(arguments, GetScheduledTaskArgs)
@@ -334,6 +338,7 @@ def get_scheduled_task_spec(settings: Settings) -> ToolSpec:
 
 def update_scheduled_task_spec(settings: Settings) -> ToolSpec:
     """注册逐次审批的定时任务编辑工具。"""
+
     async def preview(arguments: BaseModel, context: ToolContext) -> dict[str, object]:
         """比较当前版本，只展示实际要修改的配置。"""
         assert isinstance(arguments, UpdateScheduledTaskArgs)
@@ -388,8 +393,10 @@ def update_scheduled_task_spec(settings: Settings) -> ToolSpec:
         key=UPDATE_SCHEDULE_TOOL,
         version=1,
         display_name="修改定时任务",
-        description=("原地修改本人已有的定时任务。先列出任务确认唯一目标，再获取详情及 revision，"
-                     "只提交用户明确要求修改的字段，执行前需要审批。"),
+        description=(
+            "原地修改本人已有的定时任务。先列出任务确认唯一目标，再获取详情及 revision，"
+            "只提交用户明确要求修改的字段，执行前需要审批。"
+        ),
         args_model=UpdateScheduledTaskArgs,
         risk="write",
         approval="always",

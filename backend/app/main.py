@@ -19,6 +19,7 @@ from app.api.auth import router as auth_router
 from app.api.channels import router as channel_router
 from app.api.chat import router as chat_router
 from app.api.connectors import router as connector_router
+from app.api.enterprise_channels import router as enterprise_channel_router
 from app.api.health import router
 from app.api.initial_setup import router as initial_setup_router
 from app.api.knowledge import router as knowledge_router
@@ -30,8 +31,13 @@ from app.api.system_logs import router as system_log_router
 from app.api.tasks import router as task_router
 from app.api.tools import router as tool_router
 from app.capabilities.registry import build_default_registry
+from app.channels.bus import ChannelBus
 from app.channels.crypto import ChannelCrypto
+from app.channels.dingtalk import DingTalkClient
+from app.channels.enterprise import EnterpriseChannelService
+from app.channels.feishu import FeishuClient
 from app.channels.ilink import ILinkClient
+from app.channels.qq_bot import QQBotClient
 from app.channels.repository import ChannelStore
 from app.channels.runtime import ChannelRuntime
 from app.channels.service import ChannelService
@@ -169,8 +175,13 @@ def create_app(
         await schedule_runtime.start()
         channel_crypto = await ChannelCrypto.load(config, database.session_factory)
         ilink = ILinkClient(config)
+        feishu = FeishuClient()
+        dingtalk = DingTalkClient()
+        qq_bot = QQBotClient()
         channel_store = ChannelStore(database.session_factory, channel_crypto)
+        bus = ChannelBus(ilink, feishu, dingtalk, qq_bot, channel_store)
         app.state.channel_service = ChannelService(channel_store, ilink, channel_crypto, config)
+        app.state.enterprise_channels = EnterpriseChannelService(channel_store, channel_crypto)
         channel_runtime = ChannelRuntime(
             database,
             config,
@@ -180,6 +191,7 @@ def create_app(
             runtime,
             approval_service,
             app.state.agent_service,
+            bus=bus,
         )
         app.state.channel_runtime = channel_runtime
         runtime.on_run_finished.append(channel_runtime.on_run_finished)
@@ -277,6 +289,7 @@ def create_app(
     app.include_router(task_router)
     app.include_router(schedule_router)
     app.include_router(channel_router)
+    app.include_router(enterprise_channel_router)
     app.include_router(knowledge_router)
     app.include_router(ragflow_models_router)
     app.include_router(material_router)

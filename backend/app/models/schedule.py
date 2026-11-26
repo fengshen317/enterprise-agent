@@ -4,6 +4,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -67,6 +68,8 @@ class ScheduledTask(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     # 主动外发必须由用户逐任务开启，避免新增渠道后旧任务突然产生通知。
     push_to_wechat: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # 空列表表示不向任何渠道投递。push_to_wechat 与其中是否包含 ilink 保持一致。
+    push_channels: Mapped[list[str]] = mapped_column(JSON, default=list, server_default=text("'[]'::json"))
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_run_id: Mapped[UUID | None] = mapped_column(ForeignKey("runs.id", ondelete="SET NULL"))

@@ -10,10 +10,13 @@ from uuid import UUID
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker
 
+from app.channels.bus import ChannelBus
+from app.channels.capabilities import capability_for, delivery_skip_reason
 from app.channels.crypto import ChannelCrypto
-from app.channels.handler import InboundHandler, window_skip_reason
+from app.channels.handler import InboundHandler
 from app.channels.ilink import ILinkClient
-from app.channels.records import AccountRecord, WorkspaceGate
+from app.channels.inbound import InboundEvent
+from app.channels.records import AccountRecord, AppRecord, WorkspaceGate
 from app.channels.repository import ChannelStore
 from app.channels.wechat_text import progress_label
 from app.core.config import Settings
@@ -272,6 +275,7 @@ class ChannelRuntime:
         chat_runtime: ChatRuntime,
         approval_service: ApprovalService,
         agent_service: AgentService,
+        bus: ChannelBus | None = None,
     ) -> None:
         """装配轮询器和入站处理器。
 
@@ -284,6 +288,7 @@ class ChannelRuntime:
             chat_runtime: 问答执行器。
             approval_service: 审批服务。
             agent_service: Agent 服务。
+            bus: 企业渠道出站总线。微信测试可以不传。
         """
         self.database = database
         self.settings = settings
@@ -291,10 +296,11 @@ class ChannelRuntime:
         self.ilink = ilink
         self.repo = repo
         self.chat_runtime = chat_runtime
+        self.bus = bus
         self.handler = InboundHandler(
             settings,
             repo,
-            ilink,
+            bus or ilink,
             ChatGateway(chat_runtime),
             AgentGateway(agent_service),
             MembershipGateway(database.session_factory),
@@ -304,6 +310,7 @@ class ChannelRuntime:
         self.closing = False
         self._supervisor: asyncio.Task[None] | None = None
         self._pollers: dict[UUID, asyncio.Task[None]] = {}
+        self._app_tasks: dict[UUID, asyncio.Task[None]] = {}
         self._timeouts: dict[UUID, float] = {}
 
     async def start(self) -> None:
@@ -315,14 +322,19 @@ class ChannelRuntime:
     async def close(self) -> None:
         """停止轮询和尚未完成的微信回复。"""
         self.closing = True
-        tasks = [task for task in (self._supervisor, *self._pollers.values()) if task is not None]
+        tasks = [
+            task for task in (self._supervisor, *self._pollers.values(), *self._app_tasks.values()) if task is not None
+        ]
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._supervisor = None
         self._pollers.clear()
+        self._app_tasks.clear()
         await self.handler.cancel()
+        if self.bus is not None:
+            await self.bus.aclose()
 
     async def poll_once(self, account: AccountRecord) -> None:
         """拉一次更新。-14 时把账号暂停配置的时长，不处理这批消息。
@@ -369,10 +381,11 @@ class ChannelRuntime:
         if delivery is None or delivery.status not in {"completed", "failed"}:
             return
         scheduled = delivery.idempotency_key.startswith(("schedule_", "manual_"))
-        if not scheduled or delivery.schedule_id is None or not delivery.push_to_wechat:
-            return
-        account = await self.repo.account_for_user(delivery.user_id)
-        if account is None:
+        channels = list(delivery.push_channels)
+        if not channels and delivery.push_to_wechat:
+            channels = ["ilink"]
+        # 任务没有勾选任何渠道时直接返回，这是用户选择不投递，不是发送失败。
+        if not scheduled or delivery.schedule_id is None or not channels:
             return
         if delivery.status == "failed":
             body = delivery.error_message or "生成失败，请在网页查看。"
@@ -380,14 +393,18 @@ class ChannelRuntime:
             body = delivery.content.strip()
         else:
             body = "这次回答没有生成正文，请在网页查看。"
-        label = f"【定时问答 · {delivery.schedule_name}】" if scheduled else "【工作台】"
-        await self.handler.push_proactive(
-            account,
-            f"{label}\n{body}",
-            run_id=run_id,
-            workspace_id=delivery.workspace_id if scheduled else None,
-            conversation_id=delivery.conversation_id if scheduled else None,
-        )
+        label = f"【定时问答 · {delivery.schedule_name}】"
+        for channel in channels:
+            account = await self.repo.account_for_user(delivery.user_id, channel)
+            if account is None:
+                continue
+            await self.handler.push_proactive(
+                account,
+                f"{label}\n{body}",
+                run_id=run_id,
+                workspace_id=delivery.workspace_id,
+                conversation_id=delivery.conversation_id,
+            )
 
     async def on_approval(self, notice: ApprovalNotice) -> None:
         """把写操作审批发到绑定微信。窗口外只记录原因。
@@ -397,12 +414,24 @@ class ChannelRuntime:
         """
         if not self._enabled():
             return
-        account = await self.repo.account_for_user(notice.user_id)
-        if account is None:
-            return
+        for account in await self._bound_accounts(notice.user_id):
+            await self._push_approval(account, notice)
+
+    async def _bound_accounts(self, user_id: UUID) -> list[AccountRecord]:
+        """列出这个用户还没解绑的渠道。旧测试替身只有按微信查找的方法。"""
+        listed = getattr(self.repo, "accounts_for_user", None)
+        if listed is not None:
+            rows: list[AccountRecord] = await listed(user_id)
+            return rows
+        account = await self.repo.account_for_user(user_id)
+        return [account] if account is not None else []
+
+    async def _push_approval(self, account: AccountRecord, notice: ApprovalNotice) -> None:
+        """按渠道能力决定审批能不能推送。删除和外发仍然只给网页链接。"""
         peer = await self.repo.latest_peer(account.id)
-        reason = window_skip_reason(peer, datetime.now(UTC), self.settings.channel_reply_window_hours)
-        if reason is not None or peer is None:
+        caps = capability_for(account.channel_type)
+        reason = delivery_skip_reason(caps, peer, datetime.now(UTC), self.settings)
+        if reason is not None or (peer is None and caps.proactive_uses_reply_window):
             await self.repo.log_outbound(
                 account.id,
                 peer.peer_id if peer is not None else "",
@@ -415,15 +444,16 @@ class ChannelRuntime:
         try:
             code = await self.repo.issue_approval_code(account.id, notice)
         except ApplicationError:
-            logger.warning("wechat_approval_code_failed", extra={"approval_id": str(notice.approval_id)})
+            logger.warning("channel_approval_code_failed", extra={"approval_id": str(notice.approval_id)})
             return
+        label = caps.label
         if notice.risk_level in {"delete", "external"}:
             page = self.settings.public_app_base_url.rstrip("/") + "/chat"
             text = (
-                f"需要在网页确认：{notice.tool_name}\n"
-                f"内容：{notice.preview}\n"
-                f"删除和外发不在微信里决定。打开 {page}"
+                f"需要在网页确认：{notice.tool_name}\n内容：{notice.preview}\n删除和外发不在{label}里决定。打开 {page}"
             )
+            web_only = True
+            reply_code: str | None = None
         else:
             text = (
                 "需要你确认一次写操作。\n"
@@ -431,10 +461,36 @@ class ChannelRuntime:
                 f"内容：{notice.preview}\n"
                 f"回复「同意 {code}」或「拒绝 {code} 原因」。只有这一项时也可以只回复「同意」或「拒绝」。"
             )
-        # 不把 run_id 写进出站去重，避免和这条运行的最终回复互相挡住。
-        await self.handler.send_text(
-            account, peer.peer_id, peer.context_token, text, run_id=None, workspace_id=notice.workspace_id
-        )
+            web_only = False
+            reply_code = code
+        target = peer.peer_id if peer is not None else account.ilink_user_id
+        token = peer.context_token if peer is not None else ""
+        sender = getattr(self.handler.ilink, "send_approval", None)
+        if sender is not None:
+            try:
+                await sender(
+                    account,
+                    target,
+                    token,
+                    text,
+                    code=reply_code,
+                    web_only=web_only,
+                )
+                await self.repo.log_outbound(account.id, target, "sent", None, None, text[:500])
+                return
+            except Exception:
+                logger.info("channel_approval_card_failed", extra={"account_id": str(account.id)})
+        await self.handler.send_text(account, target, token, text, run_id=None, workspace_id=notice.workspace_id)
+
+    async def _on_enterprise(self, app: AppRecord, event: InboundEvent) -> None:
+        """长连接收到的消息：已绑定的进入问答，未绑定的只回绑定说明。"""
+        account = None
+        if event.peer_id:
+            account = await self.repo.account_for_platform(app.channel_type, event.peer_id)
+        if account is None:
+            await self.handler.handle_unbound(app, event)
+            return
+        await self.handler.handle_event(account, event)
 
     def _enabled(self) -> bool:
         """渠道是否配置完成。
@@ -454,6 +510,16 @@ class ChannelRuntime:
                     current = self._pollers.get(account.id)
                     if current is None or current.done():
                         self._pollers[account.id] = asyncio.create_task(self._poll_account(account.id))
+                if self.bus is not None:
+                    apps = await self.repo.list_active_apps()
+                    live = {app.id for app in apps}
+                    for app in apps:
+                        running = self._app_tasks.get(app.id)
+                        if running is None or running.done():
+                            self._app_tasks[app.id] = asyncio.create_task(self._consume_app(app.id))
+                    for app_id, task in list(self._app_tasks.items()):
+                        if app_id not in live and not task.done():
+                            task.cancel()
                 await self._sleep(2)
             except asyncio.CancelledError:
                 return
@@ -463,6 +529,44 @@ class ChannelRuntime:
             except Exception:
                 logger.warning("wechat_supervisor_failed")
                 await self._sleep(2)
+
+    async def _consume_app(self, app_id: UUID) -> None:
+        """一个企业机器人只保留一条长连接。集群模式下也只有拿到锁的进程会收到事件。
+
+        Args:
+            app_id: 企业应用。
+        """
+        bus = self.bus
+        if bus is None:
+            return
+        connection = await self.database.engine.connect()
+        held = False
+        try:
+            held = await self._try_lock(connection, app_id)
+            if not held:
+                return
+            app = await self.repo.get_app(app_id)
+            if app is None or app.status != "active":
+                return
+
+            async def dispatch(event: InboundEvent) -> None:
+                await self._on_enterprise(app, event)
+
+            if app.channel_type == "feishu":
+                await bus.feishu.serve(app, dispatch)
+            elif app.channel_type == "dingtalk":
+                await bus.dingtalk.serve(app, dispatch)
+            elif app.channel_type == "qq":
+                await bus.qq.serve(app, dispatch)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("channel_app_consume_failed", extra={"app_id": str(app_id)})
+        finally:
+            if held:
+                await self._unlock(connection, app_id)
+            await connection.close()
+            self._app_tasks.pop(app_id, None)
 
     async def _poll_account(self, account_id: UUID) -> None:
         """持有该账号的 advisory lock 后持续长轮询。

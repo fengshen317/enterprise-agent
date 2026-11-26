@@ -126,7 +126,7 @@ class ChannelService:
         """
         self._require_channel()
         views: list[ChannelAccountView] = []
-        for item in await self.repo.list_user_accounts(scope.user_id):
+        for item in await self.repo.list_user_accounts(scope.user_id, channel_type="ilink"):
             peer = await self.repo.latest_peer(item.id)
             skipped = await self.repo.list_skipped(item.id)
             views.append(_view(item, peer, skipped, self.settings))

@@ -20,6 +20,7 @@ from app.schemas.auth import ResourceScope
 from app.schemas.schedule import CreateScheduledTaskArgs, ScheduleInput, ScheduleView, UpdateScheduledTaskArgs
 from app.services.auth import owned_conversations, require_membership
 from app.services.chat_store import ChatStore
+from app.services.push_channels import apply_wechat_flag, normalize_push_channels, stored_push_channels
 from app.services.schedule_calendar import CALENDAR_YEARS, CHINA_TIMEZONE, calendar_allows
 from app.services.scheduling import next_scheduled_run, timezone_info, validate_expression
 
@@ -75,6 +76,7 @@ class ScheduleStore:
             revision=schedule.revision,
             enabled=schedule.enabled,
             push_to_wechat=schedule.push_to_wechat,
+            push_channels=stored_push_channels(schedule.push_channels, schedule.push_to_wechat),
             next_run_at=schedule.next_run_at,
             last_run_at=schedule.last_run_at,
             last_run_id=schedule.last_run_id,
@@ -222,7 +224,8 @@ class ScheduleStore:
             calendar_mode=body.calendar_mode,
             calendar_waiting_year=waiting_year,
             enabled=body.enabled,
-            push_to_wechat=body.push_to_wechat,
+            push_to_wechat=normalize_push_channels(body.push_to_wechat, body.push_channels)[0],
+            push_channels=normalize_push_channels(body.push_to_wechat, body.push_channels)[1],
             next_run_at=next_run_at,
         )
         session.add(schedule)
@@ -378,7 +381,10 @@ class ScheduleStore:
         conversation = await self._conversation(session, scope, body.conversation_id)
         expression, timezone = self._schedule_values(body)
         if (expression, timezone, body.calendar_mode, body.enabled) != (
-            row.cron_expression, row.timezone, row.calendar_mode, row.enabled
+            row.cron_expression,
+            row.timezone,
+            row.calendar_mode,
+            row.enabled,
         ):
             row.next_run_at, row.calendar_waiting_year = (
                 next_scheduled_run(expression, timezone, body.calendar_mode) if body.enabled else (None, None)
@@ -390,7 +396,9 @@ class ScheduleStore:
         row.timezone = timezone
         row.calendar_mode = body.calendar_mode
         row.enabled = body.enabled
-        row.push_to_wechat = body.push_to_wechat
+        wechat, channels = normalize_push_channels(body.push_to_wechat, body.push_channels)
+        row.push_to_wechat = wechat
+        row.push_channels = channels
         row.revision += 1
         row.updated_at = datetime.now(UTC)
         await session.flush()
@@ -420,7 +428,13 @@ class ScheduleStore:
             await require_membership(session, scope, write=True)
             row = await self._owned_task(session, scope, changes.schedule_id, lock=True)
             data = self._view(row, "").model_dump(include=set(ScheduleInput.model_fields))
-            data.update(changes.changes())
+            changed = changes.changes()
+            data.update(changed)
+            if "push_to_wechat" in changed and "push_channels" not in changed:
+                data["push_channels"] = apply_wechat_flag(
+                    list(data.get("push_channels") or []),
+                    bool(changed["push_to_wechat"]),
+                )
             data["revision"] = changes.revision
             return await self._apply_update(session, scope, row, ScheduleInput.model_validate(data))
 
@@ -446,7 +460,8 @@ class ScheduleStore:
                 row.enabled = enabled
                 row.next_run_at, row.calendar_waiting_year = (
                     next_scheduled_run(row.cron_expression, row.timezone, row.calendar_mode)
-                    if enabled else (None, None)
+                    if enabled
+                    else (None, None)
                 )
                 row.revision += 1
                 row.updated_at = datetime.now(UTC)
@@ -471,8 +486,10 @@ class ScheduleStore:
             await require_membership(session, scope, write=True)
             row = await self._owned_task(session, scope, schedule_id, lock=True)
             title = await session.scalar(select(Conversation.title).where(Conversation.id == row.conversation_id))
-            if row.push_to_wechat != enabled:
-                row.push_to_wechat = enabled
+            channels = apply_wechat_flag(stored_push_channels(row.push_channels, row.push_to_wechat), enabled)
+            if row.push_to_wechat != enabled or channels != stored_push_channels(row.push_channels, row.push_to_wechat):
+                row.push_to_wechat = "ilink" in channels
+                row.push_channels = channels
                 row.revision += 1
                 row.updated_at = datetime.now(UTC)
                 await session.flush()

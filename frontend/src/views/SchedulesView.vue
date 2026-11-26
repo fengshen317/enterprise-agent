@@ -32,9 +32,22 @@ let revision = 0
 const selectedSchedule = computed(() => typeof route.query.schedule === 'string' ? route.query.schedule : '')
 const activeConversations = computed(() => conversations.value.filter(item => item.status === 'active'))
 
+const pushChoices = [
+  { id: 'ilink', label: '微信' },
+  { id: 'feishu', label: '飞书' },
+  { id: 'dingtalk', label: '钉钉' },
+  { id: 'qq', label: 'QQ' },
+]
+
+function channelSummary(item: Schedule): string {
+  const names = pushChoices.filter(choice => item.push_channels?.includes(choice.id)).map(choice => choice.label)
+  if (!names.length && item.push_to_wechat) return '微信'
+  return names.length ? names.join('、') : '不推送'
+}
+
 function blankForm(): ScheduleInput {
   return { name: '', prompt: '', conversation_id: '', cron_expression: '0 9 * * *', timezone: 'Asia/Shanghai',
-    calendar_mode: 'all_days', enabled: true, push_to_wechat: false }
+    calendar_mode: 'all_days', enabled: true, push_to_wechat: false, push_channels: [] }
 }
 
 function resetForm(): void {
@@ -59,6 +72,7 @@ function startEdit(item: Schedule): void {
     revision: item.revision,
     enabled: item.enabled,
     push_to_wechat: item.push_to_wechat,
+    push_channels: item.push_channels?.length ? [...item.push_channels] : (item.push_to_wechat ? ['ilink'] : []),
   }
   editingId.value = item.id
   showForm.value = true
@@ -117,8 +131,10 @@ async function submit(): Promise<void> {
   }
   saving.value = true; error.value = ''; notice.value = ''
   try {
-    if (editingId.value) await updateSchedule(editingId.value, { ...form.value })
-    else await createSchedule({ ...form.value })
+    const channels = form.value.push_channels ?? []
+    const input = { ...form.value, push_channels: channels, push_to_wechat: channels.includes('ilink') }
+    if (editingId.value) await updateSchedule(editingId.value, input)
+    else await createSchedule(input)
     if (!alive) return
     notice.value = editingId.value ? '定时任务已更新。' : '定时任务已创建。'
     showForm.value = false
@@ -335,14 +351,21 @@ onBeforeUnmount(() => { alive = false; revision++ })
         type="checkbox"
         :disabled="saving"
       />启用自动触发</label>
-      <label class="schedules__check"><input
-        v-model="form.push_to_wechat"
-        name="schedulePushToWeChat"
-        type="checkbox"
-        :disabled="saving"
-      />推送结果到微信</label>
+      <fieldset class="schedules__channels">
+        <legend>结果推送</legend>
+        <label
+          v-for="choice in pushChoices"
+          :key="choice.id"
+          class="schedules__check"
+        ><input
+          v-model="form.push_channels"
+          :value="choice.id"
+          type="checkbox"
+          :disabled="saving"
+        />{{ choice.label }}</label>
+      </fieldset>
       <p class="schedules__hint">
-        推送使用已绑定的微信账号。
+        不勾选表示只留在网页。微信受 24 小时窗口限制；飞书可主动推送；钉钉需要先打开过单聊；QQ 主动消息需要好友且允许接收。
       </p>
       <div class="schedules__actions">
         <button
@@ -493,7 +516,7 @@ onBeforeUnmount(() => { alive = false; revision++ })
                   </template>
                 </dd>
               </div>
-              <div><dt>微信推送</dt><dd>{{ item.push_to_wechat ? '已开启' : '已关闭' }}</dd></div>
+              <div><dt>结果推送</dt><dd>{{ channelSummary(item) }}</dd></div>
             </dl>
             <h4>任务指令</h4>
             <p class="schedules__full-prompt">

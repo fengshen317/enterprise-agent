@@ -20,6 +20,7 @@ import MaterialsView from './views/MaterialsView.vue'
 import SchedulesView from './views/SchedulesView.vue'
 import { legacyConnectorsRoute, legacyPluginsRoute } from './views/capabilities/capabilityRoutes'
 import ChannelDirectoryView from './views/channels/ChannelDirectoryView.vue'
+import EnterpriseChannelView from './views/channels/EnterpriseChannelView.vue'
 import WeChatChannelView from './views/channels/WeChatChannelView.vue'
 import './styles/main.scss'
 
@@ -44,6 +45,9 @@ const router = createRouter({
     { path: '/schedules', component: SchedulesView, meta: { title: '定时任务' } },
     { path: '/channels', component: ChannelDirectoryView, meta: { title: '通讯通道' } },
     { path: '/channels/wechat', component: WeChatChannelView, meta: { title: '微信' } },
+    { path: '/channels/feishu', component: EnterpriseChannelView, props: { channel: 'feishu' }, meta: { title: '飞书' } },
+    { path: '/channels/dingtalk', component: EnterpriseChannelView, props: { channel: 'dingtalk' }, meta: { title: '钉钉' } },
+    { path: '/channels/qq', component: EnterpriseChannelView, props: { channel: 'qq' }, meta: { title: 'QQ' } },
     { path: '/tasks/:taskId?', redirect: '/chat' },
     { path: '/admin/members', component: AdminView, meta: { admin: true, title: '成员与权限' } },
     { path: '/admin/plugins', component: CapabilityCenterView, meta: { admin: true, title: '插件管理' } },

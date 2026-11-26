@@ -18,6 +18,7 @@ class ScheduleInput(BaseModel):
     timezone: str | None = Field(default=None, max_length=64)
     enabled: bool = True
     push_to_wechat: bool = False
+    push_channels: list[str] | None = None
     calendar_mode: ScheduleCalendar = "all_days"
     revision: int | None = Field(default=None, ge=1)
 
@@ -84,6 +85,7 @@ class ScheduleView(BaseModel):
     timezone: str
     enabled: bool
     push_to_wechat: bool
+    push_channels: list[str] = Field(default_factory=list)
     calendar_mode: ScheduleCalendar
     calendar_waiting_year: int | None
     revision: int
@@ -118,6 +120,7 @@ class CreateScheduledTaskArgs(BaseModel):
     timezone: str | None = Field(default=None, max_length=64)
     enabled: bool = True
     push_to_wechat: bool = False
+    push_channels: list[str] | None = None
     calendar_mode: ScheduleCalendar = "all_days"
     agent_profile_id: UUID | None = Field(
         default=None,
@@ -151,6 +154,7 @@ class UpdateScheduledTaskArgs(GetScheduledTaskArgs):
     calendar_mode: ScheduleCalendar | None = None
     enabled: bool | None = None
     push_to_wechat: bool | None = None
+    push_channels: list[str] | None = None
 
     def changes(self) -> dict[str, object]:
         """提取显式替换的配置，保留未提交的现有值。"""
