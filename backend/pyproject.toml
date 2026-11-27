@@ -25,6 +25,8 @@ dependencies = [
   "mcp>=1.12,<2",
   "cryptography>=44",
   "akshare>=1.20.65,<1.21",
+  "lark-oapi>=1.4.0,<2",
+  "websockets>=14,<18",
 ]
 
 [dependency-groups]
@@ -35,6 +37,7 @@ dev = [
   "pytest-cov>=6,<8",
   "ruff>=0.11,<1.0",
   "mypy>=1.15,<2.0",
+  "aiosqlite>=0.22.1",
 ]
 
 [tool.ruff]
@@ -49,7 +52,7 @@ python_version = "3.13"
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["croniter.*"]
+module = ["croniter.*", "lark_oapi.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

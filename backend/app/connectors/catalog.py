@@ -297,6 +297,18 @@ TAVILY = BuiltinConnector(
 )
 
 
+RSS = BuiltinConnector(
+    key="rss", kind="api", name="RSS 订阅",
+    description="读取公开 RSS / Atom 源，按时间和关键词筛选文章，为问答和定时简报提供来源。",
+    icon="📡", default_config={"feeds": "[]"},
+    config_fields=({
+        "key": "feeds", "label": "公开 RSS / Atom 订阅地址（JSON 数组，最多 10 个）",
+        "field_type": "json", "required": True, "default": "[]",
+        "placeholder": '["https://openai.com/news/rss.xml"]', "is_secret": False,
+    },),
+)
+
+
 FUND_MARKET = BuiltinConnector(
     key="fund_market",
     kind="api",
@@ -325,6 +337,7 @@ PERSONAL_CONNECTORS = {item.key: item for item in (TMEET, TAVILY, YANGJIBAO, QQ_
 
 BUILTIN_CONNECTORS: tuple[BuiltinConnector, ...] = (
     FUND_MARKET,
+    RSS,
     *PERSONAL_CONNECTORS.values(),
 )
 

@@ -21,6 +21,9 @@ from tests.test_tools_integration import executor_for
 
 pytestmark = pytest.mark.integration
 
+# 覆盖率跟踪和首次 SDK 加载在 Windows 上较慢，行为验证不以冷启动耗时作为失败条件。
+STREAM_TEST_TIMEOUT_SECONDS = 30
+
 
 def response(content: str = "", name: str | None = None, arguments: dict[str, Any] | None = None) -> httpx.Response:
     """构造供应商 SSE，不伪造 Agent 图。
@@ -118,7 +121,7 @@ async def test_live_answer_is_visible_before_completion_and_replaced_on_retry(
 
     async def wait_for_preview(expected: str) -> None:
         """检查运行未终止时的可恢复快照。"""
-        async with asyncio.timeout(10):
+        async with asyncio.timeout(STREAM_TEST_TIMEOUT_SECONDS):
             while True:
                 result = await client.get(f"/api/runs/{run_id}")
                 snapshot = result.json()
@@ -130,7 +133,7 @@ async def test_live_answer_is_visible_before_completion_and_replaced_on_retry(
     await wait_for_preview("旧尝试片段")
     assert (await runtime.store.snapshot(UUID(run_id))).message.content == ""
     fail_first.set()
-    await asyncio.wait_for(retry_started.wait(), 10)
+    await asyncio.wait_for(retry_started.wait(), STREAM_TEST_TIMEOUT_SECONDS)
     await wait_for_preview("")
     release_retry.set()
     await wait_for_preview("新回答")

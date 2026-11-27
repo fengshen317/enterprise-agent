@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-type Component = Literal["http", "run", "tool", "model", "connector", "schedule", "wechat"]
+type Component = Literal["http", "run", "tool", "model", "connector", "schedule", "wechat", "feishu", "dingtalk", "qq"]
 type Outcome = Literal["success", "warning", "error"]
 type Level = Literal["info", "warning", "error"]
 type Days = Literal[1, 7, 30]

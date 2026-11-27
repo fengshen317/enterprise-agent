@@ -91,3 +91,94 @@ export async function listWeChatAccounts(): Promise<WeChatAccount[]> {
 export async function unbindWeChat(accountId: string): Promise<void> {
   await requestJson(`/api/channels/wechat/${accountId}/unbind`, { method: 'POST' })
 }
+
+export type EnterpriseChannel = 'feishu' | 'dingtalk' | 'qq'
+
+export interface EnterpriseApp {
+  channel_type: EnterpriseChannel
+  external_app_id: string
+  status: string
+  secret_configured: boolean
+  robot_code: string
+  sandbox: boolean
+  updated_at: string | null
+}
+
+export interface EnterpriseAppInput {
+  channel_type: EnterpriseChannel
+  external_app_id: string
+  secret: string
+  robot_code: string
+  sandbox: boolean
+}
+
+export interface BindCode {
+  code: string
+  expires_at: string
+  instructions: string
+}
+
+export interface EnterpriseBinding {
+  bound: boolean
+  account_id: string | null
+  platform_user_id: string
+  status: string
+  app_configured: boolean
+}
+
+function parseApp(value: unknown): EnterpriseApp {
+  if (
+    !record(value)
+    || (value.channel_type !== 'feishu' && value.channel_type !== 'dingtalk' && value.channel_type !== 'qq')
+    || typeof value.external_app_id !== 'string'
+    || typeof value.status !== 'string'
+    || typeof value.secret_configured !== 'boolean'
+    || typeof value.robot_code !== 'string'
+    || typeof value.sandbox !== 'boolean'
+    || (value.updated_at !== null && value.updated_at !== undefined && typeof value.updated_at !== 'string')
+  ) return invalid()
+  return {
+    channel_type: value.channel_type,
+    external_app_id: value.external_app_id,
+    status: value.status,
+    secret_configured: value.secret_configured,
+    robot_code: value.robot_code,
+    sandbox: value.sandbox,
+    updated_at: typeof value.updated_at === 'string' ? value.updated_at : null,
+  }
+}
+
+export async function listEnterpriseApps(): Promise<EnterpriseApp[]> {
+  const body = await requestJson('/api/channels/apps')
+  if (!Array.isArray(body)) return invalid()
+  return body.map(parseApp)
+}
+
+export async function saveEnterpriseApp(input: EnterpriseAppInput): Promise<EnterpriseApp> {
+  return parseApp(await requestJson('/api/channels/apps', { method: 'POST', body: JSON.stringify(input) }))
+}
+
+export async function loadEnterpriseBinding(channel: EnterpriseChannel): Promise<EnterpriseBinding> {
+  const value = await requestJson(`/api/channels/${channel}/binding`)
+  if (
+    !record(value)
+    || typeof value.bound !== 'boolean'
+    || (value.account_id !== null && typeof value.account_id !== 'string')
+    || typeof value.platform_user_id !== 'string'
+    || typeof value.status !== 'string'
+    || typeof value.app_configured !== 'boolean'
+  ) return invalid()
+  return value as unknown as EnterpriseBinding
+}
+
+export async function createBindCode(channel: EnterpriseChannel): Promise<BindCode> {
+  const value = await requestJson(`/api/channels/${channel}/bind-code`, { method: 'POST' })
+  if (!record(value) || typeof value.code !== 'string' || typeof value.expires_at !== 'string' || typeof value.instructions !== 'string') {
+    return invalid()
+  }
+  return value as unknown as BindCode
+}
+
+export async function unbindEnterprise(channel: EnterpriseChannel): Promise<void> {
+  await requestJson(`/api/channels/${channel}/unbind`, { method: 'POST' })
+}

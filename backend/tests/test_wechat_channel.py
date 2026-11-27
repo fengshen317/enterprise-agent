@@ -218,7 +218,7 @@ class MemoryStore:
         if status == "skipped":
             self.skipped.append((account_id, datetime.now(UTC), reason or "", excerpt))
 
-    async def outbound_exists(self, run_id: UUID) -> bool:
+    async def outbound_exists(self, run_id: UUID, account_id: UUID | None = None) -> bool:
         """是否已经为该运行出站。"""
         return any(item[2] == run_id for item in self.outbounds)
 
@@ -257,10 +257,10 @@ class MemoryStore:
         """用掉确认码。"""
         self.codes.pop((account_id, code), None)
 
-    async def account_for_user(self, user_id: UUID) -> AccountRecord | None:
-        """按用户查找未解绑账号。"""
+    async def account_for_user(self, user_id: UUID, channel_type: str = "ilink") -> AccountRecord | None:
+        """按用户和渠道查找未解绑账号。"""
         for account in self.accounts.values():
-            if account.user_id == user_id and account.status != "unbound":
+            if account.user_id == user_id and account.status != "unbound" and account.channel_type == channel_type:
                 return account
         return None
 
@@ -278,9 +278,12 @@ class MemoryStore:
         )
         return "ZX23"
 
-    async def list_user_accounts(self, user_id: UUID) -> list[AccountRecord]:
+    async def list_user_accounts(self, user_id: UUID, channel_type: str | None = None) -> list[AccountRecord]:
         """列出未解绑账号。"""
-        return [item for item in self.accounts.values() if item.user_id == user_id and item.status != "unbound"]
+        rows = [item for item in self.accounts.values() if item.user_id == user_id and item.status != "unbound"]
+        if channel_type is None:
+            return rows
+        return [item for item in rows if item.channel_type == channel_type]
 
     async def unbind(self, user_id: UUID, account_id: UUID) -> None:
         """标记解绑。"""
@@ -787,8 +790,17 @@ async def test_schedule_result_and_approval_push_use_the_window() -> None:
     for status in ("completed", "failed"):
         web_run = uuid4()
         store.deliveries[web_run] = RunDelivery(
-            web_run, account.user_id, account.workspace_id, conversation_id,
-            status, "网页回答", "网页错误", "web_question", None, None, False,
+            web_run,
+            account.user_id,
+            account.workspace_id,
+            conversation_id,
+            status,
+            "网页回答",
+            "网页错误",
+            "web_question",
+            None,
+            None,
+            False,
         )
         await runtime.on_run_finished(web_run)
         assert ilink.sent == ["【定时问答 · 每日晨报】\n晨报正文"]

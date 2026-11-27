@@ -1,6 +1,6 @@
 import { ApiError, getJson } from './client'
 
-export const logComponents = ['http', 'run', 'tool', 'model', 'connector', 'schedule', 'wechat'] as const
+export const logComponents = ['http', 'run', 'tool', 'model', 'connector', 'schedule', 'wechat', 'feishu', 'dingtalk', 'qq'] as const
 export const logOutcomes = ['success', 'warning', 'error'] as const
 export const logLevels = ['info', 'warning', 'error'] as const
 export const logDetailKeys = [

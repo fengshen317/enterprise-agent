@@ -24,7 +24,7 @@ from app.connectors.base import (
     health_exception,
     health_failure,
 )
-from app.connectors.catalog import FUND_MARKET, PERSONAL_CONNECTORS, YANGJIBAO
+from app.connectors.catalog import FUND_MARKET, PERSONAL_CONNECTORS, RSS, YANGJIBAO
 
 if TYPE_CHECKING:
     from app.core.config import Settings
@@ -454,10 +454,18 @@ class ConnectorRegistry:
                     await self._apply_health(connector.key, connector, info)
                 raise
             auth_status: ConnectorAuthStatus = "authorized"
-            if connector.key == FUND_MARKET.key or (
+            if connector.key in {FUND_MARKET.key, RSS.key} or (
                 connector.kind == "cli" and connector.key not in {"tmeet", YANGJIBAO.key}
             ):
                 auth_status = "not_required"
+            if connector.key == RSS.key and isinstance(result, dict) and result.get("status") == "partial":
+                async with self._locks.setdefault(connector.key, asyncio.Lock()):
+                    await self._apply_health(
+                        connector.key, connector,
+                        ConnectorStatusInfo(status="degraded", auth_status="not_required",
+                                            error_code="network_error", message="部分 RSS 源读取失败"),
+                    )
+                return result
             async with self._locks.setdefault(connector.key, asyncio.Lock()):
                 await self._apply_health(
                     connector.key, connector, ConnectorStatusInfo(status="connected", auth_status=auth_status)
@@ -499,6 +507,10 @@ class ConnectorRegistry:
 
             return PersonalConnector(row.key)
         if row.kind == "api":
+            if row.key == RSS.key:
+                from app.connectors.rss import RssConnector
+
+                return RssConnector(row.config)
             if row.key == FUND_MARKET.key:
                 from app.connectors.fund_market import FundMarketConnector
 

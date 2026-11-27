@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -11,16 +12,67 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.channels.commands import new_approval_code
+from app.channels.commands import new_approval_code, new_bind_code
 from app.channels.crypto import ChannelCrypto
-from app.channels.records import AccountRecord, ApprovalTicket, BindSessionRecord, PeerLink, RunDelivery
+from app.channels.records import (
+    AccountRecord,
+    AppRecord,
+    ApprovalTicket,
+    BindCodeRecord,
+    BindSessionRecord,
+    PeerLink,
+    RunDelivery,
+)
 from app.core.errors import ApplicationError
-from app.models.channel import ChannelAccount, ChannelApprovalCode, ChannelBindSession, ChannelMessage, ChannelPeer
+from app.models.channel import (
+    ChannelAccount,
+    ChannelApp,
+    ChannelAppEvent,
+    ChannelApprovalCode,
+    ChannelBindCode,
+    ChannelBindSession,
+    ChannelMessage,
+    ChannelPeer,
+)
 from app.models.conversation import Conversation, Message, Run
 from app.models.schedule import ScheduledTask
 from app.services.approvals import ApprovalNotice
 
 logger = logging.getLogger(__name__)
+
+
+def _ledger_id(message_id: str, limit: int = 80) -> str:
+    """平台消息号超长时改存摘要，避免列宽截断后撞车。
+
+    Args:
+        message_id: 原始消息号。
+        limit: 列宽。
+
+    Returns:
+        可入库的标识。
+    """
+    if len(message_id) <= limit:
+        return message_id
+    return hashlib.sha256(message_id.encode()).hexdigest()
+
+
+def _push_channels(raw: object, push_to_wechat: bool) -> tuple[str, ...]:
+    """旧行只有微信开关时，把它看成仅含 ilink 的列表。
+
+    Args:
+        raw: JSON 列。
+        push_to_wechat: 历史布尔开关。
+
+    Returns:
+        渠道类型元组。
+    """
+    if isinstance(raw, list):
+        values = tuple(item for item in raw if isinstance(item, str))
+        if values or not push_to_wechat:
+            return values
+    if push_to_wechat:
+        return ("ilink",)
+    return ()
 
 
 def _approval_risk(risk: str) -> str:
@@ -70,31 +122,40 @@ class ChannelStore:
             active 和 paused 的账号。
         """
         async with self.factory() as session:
-            rows = await session.scalars(select(ChannelAccount).where(ChannelAccount.status.in_(("active", "paused"))))
+            rows = await session.scalars(
+                select(ChannelAccount).where(
+                    ChannelAccount.channel_type == "ilink",
+                    ChannelAccount.status.in_(("active", "paused")),
+                )
+            )
             return [self._account(row) for row in rows]
 
-    async def list_user_accounts(self, user_id: UUID) -> list[AccountRecord]:
-        """列出用户尚未解绑的微信账号。
+    async def list_user_accounts(self, user_id: UUID, channel_type: str | None = None) -> list[AccountRecord]:
+        """列出用户尚未解绑的渠道账号。
 
         Args:
             user_id: 系统用户。
+            channel_type: 只看一种渠道；为空时返回全部。
 
         Returns:
             绑定列表。
         """
         async with self.factory() as session:
-            rows = await session.scalars(
-                select(ChannelAccount)
-                .where(ChannelAccount.user_id == user_id, ChannelAccount.status != "unbound")
-                .order_by(ChannelAccount.created_at.desc())
+            query = select(ChannelAccount).where(
+                ChannelAccount.user_id == user_id,
+                ChannelAccount.status != "unbound",
             )
+            if channel_type is not None:
+                query = query.where(ChannelAccount.channel_type == channel_type)
+            rows = await session.scalars(query.order_by(ChannelAccount.created_at.desc()))
             return [self._account(row) for row in rows]
 
-    async def account_for_user(self, user_id: UUID) -> AccountRecord | None:
-        """取用户当前有效绑定。
+    async def account_for_user(self, user_id: UUID, channel_type: str = "ilink") -> AccountRecord | None:
+        """取用户在某个渠道上的当前有效绑定。
 
         Args:
             user_id: 系统用户。
+            channel_type: 渠道类型，默认仍是微信。
 
         Returns:
             未解绑账号；没有时为 None。
@@ -103,11 +164,22 @@ class ChannelStore:
             row = await session.scalar(
                 select(ChannelAccount).where(
                     ChannelAccount.user_id == user_id,
-                    ChannelAccount.channel_type == "ilink",
+                    ChannelAccount.channel_type == channel_type,
                     ChannelAccount.status != "unbound",
                 )
             )
             return self._account(row) if row is not None else None
+
+    async def accounts_for_user(self, user_id: UUID) -> list[AccountRecord]:
+        """列出用户全部未解绑渠道，供审批和定时结果逐个投递。
+
+        Args:
+            user_id: 系统用户。
+
+        Returns:
+            绑定列表。
+        """
+        return await self.list_user_accounts(user_id)
 
     async def mark_active(self, account_id: UUID) -> None:
         """暂停结束后把账号标回可轮询，设置页不再一直显示暂停。
@@ -221,7 +293,7 @@ class ChannelStore:
                 account_id=account_id,
                 peer_id=(peer_id or "unknown")[:128],
                 direction="inbound",
-                ilink_message_id=message_id[:80],
+                ilink_message_id=_ledger_id(message_id),
                 client_id="",
                 status=status,
                 skip_reason=reason,
@@ -375,21 +447,24 @@ class ChannelStore:
                 )
             )
 
-    async def outbound_exists(self, run_id: UUID) -> bool:
-        """这个运行是否已经尝试过主动推送。
+    async def outbound_exists(self, run_id: UUID, account_id: UUID | None = None) -> bool:
+        """这个运行是否已经对某个绑定尝试过主动推送。
 
         Args:
             run_id: 问答运行。
+            account_id: 渠道绑定。为空时只要任一绑定有出站记录即视为已发送。
 
         Returns:
             是否已有出站记录。
         """
         async with self.factory() as session:
-            found = await session.scalar(
-                select(ChannelMessage.id)
-                .where(ChannelMessage.run_id == run_id, ChannelMessage.direction == "outbound")
-                .limit(1)
+            query = select(ChannelMessage.id).where(
+                ChannelMessage.run_id == run_id,
+                ChannelMessage.direction == "outbound",
             )
+            if account_id is not None:
+                query = query.where(ChannelMessage.account_id == account_id)
+            found = await session.scalar(query.limit(1))
         return found is not None
 
     async def run_delivery(self, run_id: UUID) -> RunDelivery | None:
@@ -415,6 +490,7 @@ class ChannelStore:
                         ScheduledTask.id.label("schedule_id"),
                         ScheduledTask.name.label("schedule_name"),
                         ScheduledTask.push_to_wechat,
+                        ScheduledTask.push_channels,
                     )
                     .join(Message, Message.run_id == Run.id)
                     .join(Conversation, Conversation.id == Run.conversation_id)
@@ -436,6 +512,7 @@ class ChannelStore:
             schedule_id=row.schedule_id,
             schedule_name=row.schedule_name or "",
             push_to_wechat=bool(row.push_to_wechat),
+            push_channels=_push_channels(row.push_channels, bool(row.push_to_wechat)),
         )
 
     async def issue_approval_code(self, account_id: UUID, notice: ApprovalNotice) -> str:
@@ -776,6 +853,479 @@ class ChannelStore:
             raise ApplicationError("CHANNEL_BIND_NOT_FOUND", "绑定会话不存在", 404)
         return row
 
+    async def list_open_accounts(self, channel_type: str) -> list[AccountRecord]:
+        """列出某个渠道上仍未解绑的员工，供窗口提醒使用。
+
+        Args:
+            channel_type: 渠道类型。
+
+        Returns:
+            未解绑账号。
+        """
+        async with self.factory() as session:
+            rows = await session.scalars(
+                select(ChannelAccount).where(
+                    ChannelAccount.channel_type == channel_type,
+                    ChannelAccount.status != "unbound",
+                )
+            )
+            return [self._account(row) for row in rows]
+
+    async def list_active_apps(self) -> list[AppRecord]:
+        """列出仍需维持长连接的企业机器人。
+
+        Returns:
+            状态为 active 的应用。
+        """
+        async with self.factory() as session:
+            rows = await session.scalars(select(ChannelApp).where(ChannelApp.status == "active"))
+            return [self._app(row) for row in rows]
+
+    async def get_app(self, app_id: UUID) -> AppRecord | None:
+        """按主键读取企业应用。
+
+        Args:
+            app_id: 应用标识。
+
+        Returns:
+            应用；不存在时为 None。
+        """
+        async with self.factory() as session:
+            row = await session.get(ChannelApp, app_id)
+            return self._app(row) if row is not None else None
+
+    async def active_app(self, channel_type: str) -> AppRecord | None:
+        """读取某个企业渠道当前启用的应用。
+
+        Args:
+            channel_type: feishu、dingtalk 或 qq。
+
+        Returns:
+            应用；没有启用的应用时为 None。
+        """
+        async with self.factory() as session:
+            row = await session.scalar(
+                select(ChannelApp).where(ChannelApp.channel_type == channel_type, ChannelApp.status == "active")
+            )
+            return self._app(row) if row is not None else None
+
+    async def save_app(
+        self,
+        *,
+        workspace_id: UUID,
+        user_id: UUID,
+        channel_type: str,
+        external_app_id: str,
+        ciphertext: str,
+        public_config: dict[str, object],
+    ) -> AppRecord:
+        """创建或替换该渠道唯一的启用应用。旧的启用记录改为停用。
+
+        Args:
+            workspace_id: 配置时所在空间，只用于审计。
+            user_id: 操作的管理员。
+            channel_type: 企业渠道。
+            external_app_id: 平台上的应用标识。
+            ciphertext: 已加密的密钥 JSON。
+            public_config: 不含密钥的展示字段。
+
+        Returns:
+            保存后的应用。
+        """
+        now = datetime.now(UTC)
+        identity = external_app_id[:128]
+        async with self.factory.begin() as session:
+            current = await session.scalar(
+                select(ChannelApp)
+                .where(ChannelApp.channel_type == channel_type, ChannelApp.status == "active")
+                .with_for_update()
+            )
+            if current is not None and current.external_app_id == identity:
+                current.workspace_id = workspace_id
+                current.created_by_user_id = user_id
+                current.external_app_id = identity
+                current.credentials_ciphertext = ciphertext
+                current.public_config = public_config
+                current.status = "active"
+                current.updated_at = now
+                await session.flush()
+                return self._app(current)
+            if current is None:
+                created = ChannelApp(
+                    workspace_id=workspace_id,
+                    channel_type=channel_type,
+                    created_by_user_id=user_id,
+                    external_app_id=identity,
+                    credentials_ciphertext=ciphertext,
+                    public_config=public_config,
+                    status="active",
+                )
+                session.add(created)
+                await session.flush()
+                return self._app(created)
+            # 换成另一个平台应用时另起一行。旧绑定仍指向旧 app_id。
+            # 停用必须先提交，再插入新的 active 行。同一次 flush 里的 INSERT/UPDATE 顺序
+            # 不能保证，uq_channel_apps_type_active 会让整段事务回滚，旧绑定也解不掉。
+            await session.execute(
+                update(ChannelAccount)
+                .where(ChannelAccount.app_id == current.id, ChannelAccount.status != "unbound")
+                .values(status="unbound", bot_token_ciphertext="", updated_at=now)
+            )
+            await session.execute(
+                update(ChannelBindCode)
+                .where(ChannelBindCode.app_id == current.id, ChannelBindCode.status == "pending")
+                .values(status="expired")
+            )
+            current.status = "disabled"
+            current.updated_at = now
+            await session.flush()
+        async with self.factory.begin() as session:
+            created = ChannelApp(
+                workspace_id=workspace_id,
+                channel_type=channel_type,
+                created_by_user_id=user_id,
+                external_app_id=identity,
+                credentials_ciphertext=ciphertext,
+                public_config=public_config,
+                status="active",
+            )
+            session.add(created)
+            await session.flush()
+            return self._app(created)
+
+    async def disable_app(self, channel_type: str) -> None:
+        """停用企业机器人。已绑定的员工保留，但不再收消息。
+
+        Args:
+            channel_type: 企业渠道。
+        """
+        async with self.factory.begin() as session:
+            await session.execute(
+                update(ChannelApp)
+                .where(ChannelApp.channel_type == channel_type, ChannelApp.status == "active")
+                .values(status="disabled", updated_at=datetime.now(UTC))
+            )
+
+    async def issue_bind_code(self, user_id: UUID, workspace_id: UUID, app_id: UUID) -> BindCodeRecord:
+        """作废该用户尚未使用的绑定码，再发一个 15 分钟内有效的新码。
+
+        Args:
+            user_id: 工作台用户。
+            workspace_id: 绑定后的初始空间。
+            app_id: 企业应用。
+
+        Returns:
+            新的绑定码。
+        """
+        expires = datetime.now(UTC) + timedelta(minutes=15)
+        async with self.factory.begin() as session:
+            await session.execute(
+                update(ChannelBindCode)
+                .where(
+                    ChannelBindCode.user_id == user_id,
+                    ChannelBindCode.app_id == app_id,
+                    ChannelBindCode.status == "pending",
+                )
+                .values(status="expired")
+            )
+            row = ChannelBindCode(
+                user_id=user_id,
+                workspace_id=workspace_id,
+                app_id=app_id,
+                code=new_bind_code(),
+                expires_at=expires,
+            )
+            session.add(row)
+            await session.flush()
+            return BindCodeRecord(row.id, row.user_id, row.workspace_id, row.app_id, row.code, row.expires_at)
+
+    async def redeem_bind_code(self, channel_type: str, peer_id: str, code: str) -> AccountRecord | None:
+        """用单聊里的绑定码建立平台用户和工作台用户的对应关系。
+
+        Args:
+            channel_type: 消息来自的企业渠道。
+            peer_id: 平台用户标识。
+            code: 用户发送的绑定码。
+
+        Returns:
+            新的或已经属于同一人的绑定。码无效时为 None。
+
+        Raises:
+            ApplicationError: 这个平台账号已经绑给了别人。
+        """
+        normalized = code.strip().upper()
+        if not normalized or not peer_id:
+            return None
+        peer = peer_id[:128]
+        replacement: tuple[UUID, UUID, UUID, str] | None = None
+        async with self.factory.begin() as session:
+            row = await session.scalar(
+                select(ChannelBindCode)
+                .where(ChannelBindCode.code == normalized, ChannelBindCode.status == "pending")
+                .with_for_update()
+            )
+            now = datetime.now(UTC)
+            if row is None or row.expires_at < now:
+                if row is not None and row.expires_at < now:
+                    row.status = "expired"
+                return None
+            app = await session.get(ChannelApp, row.app_id)
+            if app is None or app.status != "active" or app.channel_type != channel_type:
+                return None
+            taken = await self._open_account(session, channel_type, peer_id=peer)
+            previous = await self._open_account(session, channel_type, user_id=row.user_id)
+            if taken is not None and taken.app_id == app.id and taken.user_id != row.user_id:
+                raise ApplicationError("CHANNEL_ALREADY_BOUND", "这个账号已经绑定了其他成员", 409)
+            if previous is not None and previous is not taken and previous.app_id == app.id:
+                raise ApplicationError(
+                    "CHANNEL_ALREADY_BOUND",
+                    "你已经绑定过。请先在网页解除绑定，再使用新的绑定码。",
+                    409,
+                )
+            if taken is not None and taken.app_id == app.id:
+                taken.workspace_id = row.workspace_id
+                taken.welcome_pending = True
+                taken.updated_at = now
+                row.status = "used"
+                await session.flush()
+                return self._app_account(taken)
+            stale = [item.id for item in (taken, previous) if item is not None]
+            if stale:
+                # 旧的未解绑行还占着唯一索引。先提交解绑，再插入新行。
+                await self._mark_unbound(session, stale, now)
+                for item in (taken, previous):
+                    if item is not None:
+                        item.status = "unbound"
+                        item.bot_token_ciphertext = ""
+                        item.updated_at = now
+                await session.flush()
+                replacement = (row.user_id, row.workspace_id, app.id, app.external_app_id)
+            else:
+                created = self._new_bound_account(row.user_id, row.workspace_id, channel_type, peer, app)
+                session.add(created)
+                row.status = "used"
+                await session.flush()
+                return self._app_account(created)
+        if replacement is None:
+            return None
+        user_id, workspace_id, app_id, external_app_id = replacement
+        async with self.factory.begin() as session:
+            row = await session.scalar(
+                select(ChannelBindCode)
+                .where(
+                    ChannelBindCode.code == normalized,
+                    ChannelBindCode.status == "pending",
+                    ChannelBindCode.user_id == user_id,
+                    ChannelBindCode.app_id == app_id,
+                )
+                .with_for_update()
+            )
+            now = datetime.now(UTC)
+            if row is None or row.expires_at < now:
+                return None
+            app = await session.get(ChannelApp, app_id)
+            if app is None or app.status != "active" or app.channel_type != channel_type:
+                return None
+            taken = await self._open_account(session, channel_type, peer_id=peer)
+            previous = await self._open_account(session, channel_type, user_id=user_id)
+            if taken is not None and taken.app_id == app.id and taken.user_id != user_id:
+                raise ApplicationError("CHANNEL_ALREADY_BOUND", "这个账号已经绑定了其他成员", 409)
+            if previous is not None and previous is not taken and previous.app_id == app.id:
+                raise ApplicationError(
+                    "CHANNEL_ALREADY_BOUND",
+                    "你已经绑定过。请先在网页解除绑定，再使用新的绑定码。",
+                    409,
+                )
+            stale = [item.id for item in (taken, previous) if item is not None and item.app_id != app.id]
+            if stale:
+                await self._mark_unbound(session, stale, now)
+                await session.flush()
+            if taken is not None and taken.app_id == app.id and taken.user_id == user_id:
+                taken.workspace_id = workspace_id
+                taken.welcome_pending = True
+                taken.updated_at = now
+                created = taken
+            else:
+                created = self._new_bound_account(user_id, workspace_id, channel_type, peer, app)
+                created.ilink_bot_id = external_app_id[:128]
+                session.add(created)
+            row.status = "used"
+            await session.flush()
+            return self._app_account(created)
+
+    async def _open_account(
+        self,
+        session: AsyncSession,
+        channel_type: str,
+        *,
+        peer_id: str | None = None,
+        user_id: UUID | None = None,
+    ) -> ChannelAccount | None:
+        """锁住一条尚未解绑的渠道账号。
+
+        Args:
+            session: 当前事务。
+            channel_type: 企业渠道。
+            peer_id: 平台用户标识。和 user_id 二选一。
+            user_id: 工作台用户。和 peer_id 二选一。
+
+        Returns:
+            仍占用唯一索引的账号；没有时为 None。
+        """
+        stmt = select(ChannelAccount).where(
+            ChannelAccount.channel_type == channel_type,
+            ChannelAccount.status != "unbound",
+        )
+        if peer_id is not None:
+            stmt = stmt.where(ChannelAccount.ilink_user_id == peer_id)
+        if user_id is not None:
+            stmt = stmt.where(ChannelAccount.user_id == user_id)
+        found = await session.scalar(stmt.with_for_update())
+        return found if isinstance(found, ChannelAccount) else None
+
+    @staticmethod
+    async def _mark_unbound(session: AsyncSession, account_ids: list[UUID], now: datetime) -> None:
+        """把仍占用唯一索引的旧绑定标成未绑定。
+
+        这条 UPDATE 立刻发到数据库，不和后面的 INSERT 挤在同一次 flush。
+
+        Args:
+            session: 当前事务。
+            account_ids: 要解开的账号。
+            now: 写入 updated_at 的时间。
+        """
+        await session.execute(
+            update(ChannelAccount)
+            .where(ChannelAccount.id.in_(account_ids))
+            .values(status="unbound", bot_token_ciphertext="", updated_at=now)
+        )
+
+    @staticmethod
+    def _new_bound_account(
+        user_id: UUID,
+        workspace_id: UUID,
+        channel_type: str,
+        peer_id: str,
+        app: ChannelApp,
+    ) -> ChannelAccount:
+        """组装一条新的员工绑定，调用方负责 add。
+
+        Args:
+            user_id: 工作台用户。
+            workspace_id: 绑定后的初始空间。
+            channel_type: 企业渠道。
+            peer_id: 平台用户标识。
+            app: 当前启用的企业应用。
+
+        Returns:
+            尚未插入的账号。
+        """
+        return ChannelAccount(
+            user_id=user_id,
+            workspace_id=workspace_id,
+            channel_type=channel_type,
+            ilink_user_id=peer_id,
+            ilink_bot_id=app.external_app_id[:128],
+            app_id=app.id,
+            baseurl="",
+            status="active",
+            welcome_pending=True,
+        )
+
+    async def account_for_platform(self, channel_type: str, peer_id: str, app_id: UUID) -> AccountRecord | None:
+        """按当前机器人下的平台用户标识找工作台绑定。
+
+        钉钉 staffId 只在本企业内唯一，所以必须同时对上这次收消息的应用。
+
+        Args:
+            channel_type: 企业渠道。
+            peer_id: open_id 或 userId。
+            app_id: 收到这条消息的企业应用。
+
+        Returns:
+            绑定；没有时为 None。
+        """
+        if not peer_id:
+            return None
+        async with self.factory() as session:
+            row = await session.scalar(
+                select(ChannelAccount).where(
+                    ChannelAccount.channel_type == channel_type,
+                    ChannelAccount.ilink_user_id == peer_id[:128],
+                    ChannelAccount.app_id == app_id,
+                    ChannelAccount.status != "unbound",
+                )
+            )
+            return self._account(row) if row is not None else None
+
+    async def record_app_event(
+        self,
+        app_id: UUID,
+        message_id: str,
+        peer_id: str,
+        status: str,
+        reason: str | None,
+        excerpt: str,
+    ) -> bool:
+        """记录尚未绑定用户的入站。相同消息只记一次。
+
+        Args:
+            app_id: 企业应用。
+            message_id: 平台消息标识。
+            peer_id: 平台用户。
+            status: received 或 skipped。
+            reason: 跳过原因。
+            excerpt: 短摘录。
+
+        Returns:
+            是否第一次看到。
+        """
+        if not message_id:
+            return False
+        stmt = (
+            pg_insert(ChannelAppEvent)
+            .values(
+                id=uuid4(),
+                app_id=app_id,
+                peer_id=(peer_id or "")[:128],
+                direction="inbound",
+                message_id=_ledger_id(message_id, limit=128),
+                status=status,
+                skip_reason=reason,
+                body_excerpt=excerpt[:500],
+            )
+            .on_conflict_do_nothing(constraint="uq_channel_app_events_message")
+            .returning(ChannelAppEvent.id)
+        )
+        async with self.factory.begin() as session:
+            inserted = await session.scalar(stmt)
+        return inserted is not None
+
+    async def next_passive_seq(self, account_id: UUID, workspace_id: UUID, peer_id: str, message_id: str) -> int | None:
+        """为 QQ 被动回复分配 1 到 4 的序号。换了一条用户消息就重新计数。
+
+        Args:
+            account_id: 渠道账号。
+            workspace_id: 当前空间。
+            peer_id: QQ openid。
+            message_id: 正在回复的用户消息。
+
+        Returns:
+            序号；这条消息的 4 次已经用完时为 None。
+        """
+        if not message_id:
+            return None
+        async with self.factory.begin() as session:
+            peer = await self._lock_peer(session, account_id, workspace_id, peer_id)
+            if peer.passive_message_id != message_id:
+                peer.passive_message_id = message_id[:128]
+                peer.passive_reply_count = 0
+            if peer.passive_reply_count >= 4:
+                return None
+            peer.passive_reply_count += 1
+            peer.updated_at = datetime.now(UTC)
+            return peer.passive_reply_count
+
     async def _lock_peer(
         self, session: AsyncSession, account_id: UUID, workspace_id: UUID, peer_id: str
     ) -> ChannelPeer:
@@ -804,6 +1354,50 @@ class ChannelStore:
             session.add(row)
             await session.flush()
         return row
+
+    def _app(self, row: ChannelApp) -> AppRecord:
+        """解密企业应用密钥。失败时 secret 为空，发送会明确失败而不是用错凭证。
+
+        Args:
+            row: 应用行。
+
+        Returns:
+            内存中的应用记录。
+        """
+        secret = ""
+        robot_code = ""
+        sandbox = False
+        public = row.public_config if isinstance(row.public_config, dict) else {}
+        robot_value = public.get("robot_code")
+        if isinstance(robot_value, str):
+            robot_code = robot_value
+        sandbox = public.get("sandbox") is True
+        if row.credentials_ciphertext:
+            try:
+                import json
+
+                loaded = json.loads(self.crypto.decrypt(row.credentials_ciphertext))
+                if isinstance(loaded, dict):
+                    secret = str(loaded.get("secret") or "")
+                    if not robot_code and isinstance(loaded.get("robot_code"), str):
+                        robot_code = loaded["robot_code"]
+            except (ApplicationError, json.JSONDecodeError, TypeError):
+                logger.warning("channel_app_secret_decrypt_failed", extra={"app_id": str(row.id)})
+        return AppRecord(
+            id=row.id,
+            workspace_id=row.workspace_id,
+            channel_type=row.channel_type,
+            external_app_id=row.external_app_id,
+            status=row.status,
+            robot_code=robot_code,
+            sandbox=sandbox,
+            secret=secret,
+            updated_at=row.updated_at,
+        )
+
+    def _app_account(self, row: ChannelAccount) -> AccountRecord:
+        """企业绑定没有个人 token。"""
+        return self._account(row, token="")
 
     def _account(self, row: ChannelAccount, token: str | None = None) -> AccountRecord:
         """把账号行转成不含密文泄漏的记录。
@@ -836,6 +1430,7 @@ class ChannelStore:
             created_at=row.created_at,
             welcome_pending=row.welcome_pending,
             token=token,
+            app_id=row.app_id,
         )
 
     @staticmethod

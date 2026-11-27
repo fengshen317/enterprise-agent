@@ -7,6 +7,7 @@ import { useAuthStore } from '../../stores/auth'
 import { useConnectorsStore } from '../../stores/connectors'
 import YangJiBaoHoldings from './YangJiBaoHoldings.vue'
 import PersonalConnectorAccount from './PersonalConnectorAccount.vue'
+import RssSourcePicker from './RssSourcePicker.vue'
 import {
   getConnector,
   updateConnectorConfig,
@@ -398,38 +399,54 @@ onUnmounted(() => { stopped = true; stop() })
             :key="field.key"
             class="connector-dialog__field"
           >
-            <label class="connector-dialog__label">
-              {{ field.label }}
-              <span
-                v-if="field.required"
-                class="connector-dialog__required"
-              >*</span>
-            </label>
-            <input
-              v-if="field.is_secret"
+            <RssSourcePicker
+              v-if="props.connectorKey === 'rss' && field.key === 'feeds'"
               v-model="configDraft[field.key]"
-              type="password"
-              class="connector-dialog__input"
-              :placeholder="detail.config_values[field.key] ? '已配置，留空保留原密钥' : '输入新的密钥'"
-              autocomplete="new-password"
               :disabled="!isAdmin"
             />
-            <input
-              v-else-if="field.field_type === 'number'"
-              v-model="configDraft[field.key]"
-              type="number"
-              class="connector-dialog__input"
-              :placeholder="field.placeholder"
-              :disabled="!isAdmin"
-            />
-            <input
-              v-else
-              v-model="configDraft[field.key]"
-              type="text"
-              class="connector-dialog__input"
-              :placeholder="field.placeholder || field.default"
-              :disabled="!isAdmin"
-            />
+            <template v-else>
+              <label class="connector-dialog__label">
+                {{ field.label }}
+                <span
+                  v-if="field.required"
+                  class="connector-dialog__required"
+                >*</span>
+              </label>
+              <input
+                v-if="field.is_secret"
+                v-model="configDraft[field.key]"
+                type="password"
+                class="connector-dialog__input"
+                :placeholder="detail.config_values[field.key] ? '已配置，留空保留原密钥' : '输入新的密钥'"
+                autocomplete="new-password"
+                :disabled="!isAdmin"
+              />
+              <input
+                v-else-if="field.field_type === 'number'"
+                v-model="configDraft[field.key]"
+                type="number"
+                class="connector-dialog__input"
+                :placeholder="field.placeholder"
+                :disabled="!isAdmin"
+              />
+              <textarea
+                v-else-if="field.field_type === 'json'"
+                v-model="configDraft[field.key]"
+                class="connector-dialog__input"
+                rows="6"
+                :aria-label="field.label"
+                :placeholder="field.placeholder || field.default"
+                :disabled="!isAdmin"
+              />
+              <input
+                v-else
+                v-model="configDraft[field.key]"
+                type="text"
+                class="connector-dialog__input"
+                :placeholder="field.placeholder || field.default"
+                :disabled="!isAdmin"
+              />
+            </template>
           </div>
         </section>
 

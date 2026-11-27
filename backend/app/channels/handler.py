@@ -7,15 +7,27 @@ import hashlib
 import logging
 import re
 from collections.abc import Coroutine
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from time import monotonic
 from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import UUID
 
+from app.channels.capabilities import (
+    ChannelCapabilities,
+    bind_instructions,
+    capability_for,
+    conversation_title,
+    delivery_skip_reason,
+    reminder_due,
+    reminder_text,
+    welcome_text,
+)
 from app.channels.commands import chunk_text, parse_inbound
-from app.channels.ilink import ILinkClient, ILinkMessage
-from app.channels.records import AccountRecord, ApprovalTicket, PeerLink, WorkspaceGate
+from app.channels.ilink import ILinkMessage
+from app.channels.inbound import InboundEvent
+from app.channels.records import AccountRecord, AppRecord, ApprovalTicket, WorkspaceGate
 from app.channels.repository import ChannelStore
+from app.channels.send_error import ChannelSendError
 from app.channels.wechat_text import wechat_reply
 from app.core.config import Settings
 from app.core.errors import ApplicationError
@@ -29,15 +41,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$")
 _WEB_ONLY_RISKS = frozenset({"delete", "external"})
-WELCOME_TEXT = (
-    "已绑定微信，直接发消息就能对话。\n"
-    "指令：/new 新对话，/ws 空间标识 切换空间，/agent 切换 Agent，/help 再看一遍说明。\n"
-    "只有一项待确认的写操作时，可以回复「同意」或「1」，也可以回复「拒绝」或「2」加原因。"
-    "有多项时请带上确认码。删除和外发只能在网页里确认。\n"
-    "超过 24 小时没有发消息，定时结果不会推到微信。窗口快结束时我会提醒你回复任意内容。"
-)
-REMINDER_TEXT = "回复任意内容可继续接收推送"
 _IDEMPOTENCY = re.compile(r"^[A-Za-z0-9_-]{1,100}$")
+
+
+class Outbound(Protocol):
+    """微信客户端或渠道总线都要能发文本和输入状态。"""
+
+    async def send_text(self, account: AccountRecord, to_user_id: str, context_token: str, text: str) -> None:
+        """发送一段文本。"""
+
+    async def send_typing(self, account: AccountRecord, to_user_id: str, context_token: str, active: bool) -> None:
+        """打开或关闭输入状态。"""
 
 
 class ChatPort(Protocol):
@@ -90,29 +104,6 @@ class ApprovalPort(Protocol):
         """批准或拒绝，返回审批状态。"""
 
 
-def window_skip_reason(peer: PeerLink | None, now: datetime, hours: int) -> str | None:
-    """判断主动推送是否还在用户上次发消息后的窗口内。
-
-    Args:
-        peer: 最近入站的对端。
-        now: 当前时间。
-        hours: 窗口小时数。
-
-    Returns:
-        跳过原因；可以发送时为 None。
-    """
-    if peer is None or peer.last_inbound_at is None:
-        return "no_inbound"
-    inbound = peer.last_inbound_at
-    if inbound.tzinfo is None:
-        inbound = inbound.replace(tzinfo=UTC)
-    if now - inbound > timedelta(hours=hours):
-        return "outside_window"
-    if not peer.context_token:
-        return "no_context_token"
-    return None
-
-
 def wechat_idempotency_key(message_id: str) -> str:
     """用消息 id 生成问答幂等键，避免微信重试创建两次运行。
 
@@ -126,6 +117,25 @@ def wechat_idempotency_key(message_id: str) -> str:
     if _IDEMPOTENCY.fullmatch(raw):
         return raw
     return "wx" + hashlib.sha256(message_id.encode()).hexdigest()[:40]
+
+
+def _idempotency_key(channel_type: str, message_id: str) -> str:
+    """用渠道和消息号生成问答幂等键。微信保持原来的 wx 前缀。
+
+    Args:
+        channel_type: 渠道类型。
+        message_id: 平台消息号。
+
+    Returns:
+        符合运行幂等规则的键。
+    """
+    if channel_type == "ilink":
+        return wechat_idempotency_key(message_id)
+    prefix = {"feishu": "fs", "dingtalk": "dt", "qq": "qq"}.get(channel_type, "ch")
+    raw = f"{prefix}{message_id}"
+    if _IDEMPOTENCY.fullmatch(raw) and len(raw) <= 100:
+        return raw
+    return prefix + hashlib.sha256(message_id.encode()).hexdigest()[:40]
 
 
 def fallback_message_id(message: ILinkMessage) -> str:
@@ -159,7 +169,7 @@ class InboundHandler:
         self,
         settings: Settings,
         repo: ChannelStore,
-        ilink: ILinkClient,
+        ilink: Outbound,
         chat: ChatPort,
         agents: AgentPort,
         membership: MembershipPort,
@@ -225,8 +235,9 @@ class InboundHandler:
             )
             return
         if message.message_type not in (None, 1):
+            reason = "not_user" if account.channel_type == "ilink" else "not_text"
             await self.repo.record_inbound(
-                account.id, message.message_id, message.from_user_id, "skipped", "not_user", message.text[:500]
+                account.id, message.message_id, message.from_user_id, "skipped", reason, message.text[:500]
             )
             return
         if not message.from_user_id or message.from_user_id != account.ilink_user_id:
@@ -265,13 +276,19 @@ class InboundHandler:
             await self.reply(account, message, "目前只能处理文字消息。")
             return
         command = parse_inbound(text)
-        if account.welcome_pending and await self.reply(account, message, WELCOME_TEXT):
+        greeting = welcome_text(account.channel_type)
+        if account.welcome_pending and await self.reply(account, message, greeting):
             await self.repo.clear_welcome(account.id)
             account.welcome_pending = False
             if command.kind == "help":
                 return
         if command.kind == "help":
-            await self.reply(account, message, WELCOME_TEXT)
+            await self.reply(account, message, greeting)
+        elif command.kind == "bind":
+            if account.channel_type == "ilink":
+                await self.reply(account, message, "微信在网页里扫码绑定，不需要绑定码。")
+            else:
+                await self.reply(account, message, "当前会话已经绑定。如需更换，请先在网页解除绑定，再发送新的绑定码。")
         elif command.kind == "approve":
             await self._decide(account, message, command.code, "approve", None)
         elif command.kind == "reject":
@@ -284,6 +301,131 @@ class InboundHandler:
             await self._agent(account, message, command.argument)
         else:
             await self._chat(account, message, text)
+
+    async def handle_event(self, account: AccountRecord, event: InboundEvent) -> None:
+        """把企业渠道的归一化消息交给和微信相同的指令与问答流程。
+
+        Args:
+            account: 已经绑定的员工。平台用户必须等于绑定上的 ilink_user_id。
+            event: 单聊或群消息。
+        """
+        message = ILinkMessage(
+            event.message_id,
+            event.peer_id,
+            "",
+            "group" if event.is_group else "",
+            event.reply_message_id,
+            event.text,
+            1 if event.kind == "text" else 2,
+            None,
+        )
+        await self.handle(account, message)
+
+    async def handle_unbound(self, app: AppRecord, event: InboundEvent) -> None:
+        """未绑定用户只收到绑定说明。消息记在应用审计上，不进入任何工作台账号。
+
+        Args:
+            app: 收到消息的企业机器人。
+            event: 归一化后的入站消息。
+        """
+        if event.is_group:
+            await self.repo.record_app_event(
+                app.id,
+                event.message_id,
+                event.peer_id,
+                "skipped",
+                "group",
+                event.text[:500],
+            )
+            return
+        if event.kind != "text":
+            await self.repo.record_app_event(
+                app.id,
+                event.message_id,
+                event.peer_id,
+                "skipped",
+                "not_text",
+                event.text[:500],
+            )
+            await self._send_unbound(app, event.peer_id, "目前只能处理文字消息。", event.reply_message_id)
+            return
+        inserted = await self.repo.record_app_event(
+            app.id,
+            event.message_id,
+            event.peer_id,
+            "received",
+            None,
+            event.text[:500],
+        )
+        if not inserted:
+            return
+        command = parse_inbound(event.text.strip())
+        if command.kind == "bind" and command.argument:
+            try:
+                account = await self.repo.redeem_bind_code(app.channel_type, event.peer_id, command.argument)
+            except ApplicationError as exc:
+                await self._send_unbound(app, event.peer_id, exc.message, event.reply_message_id)
+                return
+            if account is None:
+                await self._send_unbound(
+                    app,
+                    event.peer_id,
+                    "绑定码不正确或已过期。请在工作台重新生成。",
+                    event.reply_message_id,
+                )
+                return
+            # /bind 本身就是一次单聊，钉钉之后的主动推送要能看见这次入站。
+            await self.repo.touch_inbound(
+                account.id,
+                account.workspace_id,
+                event.peer_id,
+                event.reply_message_id,
+                datetime.now(UTC),
+            )
+            if await self._send_unbound(app, event.peer_id, welcome_text(app.channel_type), event.reply_message_id):
+                await self.repo.clear_welcome(account.id)
+            return
+        await self._send_unbound(app, event.peer_id, bind_instructions(app.channel_type), event.reply_message_id)
+
+    async def _send_unbound(self, app: AppRecord, peer_id: str, text: str, msg_id: str = "") -> bool:
+        """通过应用凭证回复还没绑定的用户。
+
+        Args:
+            app: 企业应用。
+            peer_id: 平台用户。
+            text: 说明。
+            msg_id: 刚收到的消息号。QQ 用它做被动回复。
+
+        Returns:
+            是否发送成功。
+        """
+        sender = getattr(self.ilink, "send_app_text", None)
+        if sender is None:
+            return False
+        try:
+            await sender(app, peer_id, text, msg_id=msg_id)
+        except ChannelSendError:
+            return False
+        except Exception:
+            logger.warning("channel_unbound_reply_failed", extra={"app_id": str(app.id)})
+            return False
+        return True
+
+    def _caps(self, account: AccountRecord) -> ChannelCapabilities:
+        """优先用出站总线声明的能力；微信测试替身没有这个方法时按渠道默认值。
+
+        Args:
+            account: 当前绑定。
+
+        Returns:
+            渠道能力。
+        """
+        method = getattr(self.ilink, "capabilities", None)
+        if callable(method):
+            found = method(account.channel_type)
+            if isinstance(found, ChannelCapabilities):
+                return found
+        return capability_for(account.channel_type)
 
     async def push_proactive(
         self,
@@ -303,11 +445,11 @@ class InboundHandler:
             workspace_id: 推送来源空间；与 conversation_id 同时提供时切换后续入站。
             conversation_id: 推送来源对话。
         """
-        if run_id is not None and await self.repo.outbound_exists(run_id):
+        if run_id is not None and await self.repo.outbound_exists(run_id, account.id):
             return
         peer = await self.repo.latest_peer(account.id)
-        reason = window_skip_reason(peer, datetime.now(UTC), self.settings.channel_reply_window_hours)
-        if reason is not None or peer is None:
+        reason = delivery_skip_reason(self._caps(account), peer, datetime.now(UTC), self.settings)
+        if reason is not None or (peer is None and self._caps(account).proactive_uses_reply_window):
             await self.repo.log_outbound(
                 account.id,
                 peer.peer_id if peer is not None else "",
@@ -316,16 +458,21 @@ class InboundHandler:
                 run_id,
                 text[:500],
             )
+            prefix = "WECHAT" if account.channel_type == "ilink" else account.channel_type.upper()
             self._record_delivery(
-                workspace_id or account.workspace_id, run_id, "warning", f"WECHAT_{(reason or 'no_inbound').upper()}"
+                workspace_id or account.workspace_id,
+                run_id,
+                "warning",
+                f"{prefix}_{(reason or 'no_inbound').upper()}",
+                channel_type=account.channel_type,
             )
             return
-        sent = await self.send_text(
-            account, peer.peer_id, peer.context_token, text, run_id=run_id, workspace_id=workspace_id
-        )
+        target = peer.peer_id if peer is not None else account.ilink_user_id
+        token = peer.context_token if peer is not None else ""
+        sent = await self.send_text(account, target, token, text, run_id=run_id, workspace_id=workspace_id)
         if sent and workspace_id is not None and conversation_id is not None:
             # 只有手机实际收到消息后才切换上下文，避免失败推送劫持后续微信问答。
-            await self.repo.activate_conversation(account.id, workspace_id, peer.peer_id, conversation_id)
+            await self.repo.activate_conversation(account.id, workspace_id, target, conversation_id)
             account.workspace_id = workspace_id
 
     async def reply(self, account: AccountRecord, message: ILinkMessage, text: str) -> bool:
@@ -350,6 +497,7 @@ class InboundHandler:
         outcome: Literal["success", "warning", "error"],
         error_code: str | None = None,
         duration_ms: float | None = None,
+        channel_type: str = "ilink",
     ) -> None:
         """按投递来源记录结果，排除渠道身份、令牌和正文。
 
@@ -359,15 +507,19 @@ class InboundHandler:
             outcome: 实际投递结果。
             error_code: 固定错误码。
             duration_ms: 可用的投递耗时。
+            channel_type: 渠道类型。微信继续记在原有事件上。
         """
+        channel = "wechat" if channel_type == "ilink" else channel_type
+        component = "wechat" if channel == "wechat" else channel_type
+        event = "wechat_delivery" if channel == "wechat" else "channel_delivery"
         with system_log_context(recorder=self.log_recorder, workspace_id=workspace_id, run_id=run_id):
             emit_system_log(
-                component="wechat",
-                event="wechat_delivery",
+                component=component,  # type: ignore[arg-type]
+                event=event,
                 outcome=outcome,
                 error_code=error_code,
                 duration_ms=duration_ms,
-                details={"channel": "wechat"},
+                details={"channel": channel},
             )
 
     async def send_text(
@@ -395,27 +547,53 @@ class InboundHandler:
         """
         started = monotonic()
         diagnostic_workspace = workspace_id or account.workspace_id
-        chunks = chunk_text(text, self.settings.ilink_message_chunk_characters)
+        limit = (
+            self.settings.ilink_message_chunk_characters
+            if account.channel_type == "ilink"
+            else self._caps(account).max_text_chars
+        )
+        chunks = chunk_text(text, limit)
         if not chunks:
             return False
         try:
             for chunk in chunks:
                 await self.ilink.send_text(account, to_user_id, context_token, chunk)
-        except Exception:
-            logger.warning("ilink_send_failed", extra={"account_id": str(account.id), "run_id": str(run_id or "")})
-            await self.repo.log_outbound(account.id, to_user_id, "failed", "send_failed", run_id, text[:500])
+        except ChannelSendError as exc:
+            logger.warning(
+                "channel_send_rejected",
+                extra={"account_id": str(account.id), "run_id": str(run_id or ""), "reason": exc.reason},
+            )
+            await self.repo.log_outbound(account.id, to_user_id, "failed", exc.reason, run_id, text[:500])
             self._record_delivery(
                 diagnostic_workspace,
                 run_id,
                 "error",
-                "WECHAT_DELIVERY_FAILED",
+                f"{account.channel_type.upper()}_{exc.reason.upper()}",
                 round((monotonic() - started) * 1000, 2),
+                channel_type=account.channel_type,
+            )
+            return False
+        except Exception:
+            logger.warning("channel_send_failed", extra={"account_id": str(account.id), "run_id": str(run_id or "")})
+            await self.repo.log_outbound(account.id, to_user_id, "failed", "send_failed", run_id, text[:500])
+            failed = "WECHAT_DELIVERY_FAILED" if account.channel_type == "ilink" else "CHANNEL_DELIVERY_FAILED"
+            self._record_delivery(
+                diagnostic_workspace,
+                run_id,
+                "error",
+                failed,
+                round((monotonic() - started) * 1000, 2),
+                channel_type=account.channel_type,
             )
             return False
         await self.repo.log_outbound(account.id, to_user_id, "sent", None, run_id, text[:500])
         if run_id is not None:
             self._record_delivery(
-                diagnostic_workspace, run_id, "success", duration_ms=round((monotonic() - started) * 1000, 2)
+                diagnostic_workspace,
+                run_id,
+                "success",
+                duration_ms=round((monotonic() - started) * 1000, 2),
+                channel_type=account.channel_type,
             )
         return True
 
@@ -428,7 +606,7 @@ class InboundHandler:
         """
         scope = ResourceScope(account.user_id, account.workspace_id)
         try:
-            conversation_id = await self.chat.create_conversation(scope, "微信对话")
+            conversation_id = await self.chat.create_conversation(scope, conversation_title(account.channel_type))
         except ApplicationError as exc:
             await self.reply(account, message, exc.message)
             return
@@ -570,7 +748,7 @@ class InboundHandler:
             conversation_id = await self._ensure_conversation(account, message.from_user_id)
             await self.chat.ensure_ready()
             snapshot = await self.chat.create_run(
-                scope, conversation_id, text[:20000], wechat_idempotency_key(message.message_id)
+                scope, conversation_id, text[:20000], _idempotency_key(account.channel_type, message.message_id)
             )
         except ApplicationError as exc:
             if exc.code == "RUN_IN_PROGRESS":
@@ -582,7 +760,7 @@ class InboundHandler:
             return
         run_id = snapshot.run.id
         self.direct_runs.add(run_id)
-        self.chat.schedule(run_id, f"wechat-{run_id.hex[:8]}")
+        self.chat.schedule(run_id, f"{account.channel_type}-{run_id.hex[:8]}")
         token = message.context_token
         self.spawn(
             self._deliver(
@@ -659,6 +837,13 @@ class InboundHandler:
             stop: 运行结束后置位，进度任务发完手头的一句就退出。
             page_url: 可实时查看同一条回答的工作台链接。
         """
+        if self._caps(account).window_reply_budget is not None:
+            # QQ 每条消息只有 4 次被动回复，进度改由「正在输入」表达，不再另发文本。
+            try:
+                await stop.wait()
+            except asyncio.CancelledError:
+                raise
+            return
         try:
             await asyncio.wait_for(stop.wait(), self.settings.channel_progress_after_seconds)
             return
@@ -689,21 +874,17 @@ class InboundHandler:
         Args:
             account: 当前账号。
         """
-        hours = self.settings.channel_window_reminder_hours
-        if hours <= 0:
-            return
         peer = await self.repo.latest_peer(account.id)
-        if window_skip_reason(peer, datetime.now(UTC), self.settings.channel_reply_window_hours) is not None:
+        inbound = reminder_due(self._caps(account), peer, datetime.now(UTC), self.settings)
+        if inbound is None or peer is None:
             return
-        if peer is None or peer.last_inbound_at is None:
-            return
-        inbound = peer.last_inbound_at if peer.last_inbound_at.tzinfo else peer.last_inbound_at.replace(tzinfo=UTC)
-        remaining = inbound + timedelta(hours=self.settings.channel_reply_window_hours) - datetime.now(UTC)
-        if remaining <= timedelta(0) or remaining > timedelta(hours=hours):
-            return
-        if peer.reminder_for_inbound_at == inbound:
-            return
-        sent = await self.send_text(account, peer.peer_id, peer.context_token, REMINDER_TEXT, run_id=None)
+        sent = await self.send_text(
+            account,
+            peer.peer_id,
+            peer.context_token,
+            reminder_text(account.channel_type),
+            run_id=None,
+        )
         if sent:
             await self.repo.mark_reminder(account.id, peer.workspace_id, peer.peer_id, inbound)
 
@@ -779,7 +960,7 @@ class InboundHandler:
         if link is not None and link.conversation_id is not None:
             return link.conversation_id
         conversation_id = await self.chat.create_conversation(
-            ResourceScope(account.user_id, account.workspace_id), "微信对话"
+            ResourceScope(account.user_id, account.workspace_id), conversation_title(account.channel_type)
         )
         await self.repo.set_conversation(account.id, account.workspace_id, peer_id, conversation_id)
         return conversation_id

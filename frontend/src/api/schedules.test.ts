@@ -14,6 +14,7 @@ const schedule: Schedule = {
   revision: 1,
   enabled: true,
   push_to_wechat: false,
+  push_channels: [],
   next_run_at: '2026-11-12T01:00:00Z',
   last_run_at: null,
   last_run_id: null,

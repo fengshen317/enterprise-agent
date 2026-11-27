@@ -41,6 +41,15 @@ class ConnectorToolView(BaseModel):
     approval: str = "always"
 
 
+class RssSourceView(BaseModel):
+    """预置公开订阅与待配置入口，空 URL 条目通过说明引导配置。"""
+
+    name: str
+    category: str
+    url: str
+    description: str = ""
+
+
 class PersonalField(BaseModel):
     """个人绑定表单字段，不携带已保存的值。"""
 

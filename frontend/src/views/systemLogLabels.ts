@@ -2,7 +2,7 @@ import { logDetailKeys, type LogComponent, type LogDetailKey, type LogLevel, typ
 
 export const componentLabels: Record<LogComponent, string> = {
   http: 'HTTP 请求', run: 'Agent 运行', tool: '工具调用', model: '模型',
-  connector: '连接器', schedule: '定时任务', wechat: '微信',
+  connector: '连接器', schedule: '定时任务', wechat: '微信', feishu: '飞书', dingtalk: '钉钉', qq: 'QQ',
 }
 export const outcomeLabels: Record<LogOutcome, string> = { error: '失败', warning: '警告', success: '成功' }
 export const levelLabels: Record<LogLevel, string> = { info: '信息', warning: '警告', error: '错误' }
@@ -18,6 +18,7 @@ const eventLabels = new Map<string, string>([
   ['connector_check', '连接器连通性检查'],
   ['schedule_finished', '定时任务执行结束'],
   ['wechat_delivery', '微信消息投递'],
+  ['channel_delivery', '企业渠道消息投递'],
 ])
 const phaseLabels = new Map<string, string>([
   ['request_validation', '请求校验'], ['auth', '授权'], ['transport', '网络传输'],
@@ -29,7 +30,9 @@ const ruleLabels = new Map<string, string>([
   ['media_type', '媒体类型'], ['note_identity', '笔记标识'], ['note_content', '笔记内容'],
 ])
 const runStatusLabels = new Map<string, string>([['completed', '已完成'], ['failed', '失败'], ['cancelled', '已停止']])
-const channelLabels = new Map<string, string>([['wechat', '微信']])
+const channelLabels = new Map<string, string>([
+  ['wechat', '微信'], ['feishu', '飞书'], ['dingtalk', '钉钉'], ['qq', 'QQ'],
+])
 const detailValueLabels: Partial<Record<LogDetailKey, ReadonlyMap<string, string>>> = {
   phase: phaseLabels, rule: ruleLabels, run_status: runStatusLabels, channel: channelLabels,
 }

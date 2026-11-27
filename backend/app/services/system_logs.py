@@ -54,6 +54,7 @@ _EVENT_COMPONENTS: dict[str, set[Component]] = {
     "connector_check": {"connector"},
     "schedule_finished": {"schedule"},
     "wechat_delivery": {"wechat"},
+    "channel_delivery": {"feishu", "dingtalk", "qq"},
 }
 _LEVELS = {
     "success": ("info", logging.INFO),
@@ -70,6 +71,7 @@ _ROUTE_SEGMENTS = frozenset(
     install knowledge-bases knowledge-documents live login logout me members messages my-account plan parse publish
     ready reparse-documents retrieval-test run runs schedules skills status system-logs tasks test tool-calls tools
     trace unbind versions wechat wechat-push workspaces yangjibao
+    feishu dingtalk qq apps bind-code binding push-channels
     {account_id} {action} {agent_id} {approval_id} {conversation_id} {document_id} {event_id} {id} {kb_id} {key}
     {run_id} {schedule_id} {session_id} {skill_id} {task_id} {user_id}
     """.split()
@@ -91,7 +93,7 @@ _DETAIL_ENUMS = {
         }
     ),
     "run_status": frozenset({"completed", "failed", "cancelled"}),
-    "channel": frozenset({"wechat"}),
+    "channel": frozenset({"wechat", "feishu", "dingtalk", "qq"}),
 }
 _DETAIL_RANGES = {
     "status_code": (100, 599),
@@ -113,6 +115,7 @@ _DETAIL_FIELDS = {
     "connector_check": _CONNECTOR_DETAILS,
     "schedule_finished": {"run_status", "channel"},
     "wechat_delivery": {"channel", "upstream_status"},
+    "channel_delivery": {"channel", "upstream_status"},
 }
 
 
