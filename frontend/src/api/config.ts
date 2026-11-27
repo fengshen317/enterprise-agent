@@ -68,7 +68,7 @@ function parseConfigList(body: unknown): ConfigItem[] {
   return body.map(parseItem)
 }
 
-function parseProfile(item: unknown): ModelProfile {
+export function parseProfile(item: unknown): ModelProfile {
   if (!record(item) || typeof item.id !== 'string' || typeof item.name !== 'string'
     || (item.provider !== 'deepseek' && item.provider !== 'openai_compatible')
     || typeof item.base_url !== 'string' || typeof item.model_id !== 'string' || typeof item.vision_model_id !== 'string'
@@ -88,7 +88,7 @@ export async function updateConfigs(configs: ConfigUpdate[]): Promise<ConfigItem
   return parseConfigList(body)
 }
 
-function parseChecks(body: unknown): ConfigCheck[] {
+export function parseChecks(body: unknown): ConfigCheck[] {
   if (!Array.isArray(body) || body.length === 0) return invalid()
   return body.map((item: unknown) => {
     if (!record(item) || (item.check !== 'text' && item.check !== 'vision' && item.check !== 'search')

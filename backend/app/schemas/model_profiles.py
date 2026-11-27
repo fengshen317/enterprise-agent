@@ -54,3 +54,20 @@ class ModelProfileView(ModelProfileFields):
     id: UUID
     active: bool
     has_api_key: bool
+
+
+class PersonalModelDraft(ModelProfileDraft):
+    """创建个人配置时，可在同一事务中选为个人默认。"""
+
+    make_default: bool = False
+
+    def profile(self) -> ModelProfileDraft:
+        """提取通用模型字段，个人偏好不进入供应商参数。"""
+        return ModelProfileDraft.model_validate(self.model_dump(exclude={"make_default"}))
+
+
+class PersonalModelsView(BaseModel):
+    """个人模型与空间提供的公共默认项。"""
+
+    profiles: list[ModelProfileView]
+    shared_default: ModelProfileFields

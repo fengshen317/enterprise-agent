@@ -58,6 +58,8 @@ class Settings(BaseSettings):
     connector_monitor_enabled: bool = True
     connector_monitor_interval_seconds: float = Field(default=60, ge=1, le=3600)
     connector_credential_key: SecretStr = SecretStr("")
+    connector_credential_key_file: Path = Path.home() / ".enterprise-agent" / "personal-connectors.key"
+    personal_connector_data_dir: Path = Path.home() / ".enterprise-agent" / "personal-connectors"
     connector_check_timeout_seconds: float = Field(default=15, gt=0, le=60)
     # 显式归属用于兼容已有本机凭据；网页首次扫码会用登录身份建立绑定。
     yangjibao_owner_user_id: UUID | None = None

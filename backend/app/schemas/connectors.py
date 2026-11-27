@@ -55,6 +55,7 @@ class PersonalAccountView(BaseModel):
     bound: bool
     fields: list[PersonalField]
     guide_url: str
+    auth_mode: Literal["credentials", "scan"] = "credentials"
 
 
 class PersonalAccountInput(BaseModel):

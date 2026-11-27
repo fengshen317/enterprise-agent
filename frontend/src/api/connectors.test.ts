@@ -28,9 +28,9 @@ it('个人 ima 检查按两项返回，且请求只使用已保存凭证', async
 it('授权启动允许健康检查和地址生成完成，状态查询采用默认超时', async () => {
   vi.mocked(requestJson).mockResolvedValue({ state: 'awaiting_user' })
   await authenticateConnector('cli/name')
-  expect(requestJson).toHaveBeenCalledWith('/api/admin/connectors/cli%2Fname/auth', { method: 'POST' }, 90_000)
+  expect(requestJson).toHaveBeenCalledWith('/api/connectors/cli%2Fname/my-account/auth', { method: 'POST' }, 90_000)
   await getConnectorAuthStatus('cli/name')
-  expect(requestJson).toHaveBeenLastCalledWith('/api/admin/connectors/cli%2Fname/auth/status')
+  expect(requestJson).toHaveBeenLastCalledWith('/api/connectors/cli%2Fname/my-account/auth/status')
   await getConnectorAuthStatus('yangjibao')
-  expect(requestJson).toHaveBeenLastCalledWith('/api/admin/connectors/yangjibao/auth/status', { method: 'POST' }, 12_000)
+  expect(requestJson).toHaveBeenLastCalledWith('/api/connectors/yangjibao/my-account/auth/status', { method: 'POST' }, 12_000)
 })

@@ -10,9 +10,11 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.connectors.catalog import PERSONAL_CONNECTORS
 from app.core.config import Settings
 from app.core.errors import ApplicationError
 from app.models.agent import AgentCapability, AgentProfile, WorkspaceToolPolicy
+from app.models.connector import Connector, PersonalConnectorBinding
 from app.models.conversation import Conversation, Run
 from app.models.identity import WorkspaceMembership
 from app.models.knowledge import KnowledgeBase
@@ -386,6 +388,12 @@ class AgentService:
         """
         async with self.factory() as session:
             await self._role(session, scope)
+            bound = set(await session.scalars(
+                select(PersonalConnectorBinding.connector_key)
+                .join(Connector, Connector.key == PersonalConnectorBinding.connector_key)
+                .where(PersonalConnectorBinding.workspace_id == scope.workspace_id,
+                       PersonalConnectorBinding.user_id == scope.user_id, Connector.enabled.is_(True))
+            ))
             policies = {
                 key: enabled
                 for key, enabled in (
@@ -433,6 +441,7 @@ class AgentService:
             )
             for spec in self.registry.catalog()
             if spec.allows_user(scope.user_id)
+            and (spec.connector_key not in PERSONAL_CONNECTORS or spec.connector_key in bound)
         ]
 
     async def get_tool(self, scope: ResourceScope, key: str) -> ToolView:

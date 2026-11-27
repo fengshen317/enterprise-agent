@@ -27,7 +27,8 @@ const inCapabilityCenter = computed(() => route.path === '/admin/plugins'
   || route.path === '/capabilities' || route.path.startsWith('/capabilities/'))
 const inChannels = computed(() => route.path === '/channels' || route.path.startsWith('/channels/'))
 const sectionParent = computed(() => route.path === '/admin/plugins' ? '能力中心'
-  : route.meta.admin || route.meta.systemAdmin ? '后台管理' : '工作空间')
+  : route.path.startsWith('/account/') ? '个人设置'
+    : route.meta.admin || route.meta.systemAdmin ? '后台管理' : '工作空间')
 async function signOut(): Promise<void> {
   try { await auth.signOut(); await router.replace('/login') } catch (value) { error.value = value instanceof Error ? value.message : '退出失败，请重试' }
 }
@@ -157,7 +158,7 @@ async function changeWorkspace(event: Event): Promise<void> {
           >API 配置</RouterLink>
         </nav>
         <div class="workspace__account">
-          <span>{{ auth.session?.user.display_name }}</span><RouterLink to="/account/password">修改密码</RouterLink><button
+          <span>{{ auth.session?.user.display_name }}</span><RouterLink to="/account/models">模型配置</RouterLink><RouterLink to="/account/password">修改密码</RouterLink><button
             type="button"
             @click="signOut"
           >

@@ -23,6 +23,7 @@ from app.api.health import router
 from app.api.initial_setup import router as initial_setup_router
 from app.api.knowledge import router as knowledge_router
 from app.api.materials import router as material_router
+from app.api.personal_models import router as personal_models_router
 from app.api.ragflow_models import router as ragflow_models_router
 from app.api.schedules import router as schedule_router
 from app.api.skills import router as skill_router
@@ -159,6 +160,7 @@ def create_app(
             schedule_store=schedule_store,
             approval_service=approval_service,
             log_recorder=log_recorder,
+            config_service=config_service,
         )
         app.state.chat_runtime = runtime
         task_runtime = TaskRuntime(database, config, task_provider or DeepSeekTaskProvider(config))
@@ -279,6 +281,7 @@ def create_app(
     app.include_router(channel_router)
     app.include_router(knowledge_router)
     app.include_router(ragflow_models_router)
+    app.include_router(personal_models_router)
     app.include_router(material_router)
     app.include_router(agent_router)
     app.include_router(skill_router)

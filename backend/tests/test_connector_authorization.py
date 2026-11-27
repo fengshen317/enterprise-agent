@@ -383,7 +383,7 @@ async def test_health_refresh_failure_does_not_escape_background_task(monkeypatc
     session, callback, _ = make_session(monkeypatch, "print('Already logged in')")
     callback.side_effect = RuntimeError("private-health-error")
     try:
-        assert (await session.start())["state"] == "completed"
+        assert (await session.start())["state"] == "failed"
         assert session._task is not None
         await session._task
         assert session._task.exception() is None

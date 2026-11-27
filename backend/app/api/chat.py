@@ -194,7 +194,6 @@ async def create_run(
         可用于查询或订阅的运行快照。
     """
     await auth_service(request).conversation(scope, conversation_id)
-    runtime.provider.validate()
     return await _submit_run(request, runtime, conversation_id, body, scope)
 
 
@@ -204,7 +203,6 @@ async def create_attachment_run(
 ) -> RunSnapshot:
     """上传与发送一次完成，只有成功创建对应消息才保存附件。"""
     await auth_service(request).conversation(scope, conversation_id)
-    runtime.provider.validate()
     body, files = await parse_attachment_run(request, material_namespace(scope))
     return await _submit_run(request, runtime, conversation_id, body, scope, files)
 

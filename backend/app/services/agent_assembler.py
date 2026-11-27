@@ -17,7 +17,7 @@ from app.capabilities.spec import AgentAssembly, SkillSnapshot, ToolSpec
 from app.connectors.catalog import PERSONAL_CONNECTORS
 from app.core.errors import ApplicationError
 from app.models.agent import AgentCapability, AgentProfile, WorkspaceToolPolicy
-from app.models.connector import PersonalConnectorBinding
+from app.models.connector import Connector, PersonalConnectorBinding
 from app.models.conversation import Conversation, Run
 from app.models.knowledge import KnowledgeBase
 from app.models.skill import Skill, SkillVersion
@@ -405,8 +405,12 @@ class AgentAssembler:
             return frozenset()
         return frozenset(
             await session.scalars(
-                select(PersonalConnectorBinding.connector_key).filter_by(
-                    workspace_id=scope.workspace_id, user_id=scope.user_id
+                select(PersonalConnectorBinding.connector_key)
+                .join(Connector, Connector.key == PersonalConnectorBinding.connector_key)
+                .where(
+                    PersonalConnectorBinding.workspace_id == scope.workspace_id,
+                    PersonalConnectorBinding.user_id == scope.user_id,
+                    Connector.enabled.is_(True),
                 )
             )
         )

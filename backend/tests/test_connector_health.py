@@ -1,17 +1,22 @@
 """API、CLI 与 MCP 健康检查中的认证及网络分类。"""
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import httpx
 import pytest
 
 from app.capabilities.registry import ToolRegistry
 from app.connectors.api import ApiConnector
+from app.connectors.authorization import CliAuthorization
 from app.connectors.base import ConnectorError, health_exception
 from app.connectors.cli import CliConnector, CliResult
+from app.connectors.personal_cli import PersonalCliConnector
 from app.connectors.registry import ConnectorDescriptor, ConnectorRegistry
 from app.core.config import Settings
+from app.schemas.auth import ResourceScope
 
 
 async def test_missing_api_key_requires_configuration() -> None:
@@ -155,65 +160,51 @@ def authorization_registry(auth_status: str) -> ConnectorRegistry:
     return registry
 
 
-async def test_existing_authorization_never_spawns_login(monkeypatch: pytest.MonkeyPatch) -> None:
-    """已授权账号直接返回成功，避免用户重复授权。
-
-    Args:
-        monkeypatch: 观察授权进程工厂。
-    """
-    factory = MagicMock()
-    monkeypatch.setattr("app.connectors.authorization.CliAuthorization", factory)
-    result = await authorization_registry("authorized").authorize("tmeet")
-    assert result["already_logged_in"] and result["state"] == "completed"
-    factory.assert_not_called()
+async def test_global_authorization_does_not_authorize_member() -> None:
+    """主机或其他成员的已登录状态不能授权给当前成员。"""
+    registry = authorization_registry("authorized")
+    scope = ResourceScope(uuid4(), uuid4())
+    result = registry.personal_auth.status("tmeet", scope)
+    assert not result["already_logged_in"] and result["state"] == "failed"
 
 
-async def test_unknown_network_state_does_not_start_login(monkeypatch: pytest.MonkeyPatch) -> None:
-    """网络检查无法确认认证时，保留重试入口。
-
-    Args:
-        monkeypatch: 观察授权进程工厂。
-    """
-    factory = MagicMock()
-    monkeypatch.setattr("app.connectors.authorization.CliAuthorization", factory)
+async def test_legacy_cli_never_used_for_personal_authorization(monkeypatch: pytest.MonkeyPatch) -> None:
+    """旧全局 CLI 实例不能作为个人登录的后备入口。"""
+    monkeypatch.setattr("app.connectors.personal_authorization.require_membership", AsyncMock())
+    registry = authorization_registry("authorized")
     with pytest.raises(ConnectorError) as caught:
-        await authorization_registry("unknown").authorize("tmeet")
-    assert caught.value.code == "network_error"
-    factory.assert_not_called()
+        await registry.personal_auth.authorize("tmeet", ResourceScope(uuid4(), uuid4()))
+    assert caught.value.code == "not_configured"
 
 
-async def test_concurrent_authorization_requests_reuse_pending_flow(monkeypatch: pytest.MonkeyPatch) -> None:
-    """并发点击只能产生一个等待扫码的流程。
-
-    Args:
-        monkeypatch: 替换进程边界，提供可控的授权流程。
-    """
+async def test_concurrent_authorization_requests_reuse_pending_flow(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """同一成员并发点击只创建一份个人目录和扫码流程。"""
     started, release = asyncio.Event(), asyncio.Event()
     result = {"state": "awaiting_user", "auth_url": "https://meeting.tencent.com/", "already_logged_in": False}
 
-    async def start() -> dict[str, object]:
-        """等待并发请求进入后返回固定授权进度。
-
-        Returns:
-            固定进度。
-        """
+    async def start(self: CliAuthorization) -> dict[str, object]:
+        """等待两个请求交错，不启动真正的 CLI。"""
         started.set()
         await release.wait()
         return result
 
-    flow = MagicMock()
-    flow.snapshot.return_value = result
-    flow.start = AsyncMock(side_effect=start)
-    factory = MagicMock(return_value=flow)
-    monkeypatch.setattr("app.connectors.authorization.CliAuthorization", factory)
-    registry = authorization_registry("required")
-    first = asyncio.create_task(registry.authorize("tmeet"))
-    second = asyncio.create_task(registry.authorize("tmeet"))
+    monkeypatch.setattr("app.connectors.personal_authorization.require_membership", AsyncMock())
+    monkeypatch.setattr(CliAuthorization, "start", start)
+    registry = authorization_registry("unknown")
+    registry._settings.personal_connector_data_dir = tmp_path
+    registry._instances["tmeet"] = PersonalCliConnector("tmeet", {}, registry._settings)
+    scope = ResourceScope(uuid4(), uuid4())
+    first = asyncio.create_task(registry.personal_auth.authorize("tmeet", scope))
+    second = asyncio.create_task(registry.personal_auth.authorize("tmeet", scope))
     try:
         await asyncio.wait_for(started.wait(), 1)
         release.set()
         assert await asyncio.gather(first, second) == [result, result]
-        factory.assert_called_once()
+        assert len(registry.personal_auth.flows) == 1
+        assert await asyncio.to_thread(lambda: len(list(tmp_path.rglob("tmeet/*")))) == 1
     finally:
         release.set()
         await asyncio.gather(first, second, return_exceptions=True)
+        await registry.close()

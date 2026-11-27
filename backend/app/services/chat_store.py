@@ -163,6 +163,7 @@ class ChatStore:
         agent_snapshot: dict[str, object] | None = None,
         uploads: list[PreparedAttachment] | None = None,
         image_model: str = CHAT_VISION_MODEL,
+        model_connection: str | None = None,
     ) -> RunSnapshot:
         """锁定对话，原子分配序号并创建输入、运行和回复占位。
 
@@ -175,6 +176,7 @@ class ChatStore:
             agent_snapshot: 提交时固定的能力快照。
             uploads: 已校验、等待随消息提交的原件。
             image_model: 有图片附件时记录的模型标识。
+            model_connection: 本轮仅服务端读取的加密连接配置。
 
         Returns:
             新运行或同键同内容的已有运行。
@@ -223,6 +225,7 @@ class ChatStore:
             vision = any(view.media_type in IMAGE_MIME.values() for view in attachments)
             sequence = conversation.next_message_sequence
             run = Run(
+                model_connection=model_connection,
                 id=uuid4(),
                 conversation_id=conversation_id,
                 idempotency_key=body.idempotency_key,

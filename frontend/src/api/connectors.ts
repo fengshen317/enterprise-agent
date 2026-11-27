@@ -67,6 +67,7 @@ export interface ConnectorDetail extends ConnectorHealth {
 
 export interface PersonalAccount {
   bound: boolean
+  auth_mode?: 'credentials' | 'scan'
   guide_url: string
   fields: { key: string; label: string; secret: boolean }[]
 }
@@ -83,7 +84,7 @@ export interface ImaAccountCheckResult {
 }
 
 export function isPersonalConnector(key?: string): boolean {
-  return key === 'qq_mail' || key === 'ima' || key === 'tencent_news'
+  return ['qq_mail', 'ima', 'tencent_news', 'tavily_search', 'tmeet', 'yangjibao'].includes(key ?? '')
 }
 
 function parsePersonalAccount(value: unknown): PersonalAccount {
@@ -267,7 +268,7 @@ export interface AuthResult {
 }
 
 export async function authenticateConnector(key: string): Promise<AuthResult> {
-  const body = await requestJson('/api/admin/connectors/' + encodeURIComponent(key) + '/auth', {
+  const body = await requestJson('/api/connectors/' + encodeURIComponent(key) + '/my-account/auth', {
     method: 'POST',
   }, CONNECTOR_AUTH_TIMEOUT_MS)
   if (!record(body)) return invalid()
@@ -275,7 +276,7 @@ export async function authenticateConnector(key: string): Promise<AuthResult> {
 }
 
 export async function getConnectorAuthStatus(key: string): Promise<AuthResult> {
-  const path = '/api/admin/connectors/' + encodeURIComponent(key) + '/auth/status'
+  const path = '/api/connectors/' + encodeURIComponent(key) + '/my-account/auth/status'
   const body = key === 'yangjibao'
     ? await requestJson(path, { method: 'POST' }, CONNECTOR_QR_POLL_TIMEOUT_MS)
     : await requestJson(path)

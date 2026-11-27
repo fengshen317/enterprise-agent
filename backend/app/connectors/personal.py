@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from pydantic import BaseModel
 
 from app.capabilities.spec import ToolContext, ToolSpec
-from app.connectors import ima, qq_mail, tencent_news
+from app.connectors import ima, qq_mail, tavily, tencent_news
 from app.connectors.base import (
     ConfigField,
     ConnectorError,
@@ -25,6 +25,7 @@ ADAPTERS: dict[str, tuple[tuple[ConnectorToolDef, ...], AdapterCall]] = {
     "qq_mail": (qq_mail.TOOLS, qq_mail.invoke),
     "ima": (ima.TOOLS, ima.invoke),
     "tencent_news": (tencent_news.TOOLS, tencent_news.invoke),
+    "tavily_search": (tavily.TOOLS, tavily.invoke),
 }
 
 
@@ -66,7 +67,11 @@ class PersonalConnector:
             """仅在权限复核后使用该成员的凭证发起一次请求。"""
             async with context.factory() as session:
                 credentials = await read_credentials(session, context.settings, context.scope, self.key)
-            return await self.invoke(definition.name, arguments.model_dump(exclude_none=True), credentials)
+            values = arguments.model_dump(exclude_none=True)
+            if self.key == "tavily_search":
+                values["max_results"] = min(int(values.get("max_results", 5)), context.settings.web_search_max_results)
+                values["_timeout_seconds"] = context.settings.web_search_timeout_seconds
+            return await self.invoke(definition.name, values, credentials)
 
         def audit(arguments: BaseModel, result: object) -> dict[str, object]:
             """执行记录仅保存动作名，避免泄露邮件、笔记或查询条件。"""

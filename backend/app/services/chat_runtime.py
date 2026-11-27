@@ -29,6 +29,7 @@ from app.services.agent_assembler import AgentAssembler
 from app.services.chat_agent import ChatAgentExecutor
 from app.services.chat_attachments import PreparedAttachment
 from app.services.chat_store import ACTIVE, ChatStore
+from app.services.config_service import ConfigService
 from app.services.context_builder import ContextBuilder
 from app.services.knowledge import KnowledgeService
 from app.services.system_logs import emit_system_log, system_log_context
@@ -58,6 +59,7 @@ class ChatRuntime:
         schedule_store: "ScheduleStore | None" = None,
         approval_service: "ApprovalService | None" = None,
         log_recorder: "SystemLogRecorder | None" = None,
+        config_service: ConfigService | None = None,
     ) -> None:
         """绑定当前应用资源。
 
@@ -70,11 +72,13 @@ class ChatRuntime:
             schedule_store: 共享定时任务存储，用于写工具。
             approval_service: 写操作审批服务。
             log_recorder: 应用的诊断记录器，测试和独立运行可省略。
+            config_service: 共享配置服务，按账号解析模型并固定连接快照。
         """
         self.database = database
         self.store = ChatStore(database.session_factory)
         self.settings = settings
         self.provider = provider
+        self.config_service = config_service or ConfigService(database.session_factory, settings)
         self.knowledge_service = knowledge_service
         self.schedule_store = schedule_store
         self.approval_service = approval_service
@@ -171,15 +175,24 @@ class ChatRuntime:
             新运行快照。
         """
         agent_snapshot, agent_profile_id = await self.assembler.snapshot_for_conversation(scope, conversation_id)
+        settings = self.settings
+        connection = None
+        if isinstance(self.provider, DeepSeekProvider):
+            settings = await self.config_service.settings_for_user(scope.user_id, base=self.settings)
+            DeepSeekProvider(settings).validate()
+            connection = await self.config_service.seal_model_connection(settings)
+        else:
+            self.provider.validate()
         return await self.store.create_run(
             conversation_id,
             body,
-            self.settings.active_llm_model,
+            settings.active_llm_model,
             scope,
             agent_profile_id=agent_profile_id,
             agent_snapshot=agent_snapshot,
             uploads=uploads,
-            image_model=vision_model(self.settings),
+            image_model=vision_model(settings),
+            model_connection=connection,
         )
 
     def schedule(self, run_id: UUID, request_id: str, *, scheduled: bool = False) -> None:
@@ -332,6 +345,11 @@ class ChatRuntime:
             if state is None:
                 return
             claimed = True
+            settings = self.settings
+            provider = self.provider
+            if isinstance(provider, DeepSeekProvider):
+                settings = await self.config_service.settings_for_run(run_id, base=self.settings)
+                provider = DeepSeekProvider(settings)
             emit_system_log(component="run", event="run_started", outcome="success", details=channel)
             try:
                 assembly = await self.assembler.assemble_for_run(run_id)
@@ -344,7 +362,7 @@ class ChatRuntime:
                 )
                 raise ApplicationError("AGENT_ASSEMBLY_FAILED", "无法加载本次运行的 Agent 能力配置", 500) from exc
             # 构建长对话上下文可能调用模型生成摘要，因此要等能力装配成功。
-            history = await ContextBuilder(self.store, self.provider, self.settings).build(state)
+            history = await ContextBuilder(self.store, provider, settings).build(state)
             # 自动知识库检索注入：把参考资料改写进 history[-1]，不依赖模型调工具。
             # 附件内容只用于问答，不作为查询发送给外部知识库服务。
             retrieval_text = await self._auto_retrieve(run_id, assembly, state.query or history[-1][1])
@@ -363,13 +381,12 @@ class ChatRuntime:
                     sections.append("本次用户要求：\n" + question)
                     history[-1] = (role, "\n\n".join(sections))
             saved_length, saved_at = 0, monotonic()
-            provider = self.provider
-            if isinstance(provider, DeepSeekProvider) and self.settings.tools_enabled:
+            if isinstance(provider, DeepSeekProvider) and settings.tools_enabled:
                 provider = DeepSeekProvider(
-                    self.settings,
+                    settings,
                     ChatAgentExecutor(
                         self.database.session_factory,
-                        self.settings,
+                        settings,
                         run_id,
                         self.knowledge_service,
                         assembly=assembly,

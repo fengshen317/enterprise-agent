@@ -28,6 +28,7 @@ const auth = useAuthStore()
 const store = useConnectorsStore()
 const isAdmin = computed(() => !props.memberMode
   && auth.activeWorkspace?.role === 'admin' && auth.activeWorkspace.status === 'active')
+const personalScan = computed(() => !props.adminMode && detail.value?.personal_account?.auth_mode === 'scan')
 const isYangJiBao = computed(() => props.connectorKey === 'yangjibao')
 const titleId = useId()
 const closeButton = ref<HTMLButtonElement | null>(null)
@@ -64,10 +65,10 @@ const qrContent = computed(() =>
   isYangJiBao.value && authenticating.value && authResult.value?.state === 'awaiting_user'
     ? authResult.value.qr_content ?? '' : '',
 )
-const canStartAuth = computed(() => detail.value?.enabled
-  && (isYangJiBao.value ? detail.value.auth_action !== 'configure' : detail.value.auth_action === 'authorize' || authResult.value))
+const canStartAuth = computed(() => detail.value?.enabled && (personalScan.value
+  || (isYangJiBao.value ? detail.value.auth_action !== 'configure' : detail.value.auth_action === 'authorize' || authResult.value)))
 const authButtonLabel = computed(() => {
-  if (!isYangJiBao.value) return authenticating.value ? '授权中…' : '去授权'
+  if (!isYangJiBao.value) return authenticating.value ? '授权中…' : detail.value?.personal_account?.bound ? '重新授权我的账号' : '绑定我的腾讯会议'
   if (authenticating.value) return qrContent.value ? '等待扫码…' : '正在获取二维码…'
   if (authResult.value?.state === 'expired' || authResult.value?.state === 'failed') return '重新获取二维码'
   return detail.value?.auth_status === 'authorized' ? '重新扫码' : '扫码连接'
@@ -197,7 +198,8 @@ async function acceptAuth(result: AuthResult, version: number): Promise<void> {
   authResult.value = result
   if (result.state === 'completed') {
     authenticating.value = false
-    await test()
+    await load()
+    await store.refresh(true)
     return
   }
   if (result.state === 'expired' || result.state === 'failed') {
@@ -234,7 +236,7 @@ async function pollAuth(version: number): Promise<void> {
 }
 
 async function authenticate(): Promise<void> {
-  if (authenticating.value || !isAdmin.value) return
+  if (authenticating.value || (!isAdmin.value && !personalScan.value)) return
   clearTimeout(pollTimer)
   const version = generation
   authenticating.value = true
@@ -278,7 +280,8 @@ watch(() => [store.scope, props.connectorKey], () => {
 }, { flush: 'sync' })
 function updateAccount(account: PersonalAccount): void {
   if (!detail.value) return
-  detail.value = { ...detail.value, personal_account: account }
+  detail.value = { ...detail.value, personal_account: account, can_view_holdings: isYangJiBao.value && account.bound }
+  if (!account.bound) stop()
   emit('accountUpdated', account)
 }
 
@@ -517,7 +520,7 @@ onUnmounted(() => { stopped = true; stop() })
 
         <!-- 操作按钮 -->
         <footer
-          v-if="isAdmin"
+          v-if="isAdmin || personalScan"
           class="connector-dialog__footer"
         >
           <button
@@ -529,6 +532,7 @@ onUnmounted(() => { stopped = true; stop() })
             {{ authButtonLabel }}
           </button>
           <button
+            v-if="isAdmin"
             class="connector-dialog__btn connector-dialog__btn--secondary"
             :disabled="testing || authenticating || saving || changingEnabled || !detail.enabled"
             @click="test"
@@ -776,11 +780,11 @@ onUnmounted(() => { stopped = true; stop() })
     }
 
     &--primary {
-      background: #3498db;
+      background: $green;
       color: #fff;
 
       &:hover:not(:disabled) {
-        background: #2980b9;
+        background: $ink;
       }
     }
 

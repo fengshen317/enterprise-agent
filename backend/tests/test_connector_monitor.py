@@ -44,14 +44,14 @@ def monitor_fixture() -> tuple[ConnectorRegistry, MagicMock, MagicMock]:
         Settings(connector_monitor_enabled=True, connector_monitor_interval_seconds=60),
     )
     connector = MagicMock(spec=Connector)
-    connector.key = "tmeet"
-    connector.kind = "cli"
+    connector.key = "monitor_api"
+    connector.kind = "api"
     connector.check_health = AsyncMock(return_value=ConnectorStatusInfo(status="connected", auth_status="authorized"))
     connector.aclose = AsyncMock()
     registry._instances[connector.key] = connector
     registry._descriptors[connector.key] = ConnectorDescriptor(
         key=connector.key,
-        kind="cli",
+        kind="api",
         name="测试连接器",
         description="",
         icon="",
@@ -74,7 +74,7 @@ def tool_spec(connector: MagicMock, handler: AsyncMock) -> ToolSpec:
         尚未注册的原始工具声明。
     """
     return ToolSpec(
-        key="tmeet__list_meetings",
+        key="monitor_api__list_meetings",
         version=1,
         display_name="会议列表",
         description="读取会议列表",
@@ -103,7 +103,7 @@ async def test_unauthorized_check_requires_authorization(code: str) -> None:
     desc = registry.descriptor(connector.key)
     assert desc is not None
     assert desc.auth_status == "required"
-    assert desc.auth_action == "authorize"
+    assert desc.auth_action == "configure"
     assert desc.last_error_code == code
     assert desc.last_checked_at is not None
     assert "private-token" not in str(desc.last_error)
@@ -223,7 +223,7 @@ async def test_tool_failure_immediately_updates_health_and_reraises() -> None:
     desc = registry.descriptor(connector.key)
     assert desc is not None
     assert desc.auth_status == "required"
-    assert desc.auth_action == "authorize"
+    assert desc.auth_action == "configure"
     assert desc.last_error_code == "not_logged_in"
     connector.check_health.assert_not_awaited()
     handler.assert_awaited_once()
@@ -338,7 +338,7 @@ async def test_registered_tools_include_health_feedback(entrypoint: str, monkeyp
     registry, connector, factory = monitor_fixture()
     row = ConnectorRow(
         key=connector.key,
-        kind="cli",
+        kind="api",
         name="测试连接器",
         description="",
         icon="",
@@ -363,14 +363,14 @@ async def test_registered_tools_include_health_feedback(entrypoint: str, monkeyp
         await registry.load()
     else:
         await registry.refresh(connector.key)
-    registered = registry._tool_registry.resolve("tmeet__list_meetings")
+    registered = registry._tool_registry.resolve("monitor_api__list_meetings")
     assert registered is not None
     with pytest.raises(ConnectorError):
         await registered.handler(cast(ToolContext, MagicMock()), EmptyArguments())
     desc = registry.descriptor(connector.key)
     assert desc is not None and desc.auth_status == "required"
     assert desc.last_error_code == "not_logged_in"
-    assert desc.auth_action == "authorize"
+    assert desc.auth_action == "configure"
 
 
 async def test_refresh_waits_until_probe_finishes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -433,7 +433,7 @@ async def test_health_persistence_and_disable_during_probe(
     checking: asyncio.Task[None] | None = None
     try:
         async with factory.begin() as session:
-            session.add(ConnectorRow(key=key, kind="cli", name="监控回归测试", enabled=True))
+            session.add(ConnectorRow(key=key, kind="api", name="监控回归测试", enabled=True))
         await registry.check_health(key)
         async with factory() as session:
             row = (await session.execute(select(ConnectorRow).where(ConnectorRow.key == key))).scalar_one()

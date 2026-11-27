@@ -31,6 +31,7 @@ from tests.test_chat_integration import chat as chat
         ("qq_mail", {"email": "tester@example.org", "auth_code": "private-imap-test"}),
         ("ima", {"client_id": "test-client", "api_key": "private-ima-test"}),
         ("tencent_news", {"api_key": "private-news-test"}),
+        ("tavily_search", {"api_key": "private-tavily-test"}),
     ],
 )
 async def test_member_binding_lifecycle(
@@ -78,12 +79,13 @@ async def test_member_binding_lifecycle(
             )
             assembly = await assembler.assemble(scope, None)
             specs = [item for item in assembly.tools if item.connector_key == key]
+            specs = [item for item in specs if item.source == "connector"]
             assert len(specs) == len(definitions)
             assert not {spec.key for spec in specs} & (await assembler.assemble(owner, None)).tool_keys
             context = SimpleNamespace(factory=factory, scope=scope, settings=settings)
             # 使用真实 Run 和审计接口，只替换会访问个人数据的外部适配器。
             spec = specs[0]
-            raw_args = {"query": "科技"} if key == "tencent_news" else {}
+            raw_args = {"query": "科技"} if key in {"tencent_news", "tavily_search"} else {}
             args = spec.args_model.model_validate(raw_args)
             runtime = app.state.chat_runtime
             run = await runtime.create_run(

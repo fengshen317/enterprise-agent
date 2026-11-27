@@ -126,7 +126,7 @@ async def test_ima_probe_deadline_records_transport_timeout(monkeypatch: pytest.
 @pytest.mark.parametrize(
     ("key", "status", "last_error_code", "outcome", "error_code"),
     [
-        ("tmeet", "connected", None, "success", None),
+        ("tmeet", "connected", None, "warning", "PERSONAL_CHECK_REQUIRED"),
         ("tmeet", "degraded", "network_error", "error", "NETWORK_ERROR"),
         ("tmeet", "disabled", None, "warning", "CONNECTOR_DISABLED"),
         ("ima", "connected", None, "warning", "PERSONAL_CHECK_REQUIRED"),

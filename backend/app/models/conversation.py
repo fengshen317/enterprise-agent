@@ -95,6 +95,7 @@ class Run(Base):
     idempotency_key: Mapped[str] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(20), default="pending", server_default="pending")
     model: Mapped[str] = mapped_column(String(200))
+    model_connection: Mapped[str | None] = mapped_column(Text)
     input_sequence: Mapped[int] = mapped_column(BigInteger)
     error_code: Mapped[str | None] = mapped_column(String(64))
     error_message: Mapped[str | None] = mapped_column(String(500))

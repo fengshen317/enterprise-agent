@@ -187,7 +187,7 @@ async def test_deployment_api_settings(chat: tuple[FastAPI, AsyncClient, Control
         changed = await save({"llm_base_url": "https://other-llm.invalid/v1"})
         assert changed.status_code == 422 and changed.json()["error"]["code"] == "CONFIG_LLM_KEY_REQUIRED"
         assert (await save({"tavily_api_key": ""})).status_code == 200
-        assert app.state.tool_registry.resolve("web_search") is None
+        assert app.state.tool_registry.resolve("web_search").connector_key == "tavily_search"
     finally:
         async with factory.begin() as session:
             await session.execute(delete(IntegrationConfig).where(IntegrationConfig.key.in_(tuple(values))))

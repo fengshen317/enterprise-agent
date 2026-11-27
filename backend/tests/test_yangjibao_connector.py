@@ -8,7 +8,9 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from cryptography.fernet import Fernet
 from fastapi import FastAPI
+from pydantic import SecretStr
 from sqlalchemy import delete, select
 
 from app.capabilities.registry import ToolRegistry
@@ -16,7 +18,6 @@ from app.capabilities.spec import AgentAssembly
 from app.connectors import yangjibao_authorization
 from app.connectors.base import ConnectorError
 from app.connectors.yangjibao import (
-    BINDING_OWNER_KEY,
     PORTFOLIO_DETAIL_TOOL,
     PORTFOLIO_TOOL,
     PortfolioArgs,
@@ -29,6 +30,7 @@ from app.models.identity import Workspace
 from app.schemas.auth import ResourceScope
 from app.schemas.chat import RunCreate
 from app.services.agent_assembler import AgentAssembler
+from app.services.personal_credentials import save_credentials
 from app.services.tools import ToolExecutor
 from tests.auth_helpers import add_identity
 from tests.test_chat_integration import ControlledProvider, new_conversation
@@ -72,12 +74,13 @@ async def test_only_owner_can_assemble_and_read_portfolio(monkeypatch: pytest.Mo
         assert spec.risk == "read" and not spec.child_allowed
         registry.register(spec)
     assembler = AgentAssembler(Mock(), registry, settings)
-    owner_assembly = assembler.default_assembly(user_id=owner)
+    owner_assembly = assembler.default_assembly(user_id=owner, bound_connectors=frozenset({"yangjibao"}))
     assert keys <= owner_assembly.tool_keys
     assert not keys & assembler.default_assembly(user_id=other).tool_keys
     assert not keys & assembler.default_assembly().tool_keys
     mock_session = Mock()
     mock_session.execute = AsyncMock(return_value=Mock(all=Mock(return_value=[])))
+    mock_session.scalars = AsyncMock(return_value=["yangjibao"])
     for viewer, allowed in ((owner, True), (other, False)):
         restored = await assembler._restore(
             mock_session, SimpleNamespace(user_id=viewer, workspace_id=workspace), owner_assembly.snapshot
@@ -139,95 +142,6 @@ async def test_scan_expiry_discards_qr_and_rejects_non_wechat_url(monkeypatch: p
 
 
 @pytest.mark.integration
-async def test_workbench_scan_binds_the_confirming_session_only(
-    chat: tuple[FastAPI, httpx.AsyncClient, ControlledProvider],
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """扫码会话隔离，成功后仅绑定本人并在重建时恢复。"""
-    app, client, _ = chat
-    owner: ResourceScope = app.state.test_scope
-    registry = app.state.connector_registry
-    factory = app.state.database.session_factory
-    executable = tmp_path / "fundpeek.exe"
-    executable.touch()
-    credentials = tmp_path / str(owner.user_id) / "credentials.json"
-    base_url = "/api/admin/connectors/yangjibao"
-    qr_url = "http://weixin.qq.com/q/demo"
-    request = AsyncMock(
-        side_effect=[
-            {"id": "private-qr-id", "url": qr_url},
-            {"state": 1},
-            {"state": 2, "token": "private-token"},
-        ]
-    )
-    monkeypatch.setattr(yangjibao_authorization, "_request", request)
-    monkeypatch.setattr(
-        registry,
-        "_settings",
-        registry._settings.model_copy(
-            update={
-                "yangjibao_owner_user_id": None,
-                "yangjibao_cli_path": executable,
-                "yangjibao_config_dir": tmp_path,
-            }
-        ),
-    )
-
-    def cli_output(instance: YangJiBaoConnector, args: tuple[str, ...], timeout: float) -> str:
-        """替代 CLI 状态检查，验证真实落盘路径和绑定身份。"""
-        assert instance.owner == owner.user_id
-        assert args == ("status",)
-        assert json.loads(credentials.read_text(encoding="utf8")) == {"yangjibao": {"token": "private-token"}}
-        return "yangjibao: authenticated\n"
-
-    monkeypatch.setattr(YangJiBaoConnector, "_run", cli_output)
-    try:
-        assert (await client.post(f"{base_url}/install")).status_code == 200
-        enabled = await client.post(f"{base_url}/enabled", json={"enabled": True})
-        assert enabled.status_code == 200 and enabled.json()["auth_action"] == "authorize"
-        started = await client.post(f"{base_url}/auth")
-        assert started.status_code == 200 and started.headers["Cache-Control"] == "no-store"
-        assert started.json()["qr_content"] == qr_url and started.json()["state"] == "awaiting_user"
-        assert "private-qr-id" not in started.text and "private-token" not in started.text
-        assert (await client.post(f"{base_url}/auth")).json() == started.json()
-        assert request.await_count == 1
-        assert (await client.get(f"{base_url}/auth/status")).json().get("qr_content") is None
-
-        async with factory() as session:
-            slug = await session.scalar(select(Workspace.slug).where(Workspace.id == owner.workspace_id))
-        assert slug is not None
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://other") as other:
-            peer = await add_identity(app, other, workspace=slug, role="admin")
-            assert (await other.post(f"{base_url}/auth")).status_code == 403
-            assert (await other.post(f"{base_url}/auth/status")).status_code == 403
-            assert (
-                await other.put(
-                    f"{base_url}/config", json={"config": {BINDING_OWNER_KEY: str(peer.user_id)}, "secrets": {}}
-                )
-            ).status_code == 409
-            assert (await client.post(f"{base_url}/auth/status")).json()["state"] == "awaiting_user"
-            assert not credentials.exists()
-
-            completed = await client.post(f"{base_url}/auth/status")
-            assert completed.status_code == 200 and completed.json()["state"] == "completed"
-            assert completed.json()["qr_content"] == "" and "private-token" not in completed.text
-            assert (await other.post(f"{base_url}/auth")).status_code == 403
-            assert (await other.post(f"{base_url}/auth/status")).status_code == 403
-            await registry.refresh("yangjibao")
-            assert registry.descriptor("yangjibao").auth_status == "authorized"
-
-            tool = f"yangjibao__{PORTFOLIO_TOOL}"
-            assert (await client.get(f"/api/tools/{tool}")).status_code == 200
-            assert (await other.get(f"/api/tools/{tool}")).status_code == 404
-        assert request.await_count == 3
-    finally:
-        async with factory.begin() as session:
-            await session.execute(delete(Connector).where(Connector.key == "yangjibao"))
-        await registry.refresh("yangjibao")
-
-
-@pytest.mark.integration
 async def test_workbench_enforces_ownership_with_real_runs(
     chat: tuple[FastAPI, httpx.AsyncClient, ControlledProvider],
     monkeypatch: pytest.MonkeyPatch,
@@ -283,10 +197,16 @@ async def test_workbench_enforces_ownership_with_real_runs(
         registry, "_settings", runtime.settings.model_copy(update={"yangjibao_owner_user_id": owner.user_id})
     )
     monkeypatch.setattr(YangJiBaoConnector, "_run", cli_output)
+    monkeypatch.setattr(YangJiBaoConnector, "require_scan_ready", lambda self: None)
+    key_value = SecretStr(Fernet.generate_key().decode())
+    monkeypatch.setattr(runtime.settings, "connector_credential_key", key_value)
+    monkeypatch.setattr(registry._settings, "connector_credential_key", key_value)
     try:
         assert (await client.post(f"/api/admin/connectors/{key}/install")).status_code == 200
         enabled = await client.post(f"/api/admin/connectors/{key}/enabled", json={"enabled": True})
-        assert enabled.status_code == 200 and enabled.json()["auth_status"] == "authorized"
+        assert enabled.status_code == 200 and enabled.json()["auth_status"] == "unknown"
+        async with factory.begin() as session:
+            await save_credentials(session, runtime.settings, owner, key, {"token": SecretStr("owner-token")})
         assert (await client.get(f"/api/connectors/{key}")).json()["can_view_holdings"] is True
         portfolio = await client.get(f"/api/connectors/{key}/holdings")
         assert portfolio.status_code == 200 and portfolio.headers["Cache-Control"] == "no-store"
@@ -330,7 +250,7 @@ async def test_workbench_enforces_ownership_with_real_runs(
             peer = await add_identity(app, other, workspace=slug, role="admin")
             assert (await other.get(f"/api/connectors/{key}")).json()["can_view_holdings"] is False
             denied_holdings = await other.get(f"/api/connectors/{key}/holdings")
-            assert denied_holdings.status_code == 403 and "9876.54" not in denied_holdings.text
+            assert denied_holdings.status_code == 409 and "9876.54" not in denied_holdings.text
             assert (await other.get(f"/api/tools/{tool}")).status_code == 404
             assert (await other.get(f"/api/tools/{detail_tool}")).status_code == 404
             assert (await other.post(f"/api/admin/tools/{detail_tool}", json={"enabled": False})).status_code == 404
@@ -338,7 +258,7 @@ async def test_workbench_enforces_ownership_with_real_runs(
             assert not {tool, detail_tool} & ordinary.assembly.tool_keys
             forged = await executor_for(other, peer, owner_executor.assembly)
             denied = json.loads(await forged.invoke(detail_tool, {}))
-            assert not denied["ok"] and denied["error_code"] == "TOOL_NOT_ALLOWED" and "data" not in denied
+            assert not denied["ok"] and denied["error_code"] == "PERSONAL_CONNECTOR_UNBOUND" and "data" not in denied
     finally:
         async with factory.begin() as session:
             await session.execute(delete(Connector).where(Connector.key == key))

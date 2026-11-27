@@ -80,7 +80,8 @@ it('小米 MiMo 只需 API Key 即可加载模型，保存和启用分别操作'
     await flushPromises()
     expect(activateModelProfile).toHaveBeenCalledWith('fixture')
     expect(view.emitted('activated')).toEqual([[[]]])
-    expect(view.get('.model-profiles__default').text()).toContain(saved.name)
+    expect(view.get('.model-profiles__default').text()).toContain(saved.model_id)
+    expect(view.get('.model-profiles__default').text()).toContain('小米 MiMo')
   } finally {
     view.unmount()
   }

@@ -1,16 +1,19 @@
 """仅在受信运行上下文中解开当前成员的连接器凭证。"""
 
+import asyncio
 import json
 import re
 
 from cryptography.fernet import Fernet, InvalidToken
 from pydantic import SecretStr
-from sqlalchemy import delete, select
+from sqlalchemy import delete, exists, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.connectors.catalog import SCAN_CONNECTORS
 from app.core.config import Settings
 from app.core.errors import ApplicationError
+from app.core.secret_files import cipher_for
 from app.models.connector import Connector, PersonalConnectorBinding
 from app.schemas.auth import ResourceScope
 from app.schemas.connectors import PersonalAccountView, PersonalField
@@ -27,20 +30,37 @@ FIELDS = {
         PersonalField(key="api_key", label="API Key", secret=True),
     ),
     "tencent_news": (PersonalField(key="api_key", label="腾讯新闻 API Key", secret=True),),
+    "tavily_search": (PersonalField(key="api_key", label="Tavily API Key", secret=True),),
+    "yangjibao": (PersonalField(key="token", label="扫码授权", secret=True),),
+    "tmeet": (PersonalField(key="profile_id", label="扫码授权", secret=True),),
 }
 GUIDES = {
     "qq_mail": "https://hiflow.tencent.com/docs/applications/qq-mail/",
     "ima": "https://ima.qq.com/agent-interface",
     "tencent_news": "https://news.qq.com/exchange?scene=appkey",
+    "tavily_search": "https://app.tavily.com/",
+    "yangjibao": "https://www.yangjibao.com/",
+    "tmeet": "https://meeting.tencent.com/",
 }
 
 
-def _cipher(settings: Settings) -> Fernet:
-    """获取部署密钥，避免把无法恢复的临时密钥用于持久化。"""
+async def _cipher(session: AsyncSession, settings: Settings, *, create: bool) -> Fernet:
+    """首次绑定自动持久化密钥，已有凭据时要求恢复原密钥。"""
     try:
-        return Fernet(settings.connector_credential_key.get_secret_value().encode())
-    except (TypeError, ValueError) as exc:
-        raise ApplicationError("CONNECTOR_KEY_UNAVAILABLE", "请管理员配置个人连接器加密密钥", 503) from exc
+        configured = settings.connector_credential_key.get_secret_value().strip()
+        if configured:
+            return Fernet(configured.encode())
+        path = settings.connector_credential_key_file
+        try:
+            return await asyncio.to_thread(cipher_for, path, create=False)
+        except FileNotFoundError:
+            if not create or await session.scalar(select(exists().where(PersonalConnectorBinding.ciphertext != ""))):
+                raise
+        return await asyncio.to_thread(cipher_for, path, create=True)
+    except (OSError, TypeError, ValueError) as exc:
+        raise ApplicationError(
+            "CONNECTOR_KEY_UNAVAILABLE", "个人账号凭据存储不可用，请管理员检查持久化目录或恢复原加密密钥", 503
+        ) from exc
 
 
 async def account_status(session: AsyncSession, scope: ResourceScope, key: str) -> PersonalAccountView:
@@ -50,7 +70,10 @@ async def account_status(session: AsyncSession, scope: ResourceScope, key: str) 
             workspace_id=scope.workspace_id, user_id=scope.user_id, connector_key=key
         )
     )
-    return PersonalAccountView(bound=bound is not None, fields=list(FIELDS[key]), guide_url=GUIDES[key])
+    return PersonalAccountView(
+        bound=bound is not None, fields=[] if key in SCAN_CONNECTORS else list(FIELDS[key]),
+        guide_url=GUIDES[key], auth_mode="scan" if key in SCAN_CONNECTORS else "credentials",
+    )
 
 
 async def save_credentials(
@@ -68,7 +91,7 @@ async def save_credentials(
         raise ApplicationError("INVALID_CREDENTIALS", "请完整填写该连接器所需凭证", 422)
     if key == "qq_mail" and not re.fullmatch(r"[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+", values["email"]):
         raise ApplicationError("INVALID_CREDENTIALS", "请填写有效的邮箱地址", 422)
-    ciphertext = _cipher(settings).encrypt(json.dumps(values).encode()).decode()
+    ciphertext = (await _cipher(session, settings, create=True)).encrypt(json.dumps(values).encode()).decode()
     statement = insert(PersonalConnectorBinding).values(
         workspace_id=scope.workspace_id, user_id=scope.user_id, connector_key=key, ciphertext=ciphertext
     )
@@ -104,7 +127,8 @@ async def read_credentials(session: AsyncSession, settings: Settings, scope: Res
     if ciphertext is None:
         raise ApplicationError("PERSONAL_CONNECTOR_UNBOUND", "请在当前工作空间绑定个人账号", 409)
     try:
-        decoded: dict[str, str] = json.loads(_cipher(settings).decrypt(ciphertext.encode()))
+        cipher = await _cipher(session, settings, create=False)
+        decoded: dict[str, str] = json.loads(cipher.decrypt(ciphertext.encode()))
     except InvalidToken as exc:
         raise ApplicationError("PERSONAL_CREDENTIAL_INVALID", "凭证无法读取，请重新绑定账号", 409) from exc
     return decoded

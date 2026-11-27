@@ -95,6 +95,11 @@ class CliResult:
 class CliRunner:
     """通用 CLI 执行器：子进程管理、超时、错误分类、防注入。"""
 
+    def __init__(self, *, env: dict[str, str] | None = None, cwd: Path | None = None) -> None:
+        """显式传入个人目录，避免读取后端进程的默认账号。"""
+        self._env = env
+        self._cwd = cwd
+
     async def run(self, args: list[str], timeout_seconds: float) -> CliResult:
         """执行 CLI 命令。
 
@@ -124,6 +129,8 @@ class CliRunner:
                 exec_args,
                 capture_output=True,
                 timeout=timeout_seconds,
+                env=self._env,
+                cwd=self._cwd,
             )
             stdout = proc.stdout.decode("utf-8", errors="replace") if proc.stdout else ""
             stderr = proc.stderr.decode("utf-8", errors="replace") if proc.stderr else ""
@@ -179,7 +186,9 @@ class CliRunner:
 class CliConnector:
     """CLI 连接器：封装命令行工具为 ToolSpec。"""
 
-    def __init__(self, *, key: str, config: dict[str, object], settings: Settings) -> None:
+    def __init__(
+        self, *, key: str, config: dict[str, object], settings: Settings, runner: CliRunner | None = None
+    ) -> None:
         """初始化连接器。
 
         Args:
@@ -191,7 +200,7 @@ class CliConnector:
         self.kind = "cli"
         self._config = config
         self._settings = settings
-        self._runner = CliRunner()
+        self._runner = runner or CliRunner()
 
     def config_fields(self) -> tuple[ConfigField, ...]:
         """声明配置项。

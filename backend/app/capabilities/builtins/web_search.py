@@ -21,7 +21,9 @@ class WebSearchArgs(BaseModel):
     max_results: int = Field(default=5, ge=1, le=10)
 
 
-async def search_tavily(api_key: str, query: str, max_results: int, timeout_seconds: float) -> list[dict[str, Any]]:
+async def search_tavily(
+    api_key: str, query: str, max_results: int, timeout_seconds: float, *, search_depth: str = "basic"
+) -> list[dict[str, Any]]:
     """调用 Tavily 搜索 API。
 
     Args:
@@ -44,7 +46,7 @@ async def search_tavily(api_key: str, query: str, max_results: int, timeout_seco
                     "api_key": api_key,
                     "query": query,
                     "max_results": max_results,
-                    "search_depth": "basic",
+                    "search_depth": search_depth,
                 },
             )
             response.raise_for_status()
@@ -83,9 +85,11 @@ def web_search_spec(settings: Settings) -> ToolSpec:
         """
         if not isinstance(arguments, WebSearchArgs):
             raise TypeError("搜索参数类型不正确")
-        api_key = settings.tavily_api_key.get_secret_value().strip()
-        if not api_key:
-            raise ApplicationError("WEB_SEARCH_NOT_CONFIGURED", "联网搜索未配置 API Key", 503)
+        from app.services.personal_credentials import read_credentials
+
+        async with context.factory() as session:
+            credentials = await read_credentials(session, context.settings, context.scope, "tavily_search")
+        api_key = credentials["api_key"]
         results = await search_tavily(
             api_key, arguments.query, min(arguments.max_results, settings.web_search_max_results),
             settings.web_search_timeout_seconds,
@@ -134,4 +138,5 @@ def web_search_spec(settings: Settings) -> ToolSpec:
         quota_per_run=3,
         handler=handler,
         audit=audit,
+        connector_key="tavily_search",
     )

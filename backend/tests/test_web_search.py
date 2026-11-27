@@ -2,6 +2,7 @@
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from pydantic import ValidationError
@@ -33,12 +34,16 @@ def test_web_search_args_validation() -> None:
     assert args.max_results == 5
 
 
-def test_web_search_not_configured() -> None:
+def test_web_search_not_configured(monkeypatch: pytest.MonkeyPatch) -> None:
     """未配置 API Key 时明确拒绝。"""
     settings = Settings(_env_file=None, environment="test", tavily_api_key="")
     spec = web_search_spec(settings)
-    context = SimpleNamespace(settings=settings)
-    with pytest.raises(ApplicationError, match="未配置"):
+    session = AsyncMock()
+    monkeypatch.setattr("app.services.personal_credentials.read_credentials", AsyncMock(
+        side_effect=ApplicationError("PERSONAL_CONNECTOR_UNBOUND", "请绑定个人账号", 409)
+    ))
+    context = SimpleNamespace(settings=settings, factory=Mock(return_value=session), scope=Mock())
+    with pytest.raises(ApplicationError, match="绑定"):
         asyncio.run(spec.handler(context, WebSearchArgs(query="test")))
 
 

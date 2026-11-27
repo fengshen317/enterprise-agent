@@ -4,6 +4,7 @@ import {
   activateModelProfile, addModelProfile, discoverModelCatalog, listModelProfiles, listModelProviders, testModelProfile,
   type ConfigCheck, type ConfigItem, type ModelProfile, type ModelProfileDraft, type ModelProviderPreset,
 } from '../api/config'
+import * as personalApi from '../api/personalModels'
 
 const props = defineProps<{
   disabled: boolean
@@ -11,6 +12,7 @@ const props = defineProps<{
   currentModel?: string
   currentProvider?: string
   currentVisionModel?: string
+  personal?: boolean
 }>()
 const emit = defineEmits<{ activated: [ConfigItem[]], activating: [boolean] }>()
 const CUSTOM_PROVIDER = 'custom'
@@ -39,6 +41,14 @@ const models = ref<string[]>([])
 const modelQuery = ref('')
 const manualModel = ref(false)
 const catalogLoaded = ref(false)
+const tab = ref<'mine' | 'shared'>('mine')
+const shared = ref<personalApi.SharedModel>()
+const makeDefault = ref(true)
+
+function applyPersonal(value: personalApi.PersonalModels): void {
+  profiles.value = value.profiles
+  shared.value = value.shared_default
+}
 
 const selected = computed(() => presets.value.find(item => item.id === providerId.value))
 const automatic = computed(() => selected.value?.supports_discovery === true && !manualModel.value)
@@ -47,12 +57,18 @@ const filteredModels = computed(() => {
   const query = modelQuery.value.trim().toLowerCase()
   return models.value.filter(id => id === draft.value.model_id || id.toLowerCase().includes(query))
 })
-const currentName = computed(() => currentProfile.value?.name || props.currentModel || '尚未配置默认模型')
+const currentName = computed(() => currentProfile.value?.model_id || shared.value?.model_id || props.currentModel || '尚未配置默认模型')
 const currentEndpoint = computed(() => {
   const profile = currentProfile.value
-  return profile && !profile.name.endsWith(profile.model_id) ? profile.model_id : props.currentProvider
+  return profile ? providerLabel(profile) : props.personal ? '跟随空间默认' : props.currentProvider
 })
-const otherProfiles = computed(() => profiles.value.filter(item => !item.active))
+const otherProfiles = computed(() => props.personal ? profiles.value : profiles.value.filter(item => !item.active))
+
+function providerLabel(profile: ModelProfile): string {
+  if (profile.provider === 'deepseek') return 'DeepSeek'
+  return presets.value.find(item => item.base_url.replace(/\/$/, '') === profile.base_url.replace(/\/$/, ''))?.label
+    || (profile.name.endsWith(' · ' + profile.model_id) ? profile.name.slice(0, -profile.model_id.length - 3) : profile.name)
+}
 
 function blankDraft(): ModelProfileDraft {
   return { name: '', provider: 'openai_compatible', model_id: '', vision_model_id: '', base_url: '', api_key: '' }
@@ -66,7 +82,8 @@ async function load(): Promise<void> {
   loading.value = true
   loadError.value = ''
   try {
-    profiles.value = await listModelProfiles()
+    if (props.personal) applyPersonal(await personalApi.listPersonalModels())
+    else profiles.value = await listModelProfiles()
   } catch (cause) {
     loadError.value = message(cause, '无法读取已保存模型')
   } finally {
@@ -79,7 +96,7 @@ async function loadPresets(): Promise<void> {
   loadingPresets.value = true
   presetError.value = ''
   try {
-    presets.value = await listModelProviders()
+    presets.value = await (props.personal ? personalApi.personalProviders() : listModelProviders())
   } catch (cause) {
     presetError.value = message(cause, '无法读取厂商列表')
   } finally {
@@ -148,7 +165,9 @@ async function fetchModels(): Promise<void> {
   busy.value = 'fetch'
   clearFeedback()
   try {
-    const items = await discoverModelCatalog(providerId.value, draft.value.api_key)
+    const items = await (props.personal
+      ? personalApi.discoverPersonalModels(providerId.value, draft.value.api_key)
+      : discoverModelCatalog(providerId.value, draft.value.api_key))
     models.value = items
     catalogLoaded.value = true
     if (!items.includes(draft.value.model_id)) draft.value.model_id = items.length === 1 ? items[0] : ''
@@ -168,11 +187,16 @@ async function submit(action: 'test' | 'save'): Promise<void> {
     const name = draft.value.name || (selected.value ? selected.value.label + ' · ' + draft.value.model_id : draft.value.model_id)
     const payload = { ...draft.value, name: Array.from(name).slice(0, PROFILE_NAME_LENGTH).join('') }
     if (action === 'test') {
-      checks.value = await testModelProfile(payload)
+      checks.value = await (props.personal ? personalApi.testPersonalModel(payload) : testModelProfile(payload))
     } else {
-      const saved = await addModelProfile(payload)
-      profiles.value = [saved, ...profiles.value]
-      notice.value = '已保存「' + saved.name + '」。'
+      if (props.personal) {
+        applyPersonal(await personalApi.addPersonalModel(payload, makeDefault.value))
+        notice.value = makeDefault.value ? '已保存并设为我的默认模型。' : '已保存到我的模型。'
+      } else {
+        const saved = await addModelProfile(payload)
+        profiles.value = [saved, ...profiles.value]
+        notice.value = '已保存「' + saved.name + '」。'
+      }
       await close()
     }
   } catch (cause) {
@@ -189,9 +213,12 @@ async function activate(profile: ModelProfile): Promise<void> {
   loadError.value = ''
   emit('activating', true)
   try {
-    const configs = await activateModelProfile(profile.id)
-    profiles.value = profiles.value.map(item => ({ ...item, active: item.id === profile.id }))
-    emit('activated', configs)
+    if (props.personal) applyPersonal(await personalApi.activatePersonalModel(profile.id))
+    else {
+      const configs = await activateModelProfile(profile.id)
+      profiles.value = profiles.value.map(item => ({ ...item, active: item.id === profile.id }))
+      emit('activated', configs)
+    }
     notice.value = '「' + profile.name + '」已设为默认模型。'
   } catch (cause) {
     loadError.value = message(cause, '切换默认模型失败')
@@ -199,6 +226,18 @@ async function activate(profile: ModelProfile): Promise<void> {
     activation.value = undefined
     emit('activating', false)
   }
+}
+
+async function followShared(): Promise<void> {
+  if (activation.value || busy.value) return
+  activation.value = 'shared'
+  loadError.value = ''
+  try {
+    applyPersonal(await personalApi.followSharedModel())
+    notice.value = '已恢复跟随空间默认模型。'
+  } catch (cause) {
+    loadError.value = message(cause, '恢复空间默认模型失败')
+  } finally { activation.value = undefined }
 }
 
 onMounted(load)
@@ -213,7 +252,7 @@ watch(() => props.revision, load)
     <div class="model-profiles__default">
       <div>
         <p class="model-profiles__default-label">
-          当前默认模型
+          {{ personal ? '我的默认模型' : '当前默认模型' }}
         </p>
         <h2 id="model-profiles-title">
           {{ currentName }}
@@ -233,7 +272,7 @@ watch(() => props.revision, load)
         aria-controls="add-model-form"
         @click="open"
       >
-        添加模型
+        {{ personal ? '添加我的模型' : '添加模型' }}
       </button>
     </div>
 
@@ -246,8 +285,11 @@ watch(() => props.revision, load)
       @submit.prevent="submit('save')"
     >
       <h3 id="add-model-title">
-        添加模型
+        {{ personal ? '添加我的模型' : '添加模型' }}
       </h3>
+      <p v-if="personal">
+        保存在个人账号下，使用个人 API Key 的额度。
+      </p>
       <fieldset :disabled="disabled || !!busy || !!activation">
         <label for="model-supplier">厂商</label>
         <select
@@ -267,7 +309,10 @@ watch(() => props.revision, load)
           >
             {{ item.label }}
           </option>
-          <option :value="CUSTOM_PROVIDER">
+          <option
+            v-if="!personal"
+            :value="CUSTOM_PROVIDER"
+          >
             自定义 OpenAI 兼容接口
           </option>
         </select>
@@ -413,6 +458,17 @@ watch(() => props.revision, load)
           </details>
         </div>
       </fieldset>
+      <label
+        v-if="personal"
+        class="model-profiles__make-default"
+      >
+        <input
+          v-model="makeDefault"
+          type="checkbox"
+          :disabled="!!busy"
+        />
+        设为我的默认模型
+      </label>
       <p
         v-if="error"
         class="model-profiles__error"
@@ -460,7 +516,36 @@ watch(() => props.revision, load)
     </form>
 
     <div class="model-profiles__saved">
-      <h3>候选模型</h3>
+      <div
+        v-if="personal"
+        class="model-profiles__tabs"
+        role="tablist"
+        aria-label="模型来源"
+      >
+        <button
+          id="personal-models-tab"
+          type="button"
+          role="tab"
+          :aria-selected="tab === 'mine'"
+          aria-controls="personal-models-list"
+          @click="tab = 'mine'"
+        >
+          我的模型 {{ profiles.length }}
+        </button>
+        <button
+          id="shared-models-tab"
+          type="button"
+          role="tab"
+          :aria-selected="tab === 'shared'"
+          aria-controls="shared-models-list"
+          @click="tab = 'shared'"
+        >
+          空间模型
+        </button>
+      </div>
+      <h3 v-else>
+        候选模型
+      </h3>
       <p
         v-if="loadError"
         class="model-profiles__error"
@@ -481,12 +566,37 @@ watch(() => props.revision, load)
       >
         正在读取模型…
       </p>
-      <p v-else-if="!otherProfiles.length && !loadError">
+      <div
+        v-if="personal && tab === 'shared'"
+        id="shared-models-list"
+        role="tabpanel"
+        aria-labelledby="shared-models-tab"
+      >
+        <p>由系统管理员统一配置，当前空间成员可使用。</p>
+        <div
+          v-if="shared"
+          class="model-profiles__row"
+        >
+          <div><strong>{{ shared.model_id || '尚未配置公共模型' }}</strong><p>空间默认</p></div>
+          <button
+            type="button"
+            class="model-profiles__secondary"
+            :disabled="!!activation || !!busy || !currentProfile"
+            @click="followShared"
+          >
+            {{ activation === 'shared' ? '正在切换…' : currentProfile ? '跟随空间默认' : '正在跟随空间默认' }}
+          </button>
+        </div>
+      </div>
+      <p v-else-if="!loading && !otherProfiles.length && !loadError">
         添加模型后可在这里切换默认模型。
       </p>
       <ul
-        v-else-if="otherProfiles.length"
+        v-else-if="tab === 'mine' && otherProfiles.length"
+        id="personal-models-list"
         class="model-profiles__list"
+        :role="personal ? 'tabpanel' : undefined"
+        :aria-labelledby="personal ? 'personal-models-tab' : undefined"
       >
         <li
           v-for="profile in otherProfiles"
@@ -494,16 +604,16 @@ watch(() => props.revision, load)
           class="model-profiles__row"
         >
           <div>
-            <strong>{{ profile.name }}</strong>
-            <p>{{ profile.model_id }}</p>
+            <strong>{{ profile.model_id }}</strong>
+            <p>{{ providerLabel(profile) }}{{ personal ? ' · 个人 API Key' : '' }}</p>
           </div>
           <button
             type="button"
             class="model-profiles__secondary"
-            :disabled="disabled || !!activation || !!busy"
+            :disabled="disabled || !!activation || !!busy || profile.active"
             @click="activate(profile)"
           >
-            {{ activation === profile.id ? '正在切换…' : '设为默认' }}
+            {{ activation === profile.id ? '正在切换…' : profile.active ? '我的默认' : personal ? '设为我的默认' : '设为默认' }}
           </button>
         </li>
       </ul>
@@ -551,7 +661,8 @@ watch(() => props.revision, load)
   ul.model-profiles__list { padding: 0; margin-top: 8px; list-style: none; }
   &__row {
     display: flex; justify-content: space-between; align-items: center; gap: 14px;
-    padding: 12px 0; border-bottom: 1px solid $line; overflow-wrap: anywhere;
+    padding: 16px; border: 1px solid $line; border-radius: $control-radius; background: $surface; overflow-wrap: anywhere;
+    + .model-profiles__row { margin-top: 10px; }
     > div { min-width: 0; }
     strong { font-size: 14px; }
     button { flex: none; }
@@ -578,10 +689,17 @@ watch(() => props.revision, load)
   &__checks { padding: 0; list-style: none; color: $green; font-size: 13px; }
   p.model-profiles__notice { margin-top: 10px; color: $log-success; }
   &__error { color: $log-error !important; }
+  &__tabs { display: flex; gap: 20px; margin-bottom: 14px; border-bottom: 1px solid $line; }
+  &__tabs button { border: 0; border-radius: 0; background: transparent; color: $muted; padding: 0 0 10px; }
+  &__tabs button[aria-selected='true'] { color: $green; border-bottom: 2px solid $green; }
+  &__tabs button:enabled:hover { background: transparent; color: $green; }
+  &__make-default { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .model-profiles__make-default input { width: 16px; min-height: 16px; margin: 0; accent-color: $green; }
   @media (max-width: 520px) {
     &__default { align-items: flex-start; flex-direction: column; padding: 16px; }
     &__form { padding: 14px; }
     &__form input, &__form select { font-size: 16px; }
+    &__row { align-items: flex-start; flex-direction: column; }
   }
 }
 </style>

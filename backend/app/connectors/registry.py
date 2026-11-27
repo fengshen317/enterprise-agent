@@ -7,7 +7,6 @@ import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
-from uuid import UUID
 
 from pydantic import BaseModel
 from sqlalchemy import select, update
@@ -26,15 +25,10 @@ from app.connectors.base import (
     health_failure,
 )
 from app.connectors.catalog import FUND_MARKET, PERSONAL_CONNECTORS, YANGJIBAO
-from app.connectors.yangjibao import BINDING_OWNER_KEY, YangJiBaoConnector
-from app.connectors.yangjibao_authorization import YangJiBaoScan
-from app.core.errors import ApplicationError
 
 if TYPE_CHECKING:
-    from app.connectors.authorization import CliAuthorization
     from app.core.config import Settings
     from app.models.connector import Connector as ConnectorRow
-    from app.schemas.auth import ResourceScope
 
 logger = logging.getLogger(__name__)
 
@@ -128,11 +122,11 @@ class ConnectorRegistry:
         self._instances: dict[str, Connector] = {}
         self._descriptors: dict[str, ConnectorDescriptor] = {}
         self._locks: dict[str, asyncio.Lock] = {}
-        self._auth_locks: dict[str, asyncio.Lock] = {}
         self._checks: dict[str, asyncio.Task[None]] = {}
         self._monitor: asyncio.Task[None] | None = None
-        self._authorizations: dict[str, CliAuthorization] = {}
-        self._yangjibao_scan: YangJiBaoScan | None = None
+        from app.connectors.personal_authorization import PersonalAuthorization
+
+        self.personal_auth = PersonalAuthorization(factory, settings, self.resolve)
 
     async def load(self) -> None:
         """启动时读 connectors 表，对 enabled 实例连接并发现工具。
@@ -256,14 +250,7 @@ class ConnectorRegistry:
         Args:
             key: 连接器标识。
         """
-        if key == YANGJIBAO.key:
-            self._yangjibao_scan = None
-        flow = self._authorizations.pop(key, None)
-        if flow is not None:
-            from app.connectors.authorization import CliAuthorization
-
-            if isinstance(flow, CliAuthorization):
-                await flow.close()
+        await self.personal_auth.cancel(key)
         old = self._instances.pop(key, None)
         if old is not None:
             try:
@@ -486,148 +473,13 @@ class ConnectorRegistry:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         self._monitor = None
-        from app.connectors.authorization import CliAuthorization
-
-        for flow in self._authorizations.values():
-            if isinstance(flow, CliAuthorization):
-                await flow.close()
-        self._authorizations.clear()
-        self._yangjibao_scan = None
+        await self.personal_auth.close()
         for connector in self._instances.values():
             try:
                 await connector.aclose()
             except Exception:
                 pass
         self._instances.clear()
-
-    async def authorize(self, key: str) -> dict[str, object]:
-        """创建或复用当前连接器的授权流程。
-
-        Args:
-            key: 连接器标识。
-
-        Returns:
-            安全的授权入口和进度。
-
-        Raises:
-            ConnectorError: 不支持授权、未启用或网络状态无法确认。
-        """
-        async with self._auth_locks.setdefault(key, asyncio.Lock()):
-            return await self._authorize(key)
-
-    async def authorize_yangjibao(self, scope: ResourceScope, *, poll: bool) -> dict[str, object]:
-        """串行更新扫码会话，避免重复取码和重复写入归属。"""
-        from app.models.connector import Connector as ConnectorRow
-
-        key = YANGJIBAO.key
-        async with self._locks.setdefault(key, asyncio.Lock()):
-            connector = self.resolve(key)
-            if not isinstance(connector, YangJiBaoConnector):
-                raise ConnectorError("not_configured", "请先安装并启用养基宝持仓连接器")
-            if connector.owner is not None and connector.owner != scope.user_id:
-                raise ApplicationError("CONNECTOR_AUTH_FORBIDDEN", "请由已绑定的工作台账号管理养基宝授权", 403)
-            flow = self._yangjibao_scan
-            if flow is not None:
-                flow.expire()
-                if flow.scope != scope:
-                    if flow.state == "awaiting_user":
-                        raise ApplicationError("CONNECTOR_AUTH_FORBIDDEN", "当前扫码会话属于其他账号或工作空间", 403)
-                    flow = None
-            if not poll:
-                if flow is None or flow.state != "awaiting_user":
-                    connector.require_scan_ready()
-                    flow = await YangJiBaoScan.start(scope)
-                    self._yangjibao_scan = flow
-                return flow.snapshot()
-            if flow is None:
-                return self.authorization_status(key)
-            token = await flow.poll()
-            if token is None:
-                return flow.snapshot()
-            async with self._factory.begin() as session:
-                row = await session.scalar(select(ConnectorRow).where(ConnectorRow.key == key).with_for_update())
-                if row is None or not row.enabled:
-                    raise ConnectorError("not_configured", "养基宝持仓连接器已停用")
-                bound_owner = row.config.get(BINDING_OWNER_KEY)
-                configured_owner = self._settings.yangjibao_owner_user_id
-                if configured_owner is None and bound_owner is not None and bound_owner != str(scope.user_id):
-                    raise ApplicationError("CONNECTOR_AUTH_FORBIDDEN", "养基宝已绑定到其他工作台账号", 403)
-                await asyncio.to_thread(connector.save_scan_token, scope.user_id, token)
-                if configured_owner is None:
-                    row.config = {**row.config, BINDING_OWNER_KEY: str(scope.user_id)}
-            await self._refresh(key)
-            desc = self.descriptor(key)
-            flow.finish("completed" if desc is not None and desc.auth_status == "authorized" else "failed")
-            return flow.snapshot()
-
-    async def _authorize(self, key: str) -> dict[str, object]:
-        """在授权锁内复用流程，避免重复点击创建多个登录进程。
-
-        Args:
-            key: 连接器标识。
-
-        Returns:
-            授权流程快照。
-        """
-        from app.connectors.authorization import CliAuthorization
-        from app.connectors.cli import CliConnector
-
-        connector = self.resolve(key)
-        desc = self.descriptor(key)
-        if desc is None or not desc.enabled:
-            raise ConnectorError("not_configured", "连接器未启用，请先启用连接器")
-        if key != "tmeet" or not isinstance(connector, CliConnector):
-            raise ConnectorError("not_configured", "该连接器需要在配置中填写凭证")
-        flow = self._authorizations.get(key)
-        if flow is not None and flow.snapshot()["state"] in {"starting", "awaiting_user"}:
-            return await flow.start()
-        await self.check_health(key)
-        desc = self.descriptor(key)
-        if desc is not None and desc.auth_status == "authorized":
-            return {
-                "auth_url": "",
-                "output": "账号已授权",
-                "already_logged_in": True,
-                "state": "completed",
-                "expires_at": None,
-            }
-        if desc is None or desc.auth_status != "required":
-            raise ConnectorError("network_error", "暂时无法确认登录状态，请检查网络后重新检查")
-        if flow is not None:
-            await flow.close()
-
-        async def finished() -> None:
-            """授权进程退出后复查当前连接器。"""
-            await self.check_health(key)
-
-        async with self._locks.setdefault(key, asyncio.Lock()):
-            if connector is not self.resolve(key):
-                raise ConnectorError("not_configured", "连接器配置已更新，请重新开始授权")
-            flow = CliAuthorization(str(connector._config.get("cli_path", "tmeet")), finished)
-            self._authorizations[key] = flow
-        return await flow.start()
-
-    def authorization_status(self, key: str) -> dict[str, object]:
-        """读取内存授权进度，供管理员轮询。
-
-        Args:
-            key: 连接器标识。
-
-        Returns:
-            授权流程快照，包含重启后需重新检查的提示。
-        """
-        flow = self._authorizations.get(key)
-        if flow is not None:
-            return flow.snapshot()
-        desc = self.descriptor(key)
-        authorized = desc is not None and desc.auth_status == "authorized"
-        return {
-            "auth_url": "",
-            "output": "账号已授权" if authorized else "没有进行中的授权，请重新检查连接器状态",
-            "already_logged_in": authorized,
-            "state": "completed" if authorized else "failed",
-            "expires_at": None,
-        }
 
     async def _build_instance(self, row: ConnectorRow) -> Connector | None:
         """按 kind 构造连接器实例。
@@ -639,6 +491,10 @@ class ConnectorRegistry:
             连接器实例；kind 未知返回空。
         """
         if row.key in PERSONAL_CONNECTORS:
+            if row.key in {"tmeet", "yangjibao"}:
+                from app.connectors.personal_cli import PersonalCliConnector
+
+                return PersonalCliConnector(row.key, row.config, self._settings)
             from app.connectors.personal import PersonalConnector
 
             return PersonalConnector(row.key)
@@ -658,10 +514,6 @@ class ConnectorRegistry:
                 config["_secrets"] = {"api_key": secret.value}
             return cast(Connector, ApiConnector(key=row.key, config=config, settings=self._settings))
         if row.kind == "cli":
-            if row.key == YANGJIBAO.key:
-                bound_owner = row.config.get(BINDING_OWNER_KEY)
-                return YangJiBaoConnector(self._settings, UUID(bound_owner) if isinstance(bound_owner, str) else None)
-
             from app.connectors.cli import CliConnector
 
             return cast(Connector, CliConnector(key=row.key, config=row.config, settings=self._settings))

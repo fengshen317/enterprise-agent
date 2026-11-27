@@ -11,8 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.connectors.base import ConnectorError
 from app.connectors.catalog import BUILTIN_CONNECTORS, PERSONAL_CONNECTORS, YANGJIBAO, get_builtin
+from app.connectors.personal_cli import PersonalCliConnector, personal_holdings
 from app.connectors.registry import ConnectorRegistry
-from app.connectors.yangjibao import YangJiBaoConnector
 from app.core.errors import ApplicationError
 from app.models.config import IntegrationConfig
 from app.models.connector import Connector as ConnectorRow
@@ -25,6 +25,7 @@ from app.schemas.connectors import (
     ConnectorView,
     YangJiBaoPortfolioView,
 )
+from app.services.personal_credentials import read_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +121,7 @@ class ConnectorService:
                 pass
 
         # connector 不可用（如 disabled）时从内置目录获取配置字段和工具
-        if not config_fields:
+        if not config_fields and key not in PERSONAL_CONNECTORS:
             builtin = get_builtin(key)
             if builtin is not None:
                 config_fields = [dict(f) for f in builtin.config_fields]
@@ -153,21 +154,18 @@ class ConnectorService:
             config_fields=config_fields,
             config_values=config_values,
             tools=tools,
-            can_view_holdings=(
-                desc.enabled
-                and user_id is not None
-                and isinstance(connector, YangJiBaoConnector)
-                and connector.owner == user_id
-            ),
         )
 
     async def get_yangjibao_holdings(self, scope: ResourceScope) -> YangJiBaoPortfolioView:
         """同步当前绑定账号的私有持仓，保留安全的失败提示。"""
         connector = self._registry.resolve(YANGJIBAO.key)
-        if not isinstance(connector, YangJiBaoConnector):
+        if not isinstance(connector, PersonalCliConnector):
             raise ApplicationError("CONNECTOR_NOT_FOUND", "养基宝持仓连接器未启用", 404)
+        async with self._factory() as session:
+            credentials = await read_credentials(session, self._registry._settings, scope, YANGJIBAO.key)
         try:
-            return await connector.read_portfolio(scope.user_id)
+            async with personal_holdings(self._registry._settings, scope, credentials) as personal:
+                return await personal.read_portfolio(scope.user_id)
         except ConnectorError as exc:
             status = {"not_logged_in": 409, "not_configured": 409, "timeout": 504}.get(exc.code, 502)
             raise ApplicationError("YANGJIBAO_HOLDINGS_UNAVAILABLE", exc.message, status) from exc
@@ -192,8 +190,6 @@ class ConnectorService:
 
         if key in PERSONAL_CONNECTORS:
             raise ApplicationError("PERSONAL_ACCOUNT_REQUIRED", "请在个人账号绑定区保存凭证", 409)
-        if key == YANGJIBAO.key:
-            raise ApplicationError("CONNECTOR_AUTH_REQUIRED", "养基宝持仓通过微信扫码配置", 409)
 
         async with self._factory.begin() as session:
             row = (await session.execute(select(ConnectorRow).where(ConnectorRow.key == key))).scalar_one_or_none()
@@ -278,9 +274,7 @@ class ConnectorService:
         if self._registry.descriptor(key) is None:
             raise ApplicationError("CONNECTOR_NOT_FOUND", "连接器不存在", 404)
         try:
-            if key == YANGJIBAO.key:
-                return await self._registry.authorize_yangjibao(scope, poll=poll)
-            return await self._registry.authorize(key)
+            return await self._registry.personal_auth.authorize(key, scope, poll=poll)
         except ConnectorError as exc:
             raise ApplicationError("CONNECTOR_AUTH_UNAVAILABLE", exc.message, 409) from exc
 

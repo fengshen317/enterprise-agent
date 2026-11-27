@@ -132,7 +132,6 @@ class ScheduleRuntime:
         error_code: str | None = None
         key = f"schedule_{claimed.schedule_id.hex}_{claimed.scheduled_for.strftime('%Y%m%d%H%M%S')}"
         try:
-            self.chat_runtime.provider.validate()
             snapshot = await self.chat_runtime.create_run(
                 claimed.conversation_id,
                 RunCreate(content=claimed.prompt, idempotency_key=key),
@@ -189,7 +188,6 @@ class ScheduleRuntime:
         view = await self.store.get(scope, schedule_id)
         # 手动触发也必须先获得问答执行权并收敛遗留运行，不能绕过单进程边界。
         await self.chat_runtime.ensure_ready()
-        self.chat_runtime.provider.validate()
         key = f"manual_{schedule_id.hex}_{uuid4().hex}"
         snapshot = await self.chat_runtime.create_run(
             view.conversation_id,

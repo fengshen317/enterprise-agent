@@ -320,13 +320,11 @@ IMA = BuiltinConnector("ima", "api", "ima 知识库", "查找本人 ima 知识�
 TENCENT_NEWS = BuiltinConnector(
     "tencent_news", "cli", "腾讯新闻", "按主题搜索新闻、获取热点，用于问答和定时简报。", "📰"
 )
-PERSONAL_CONNECTORS = {item.key: item for item in (QQ_MAIL, IMA, TENCENT_NEWS)}
+SCAN_CONNECTORS = frozenset({TMEET.key, YANGJIBAO.key})
+PERSONAL_CONNECTORS = {item.key: item for item in (TMEET, TAVILY, YANGJIBAO, QQ_MAIL, IMA, TENCENT_NEWS)}
 
 BUILTIN_CONNECTORS: tuple[BuiltinConnector, ...] = (
-    TMEET,
-    TAVILY,
     FUND_MARKET,
-    YANGJIBAO,
     *PERSONAL_CONNECTORS.values(),
 )
 

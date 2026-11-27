@@ -201,7 +201,13 @@ class YangJiBaoConnector:
         """仅为绑定账号同步持仓明细，供页面或问答工具使用。"""
         if user_id != self._owner:
             raise ApplicationError("YANGJIBAO_HOLDINGS_FORBIDDEN", "仅绑定账号可查看养基宝持仓", 403)
-        rows = await asyncio.to_thread(self._sync_holdings)
+        task = asyncio.create_task(asyncio.to_thread(self._sync_holdings))
+        try:
+            rows = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # 调用方随后会销毁个人临时目录，必须等持有凭据的子进程真正退出。
+            await task
+            raise
         return YangJiBaoPortfolioView(
             synced_at=datetime.now(UTC),
             fund_count=len(rows),

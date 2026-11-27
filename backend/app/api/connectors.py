@@ -123,6 +123,7 @@ async def get_connector(key: str, request: Request, response: Response, scope: S
     if key in PERSONAL_CONNECTORS:
         async with request.app.state.database.session_factory() as session:
             detail.personal_account = await account_status(session, scope, key)
+        detail.can_view_holdings = key == "yangjibao" and detail.enabled and detail.personal_account.bound
     return detail
 
 
@@ -133,6 +134,8 @@ async def bind_personal_account(
     """当前登录成员替换本人凭证，响应中只包含绑定状态。"""
     if key not in PERSONAL_CONNECTORS:
         raise ApplicationError("CONNECTOR_NOT_FOUND", "连接器不支持个人绑定", 404)
+    if key in {"tmeet", "yangjibao"}:
+        raise ApplicationError("CONNECTOR_AUTH_REQUIRED", "请通过个人账号扫码授权", 409)
     response.headers["Cache-Control"] = "no-store"
     async with request.app.state.database.session_factory.begin() as session:
         await save_credentials(session, request.app.state.settings, scope, key, body.credentials)
@@ -148,6 +151,7 @@ async def unbind_personal_account(
         raise ApplicationError("CONNECTOR_NOT_FOUND", "连接器不支持个人绑定", 404)
     response.headers["Cache-Control"] = "no-store"
     async with request.app.state.database.session_factory.begin() as session:
+        await request.app.state.connector_registry.personal_auth.cancel(key, scope)
         await remove_credentials(session, scope, key)
         return await account_status(session, scope, key)
 
@@ -320,6 +324,7 @@ async def test_connection(key: str, request: Request, scope: ScopeDependency) ->
 
 
 @router.post("/admin/connectors/{key}/auth")
+@router.post("/connectors/{key}/my-account/auth")
 async def authenticate(key: str, request: Request, response: Response, scope: ScopeDependency) -> dict[str, object]:
     """发起连接器授权，返回该服务的安全授权入口。
 
@@ -332,12 +337,12 @@ async def authenticate(key: str, request: Request, response: Response, scope: Sc
     Returns:
         认证入口和状态。
     """
-    await _require_admin(request, scope)
     response.headers["Cache-Control"] = "no-store"
     return await service(request).authenticate(key, scope)
 
 
 @router.post("/admin/connectors/yangjibao/auth/status")
+@router.post("/connectors/yangjibao/my-account/auth/status")
 async def poll_yangjibao_authorization(
     request: Request, response: Response, scope: ScopeDependency
 ) -> dict[str, object]:
@@ -351,12 +356,12 @@ async def poll_yangjibao_authorization(
     Returns:
         可向扫码发起人展示的授权进度。
     """
-    await _require_admin(request, scope)
     response.headers["Cache-Control"] = "no-store"
     return await service(request).authenticate("yangjibao", scope, poll=True)
 
 
 @router.get("/admin/connectors/{key}/auth/status")
+@router.get("/connectors/{key}/my-account/auth/status")
 async def authentication_status(
     key: str, request: Request, response: Response, scope: ScopeDependency
 ) -> dict[str, object]:
@@ -371,9 +376,8 @@ async def authentication_status(
     Returns:
         授权进度与可操作提示。
     """
-    await _require_admin(request, scope)
     response.headers["Cache-Control"] = "no-store"
     registry: ConnectorRegistry = request.app.state.connector_registry
     if registry.descriptor(key) is None:
         raise ApplicationError("CONNECTOR_NOT_FOUND", "连接器不存在", 404)
-    return registry.authorization_status(key)
+    return registry.personal_auth.status(key, scope)

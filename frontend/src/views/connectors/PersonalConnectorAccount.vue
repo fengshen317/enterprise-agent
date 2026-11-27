@@ -32,6 +32,7 @@ const error = ref('')
 const checkResult = ref<ImaAccountCheckResult | null>(null)
 const copyStatus = ref('')
 const confirmingUnbind = ref(false)
+const isScan = computed(() => props.account.auth_mode === 'scan')
 const canSave = computed(() => props.enabled && props.account.fields.every(field => Boolean(draft.value[field.key]?.trim())))
 const canCheck = computed(() => props.connectorKey === 'ima' && props.enabled && props.account.bound)
 
@@ -90,11 +91,11 @@ async function update(remove: boolean): Promise<void> {
           class="personal-account__status"
           role="status"
         >
-          {{ account.bound ? '凭证已保存' : '尚未绑定' }} · 仅在当前工作空间使用
+          {{ account.bound ? '已绑定我的账号' : '尚未绑定' }} · 仅在当前工作空间使用
         </p>
       </div>
       <a
-        v-if="enabled"
+        v-if="enabled && !isScan"
         :href="account.guide_url"
         target="_blank"
         rel="noopener noreferrer"
@@ -106,8 +107,14 @@ async function update(remove: boolean): Promise<void> {
     >
       只读访问收件箱。首次在问答中使用时验证 IMAP 授权码。
     </p>
+    <p
+      v-if="isScan"
+      class="personal-account__hint"
+    >
+      扫码绑定你自己的账号，账号和数据仅供本人在当前工作空间使用。
+    </p>
     <form
-      v-if="enabled"
+      v-if="enabled && !isScan"
       :id="formId"
       class="personal-account__form"
       @submit.prevent="update(false)"
@@ -142,7 +149,7 @@ async function update(remove: boolean): Promise<void> {
       class="personal-account__actions"
     >
       <button
-        v-if="enabled"
+        v-if="enabled && !isScan"
         :form="formId"
         type="submit"
         class="personal-account__button personal-account__button--primary"

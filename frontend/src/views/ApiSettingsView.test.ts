@@ -102,19 +102,19 @@ it('以当前表单测试文本与图片模型，不提交保存', async () => {
   view.unmount()
 })
 
-it('单独测试 Tavily，保留密钥草稿且使用密码框', async () => {
+it('联网搜索引导成员绑定个人账号，后台只保存调用限制', async () => {
   vi.mocked(listConfigs).mockResolvedValue([item('tavily_api_key', '已配置', true)])
-  vi.mocked(testConfigs).mockResolvedValue([{ check: 'search', ok: true, message: '搜索成功' }])
-  const view = mount(ApiSettingsView, { global: { stubs: ['RouterLink', 'ModelProfilesPanel'] } })
+  vi.mocked(updateConfigs).mockClear()
+  const view = mount(ApiSettingsView, { global: { stubs: { RouterLink: { template: '<a><slot /></a>' }, ModelProfilesPanel: true } } })
   await flushPromises()
   await view.get('.api-settings__nav button:nth-child(2)').trigger('click')
   const form = view.findAll('form')[1]
-  const key = form.get<HTMLInputElement>('input[type="password"]')
-  await key.setValue('new-search-key')
-  await form.get('button.api-settings__test').trigger('click')
+  expect(form.find('input[type="password"]').exists()).toBe(false)
+  expect(form.text()).toContain('配置我的 Tavily 账号')
+  expect(form.find('button.api-settings__test').exists()).toBe(false)
+  await form.get('input[type="number"]').setValue('15')
+  await form.trigger('submit')
   await flushPromises()
-  expect(testConfigs).toHaveBeenCalledWith('search', [{ key: 'tavily_api_key', value: 'new-search-key' }])
-  expect(key.element.value).toBe('new-search-key')
-  expect(form.text()).toContain('Tavily · 搜索成功')
+  expect(updateConfigs).toHaveBeenCalledWith([{ key: 'web_search_timeout_seconds', value: '15' }])
   view.unmount()
 })

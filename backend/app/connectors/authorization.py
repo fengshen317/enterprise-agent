@@ -72,7 +72,10 @@ def _authorization_url(text: str) -> str:
 class CliAuthorization:
     """管理单个可复用授权进程，禁止向客户端回显 CLI 原始输出。"""
 
-    def __init__(self, cli_path: str, on_finished: Callable[[], Awaitable[None]]) -> None:
+    def __init__(
+        self, cli_path: str, on_finished: Callable[[], Awaitable[None]], *,
+        env: dict[str, str] | None = None, cwd: Path | None = None,
+    ) -> None:
         """初始化尚未启动的授权会话。
 
         Args:
@@ -80,6 +83,8 @@ class CliAuthorization:
             on_finished: 自然结束后重新检查连接器健康状态的回调。
         """
         self._cli_path = cli_path
+        self._env = env
+        self._cwd = cwd
         self._on_finished = on_finished
         self._state = "starting"
         self._auth_url = ""
@@ -166,6 +171,8 @@ class CliAuthorization:
             stderr=subprocess.STDOUT,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             start_new_session=os.name != "nt",
+            env=self._env,
+            cwd=self._cwd,
         )
         if sys.platform == "win32":
             # Job 对象保留进程树的所有权，根进程提前退出也能关闭其后代的输出管道。
@@ -273,8 +280,10 @@ class CliAuthorization:
             self._drain_events()
             if not cancelled and not self._closed:
                 # 健康复查的异常不能破坏已结束会话，也不能成为未读取的后台异常。
-                with contextlib.suppress(Exception):
+                try:
                     await self._on_finished()
+                except Exception:
+                    terminal_state = "failed"
             self._state = terminal_state
             self._auth_url = ""
             self._ready.set()

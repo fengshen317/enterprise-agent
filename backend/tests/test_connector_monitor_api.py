@@ -20,11 +20,11 @@ from tests.test_chat_integration import chat as chat
 pytestmark = pytest.mark.integration
 
 
-async def test_health_contract_and_admin_only_authorization(
+async def test_health_contract_and_personal_authorization(
     chat: tuple[FastAPI, httpx.AsyncClient, ControlledProvider],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """列表公开脱敏状态，授权链接仅对管理员开放。
+    """列表公开脱敏状态，授权入口使用当前成员身份，安装和健康检查仍归管理员。
 
     Args:
         chat: 带真实登录身份的独立数据库应用。
@@ -53,8 +53,8 @@ async def test_health_contract_and_admin_only_authorization(
         "expires_at": None,
     }
     authorize = AsyncMock(return_value=result)
-    monkeypatch.setattr(registry, "authorize", authorize)
-    monkeypatch.setattr(registry, "authorization_status", lambda key: result)
+    monkeypatch.setattr(registry.personal_auth, "authorize", authorize)
+    monkeypatch.setattr(registry.personal_auth, "status", lambda key, scope: result)
     listed = await client.get("/api/connectors")
     assert listed.status_code == 200
     item = next(row for row in listed.json() if row["key"] == "tmeet")
@@ -72,11 +72,12 @@ async def test_health_contract_and_admin_only_authorization(
             workspace = await session.scalar(
                 select(Workspace.slug).where(Workspace.id == app.state.test_scope.workspace_id)
             )
-        await add_identity(app, member, workspace=workspace, role="member")
+        scope = await add_identity(app, member, workspace=workspace, role="member")
         assert (await member.get("/api/connectors")).status_code == 200
-        assert (await member.post("/api/admin/connectors/tmeet/auth")).status_code == 403
-        assert (await member.get("/api/admin/connectors/tmeet/auth/status")).status_code == 403
-    authorize.assert_awaited_once_with("tmeet")
+        assert (await member.post("/api/connectors/tmeet/my-account/auth")).status_code == 200
+        assert (await member.get("/api/connectors/tmeet/my-account/auth/status")).status_code == 200
+    assert authorize.await_count == 2
+    authorize.assert_awaited_with("tmeet", scope, poll=False)
 
 
 async def test_manual_health_check_keeps_existing_instance(

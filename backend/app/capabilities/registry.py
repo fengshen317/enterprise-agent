@@ -90,10 +90,7 @@ class ToolRegistry:
 
     def configure_web_search(self, settings: Settings) -> None:
         """同步 Tavily 可用性及超时，供新的 Agent 运行装配。"""
-        if settings.tavily_api_key.get_secret_value().strip():
-            self._specs[WEB_SEARCH_TOOL] = web_search_spec(settings)
-        else:
-            self._specs.pop(WEB_SEARCH_TOOL, None)
+        self._specs[WEB_SEARCH_TOOL] = web_search_spec(settings)
 
 
 def build_default_registry(

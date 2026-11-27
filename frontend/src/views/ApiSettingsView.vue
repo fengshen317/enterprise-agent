@@ -46,7 +46,6 @@ const modelOptions: Field[] = [
   { key: 'model_max_tokens', label: '最大输出 Token', type: 'number', min: 1, max: 8192 },
 ]
 const searchFields: Field[] = [
-  { key: 'tavily_api_key', label: 'Tavily API Key', type: 'password' },
   { key: 'web_search_timeout_seconds', label: '超时（秒）', type: 'number', min: 0.1, max: 60, step: 'any' },
   { key: 'web_search_max_results', label: '最多返回结果', type: 'number', min: 1, max: 10 },
 ]
@@ -73,7 +72,7 @@ const configuredEndpoint = computed(() => configuredProvider.value === 'deepseek
 const sections = computed(() => [
   { key: 'llm' as const, title: '语言模型', note: '用于问答、子 Agent、摘要和定时任务。',
     fields: [...providerFields[provider.value], ...modelOptions] },
-  { key: 'search' as const, title: '联网搜索', note: '通过 Tavily 为 Agent 提供网页搜索。', fields: searchFields },
+  { key: 'search' as const, title: '联网搜索', note: '每位成员在能力中心绑定自己的 Tavily Key，此处配置公共调用限制。', fields: searchFields },
 ])
 
 function apply(items: ConfigItem[]): void {
@@ -284,6 +283,9 @@ watch(() => route.hash, hash => { if (hash === memberPasswordHash) void showMemb
           <div v-if="section.key === 'search'">
             <h2>{{ section.title }}</h2>
             <p>{{ section.note }}</p>
+            <RouterLink :to="{ path: '/capabilities', query: { tab: 'connectors', connector: 'tavily_search' } }">
+              配置我的 Tavily 账号 ↗
+            </RouterLink>
           </div>
           <fieldset
             :disabled="disabled"
@@ -361,6 +363,7 @@ watch(() => route.hash, hash => { if (hash === memberPasswordHash) void showMemb
             </ul>
             <div class="api-settings__buttons">
               <button
+                v-if="section.key !== 'search'"
                 type="button"
                 class="api-settings__test"
                 :disabled="disabled"
