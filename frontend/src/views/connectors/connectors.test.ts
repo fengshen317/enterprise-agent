@@ -16,6 +16,7 @@ vi.mock('../../api/connectors', async original => ({
   authenticateConnector: vi.fn(), getConnectorAuthStatus: vi.fn(), testConnector: vi.fn(),
   listBuiltinConnectors: vi.fn(), getYangJiBaoHoldings: vi.fn(),
   installConnector: vi.fn(), setConnectorEnabled: vi.fn(), savePersonalAccount: vi.fn(),
+  updateConnectorConfig: vi.fn(),
   removePersonalAccount: vi.fn(),
 }))
 
@@ -97,6 +98,28 @@ it('已保存的密钥显示配置状态，输入框保持空白', async () => {
   const input = wrapper.get<HTMLInputElement>('input[type="password"]')
   expect(input.element.value).toBe('')
   expect(input.attributes('placeholder')).toBe('已配置，留空保留原密钥')
+  wrapper.unmount()
+})
+
+it('管理员可以用多行 JSON 保存 RSS 订阅地址', async () => {
+  const rss: api.ConnectorDetail = {
+    ...detail, key: 'rss', kind: 'api', name: 'RSS 订阅',
+    config_fields: [{
+      key: 'feeds', field_type: 'json', label: '订阅地址', is_secret: false,
+      required: true, default: '[]', placeholder: '',
+    }], config_values: { feeds: '[]' },
+  }
+  vi.mocked(api.getConnector).mockResolvedValue(rss)
+  vi.mocked(api.updateConnectorConfig).mockResolvedValue(rss)
+  const wrapper = mount(ConnectorConfigDialog, { props: { connectorKey: 'rss' } })
+  await flushPromises()
+  const value = '[\n  "https://example.com/rss"\n]'
+  await wrapper.get('textarea[aria-label="订阅地址"]').setValue(value)
+  const save = wrapper.findAll('button').find(button => button.text() === '保存配置')
+  expect(save).toBeDefined()
+  await save!.trigger('click')
+  await flushPromises()
+  expect(api.updateConnectorConfig).toHaveBeenCalledWith('rss', { feeds: value }, {})
   wrapper.unmount()
 })
 

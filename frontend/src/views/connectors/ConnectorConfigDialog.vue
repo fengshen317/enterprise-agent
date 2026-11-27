@@ -419,6 +419,15 @@ onUnmounted(() => { stopped = true; stop() })
               :placeholder="field.placeholder"
               :disabled="!isAdmin"
             />
+            <textarea
+              v-else-if="field.field_type === 'json'"
+              v-model="configDraft[field.key]"
+              class="connector-dialog__input"
+              rows="6"
+              :aria-label="field.label"
+              :placeholder="field.placeholder || field.default"
+              :disabled="!isAdmin"
+            />
             <input
               v-else
               v-model="configDraft[field.key]"

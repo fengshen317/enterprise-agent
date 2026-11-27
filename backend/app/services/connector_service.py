@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 from uuid import UUID
@@ -194,6 +195,16 @@ class ConnectorService:
             raise ApplicationError("PERSONAL_ACCOUNT_REQUIRED", "请在个人账号绑定区保存凭证", 409)
         if key == YANGJIBAO.key:
             raise ApplicationError("CONNECTOR_AUTH_REQUIRED", "养基宝持仓通过微信扫码配置", 409)
+        if key == "rss" and "feeds" in config:
+            from app.connectors.rss import configured_feeds
+
+            try:
+                # 在落库前校验，错误输入不会替换现有的可用订阅。
+                urls = configured_feeds(config)
+            except ConnectorError as exc:
+                raise ApplicationError("CONNECTOR_INVALID_CONFIG", exc.message, 422) from exc
+            # API 也接受数组，统一保存为表单能直接编辑的 JSON 字符串。
+            config = {**config, "feeds": json.dumps(urls, ensure_ascii=False)}
 
         async with self._factory.begin() as session:
             row = (await session.execute(select(ConnectorRow).where(ConnectorRow.key == key))).scalar_one_or_none()
