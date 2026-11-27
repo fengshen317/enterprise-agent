@@ -17,6 +17,7 @@ vi.mock('../../api/connectors', async original => ({
   listBuiltinConnectors: vi.fn(), getYangJiBaoHoldings: vi.fn(),
   installConnector: vi.fn(), setConnectorEnabled: vi.fn(), savePersonalAccount: vi.fn(),
   updateConnectorConfig: vi.fn(),
+  listRssSources: vi.fn(),
   removePersonalAccount: vi.fn(),
 }))
 
@@ -52,6 +53,9 @@ beforeEach(() => {
   vi.mocked(api.listConnectors).mockResolvedValue([connector])
   vi.mocked(api.listBuiltinConnectors).mockResolvedValue([])
   vi.mocked(api.getConnector).mockResolvedValue(detail)
+  vi.mocked(api.listRssSources).mockResolvedValue([
+    { name: 'OpenAI 官方动态', category: '官方动态', url: 'https://openai.com/news/rss.xml' },
+  ])
   vi.mocked(api.authenticateConnector).mockResolvedValue(pending)
   vi.mocked(api.getConnectorAuthStatus).mockResolvedValue(pending)
   vi.mocked(api.testConnector).mockResolvedValue({ ...health, status: 'connected', tool_count: 1, message: '健康' })
@@ -101,25 +105,27 @@ it('已保存的密钥显示配置状态，输入框保持空白', async () => {
   wrapper.unmount()
 })
 
-it('管理员可以用多行 JSON 保存 RSS 订阅地址', async () => {
+it('管理员勾选预置信源并保留自定义订阅', async () => {
   const rss: api.ConnectorDetail = {
     ...detail, key: 'rss', kind: 'api', name: 'RSS 订阅',
     config_fields: [{
       key: 'feeds', field_type: 'json', label: '订阅地址', is_secret: false,
       required: true, default: '[]', placeholder: '',
-    }], config_values: { feeds: '[]' },
+    }], config_values: { feeds: '["https://example.com/rss"]' },
   }
   vi.mocked(api.getConnector).mockResolvedValue(rss)
   vi.mocked(api.updateConnectorConfig).mockResolvedValue(rss)
   const wrapper = mount(ConnectorConfigDialog, { props: { connectorKey: 'rss' } })
   await flushPromises()
-  const value = '[\n  "https://example.com/rss"\n]'
-  await wrapper.get('textarea[aria-label="订阅地址"]').setValue(value)
+  expect(wrapper.get('textarea').element.value).toBe('https://example.com/rss')
+  await wrapper.get('input[type="checkbox"][value="https://openai.com/news/rss.xml"]').setValue(true)
   const save = wrapper.findAll('button').find(button => button.text() === '保存配置')
   expect(save).toBeDefined()
   await save!.trigger('click')
   await flushPromises()
-  expect(api.updateConnectorConfig).toHaveBeenCalledWith('rss', { feeds: value }, {})
+  expect(api.updateConnectorConfig).toHaveBeenCalledWith('rss', {
+    feeds: '["https://openai.com/news/rss.xml","https://example.com/rss"]',
+  }, {})
   wrapper.unmount()
 })
 

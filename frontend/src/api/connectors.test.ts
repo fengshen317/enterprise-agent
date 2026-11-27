@@ -1,12 +1,20 @@
 import { beforeEach, expect, it, vi } from 'vitest'
 import { requestJson } from './client'
-import { authenticateConnector, checkImaAccount, getConnectorAuthStatus, testConnector } from './connectors'
+import { authenticateConnector, checkImaAccount, getConnectorAuthStatus, listRssSources, testConnector } from './connectors'
 
 vi.mock('./client', async original => ({
   ...await original<typeof import('./client')>(), requestJson: vi.fn(),
 }))
 
 beforeEach(() => { vi.mocked(requestJson).mockReset() })
+
+it('预置信源读取接口校验目录内容', async () => {
+  const sources = [{ name: 'OpenAI', category: '官方动态', url: 'https://openai.com/news/rss.xml' }]
+  vi.mocked(requestJson).mockResolvedValueOnce(sources).mockResolvedValueOnce([{ ...sources[0], url: 'javascript:x' }])
+  await expect(listRssSources()).resolves.toEqual(sources)
+  expect(requestJson).toHaveBeenCalledWith('/api/connectors/rss/sources')
+  await expect(listRssSources()).rejects.toThrow('连接器数据格式不正确')
+})
 
 it('连接检查保留后端最大执行时间和传输余量', async () => {
   vi.mocked(requestJson).mockResolvedValue({ status: 'connected' })

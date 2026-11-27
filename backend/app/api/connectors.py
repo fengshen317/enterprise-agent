@@ -13,6 +13,7 @@ from app.connectors import ima
 from app.connectors.base import ConnectorError
 from app.connectors.catalog import PERSONAL_CONNECTORS
 from app.connectors.registry import ConnectorRegistry
+from app.connectors.rss_sources import RSS_SOURCE_PRESETS
 from app.core.errors import ApplicationError
 from app.schemas.connectors import (
     ConnectorConfigInput,
@@ -25,6 +26,7 @@ from app.schemas.connectors import (
     ImaProbeResult,
     PersonalAccountInput,
     PersonalAccountView,
+    RssSourceView,
     YangJiBaoPortfolioView,
 )
 from app.services.auth import require_membership
@@ -40,6 +42,19 @@ _IMA_PUBLIC_ERRORS = frozenset({
     "auth_failed", "invalid_arguments", "invalid_output", "network_error", "permission_denied", "timeout",
     "upstream_error",
 })
+
+
+@router.get("/connectors/rss/sources", response_model=list[RssSourceView])
+async def rss_sources(scope: ScopeDependency) -> list[RssSourceView]:
+    """向已登录的空间成员提供预置信源目录。
+
+    Args:
+        scope: 已通过成员权限检查的身份。
+
+    Returns:
+        服务端维护的官方动态、模型社区与开源发布源。
+    """
+    return [RssSourceView(**item) for item in RSS_SOURCE_PRESETS]
 
 
 def service(request: Request) -> ConnectorService:

@@ -41,6 +41,14 @@ class ConnectorToolView(BaseModel):
     approval: str = "always"
 
 
+class RssSourceView(BaseModel):
+    """可勾选的公开订阅源，不携带任何个人凭据。"""
+
+    name: str
+    category: str
+    url: str
+
+
 class PersonalField(BaseModel):
     """个人绑定表单字段，不携带已保存的值。"""
 
