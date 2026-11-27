@@ -42,11 +42,12 @@ class ConnectorToolView(BaseModel):
 
 
 class RssSourceView(BaseModel):
-    """可勾选的公开订阅源，不携带任何个人凭据。"""
+    """预置公开订阅与待配置入口，空 URL 条目通过说明引导配置。"""
 
     name: str
     category: str
     url: str
+    description: str = ""
 
 
 class PersonalField(BaseModel):

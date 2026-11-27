@@ -76,3 +76,17 @@ it('异常历史配置保留原文，修正后恢复勾选界面', async () => {
   expect(wrapper.get<HTMLInputElement>(`input[value="${openai}"]`).element.checked).toBe(true)
   wrapper.unmount()
 })
+
+it('需要适配的社交信源显示说明，并保持不可勾选', async () => {
+  vi.mocked(api.listRssSources).mockResolvedValue([
+    { name: 'X / Twitter', category: '社交平台', url: '', description: '待配置：需要 RSSHub 生成账号订阅' },
+    { name: 'Anthropic · Claude Code', category: '厂商官方项目', url: openai, description: '项目版本发布' },
+  ])
+  const wrapper = mount(RssSourcePicker, { props: { modelValue: '[]' } })
+  await flushPromises()
+  expect(wrapper.text()).toContain('需要 RSSHub')
+  expect(wrapper.get('input[value=""]').attributes('disabled')).toBeDefined()
+  await wrapper.get(`input[value="${openai}"]`).setValue(true)
+  expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual([JSON.stringify([openai])])
+  wrapper.unmount()
+})

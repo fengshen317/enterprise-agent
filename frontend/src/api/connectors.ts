@@ -52,13 +52,16 @@ export interface RssSource {
   name: string
   category: string
   url: string
+  description?: string
 }
 
 export async function listRssSources(): Promise<RssSource[]> {
   const body = await requestJson('/api/connectors/rss/sources')
   if (!Array.isArray(body) || !body.every(item => record(item)
     && typeof item.name === 'string' && typeof item.category === 'string'
-    && typeof item.url === 'string' && item.url.startsWith('https://'))) return invalid()
+    && typeof item.url === 'string'
+    && (item.url.startsWith('https://') || (item.url === '' && typeof item.description === 'string' && item.description.trim().length > 0))
+    && (item.description === undefined || typeof item.description === 'string'))) return invalid()
   return body as RssSource[]
 }
 

@@ -45,8 +45,15 @@ async def test_rss_install_configure_call_and_restart(
     monkeypatch.setattr("app.connectors.rss.fetch_feed", AsyncMock(return_value=[entry]))
     try:
         presets = await client.get("/api/connectors/rss/sources")
-        assert presets.status_code == 200 and len(presets.json()) == 5
+        assert presets.status_code == 200 and len(presets.json()) == len(RSS_SOURCE_PRESETS)
         assert presets.json()[0]["url"] == RSS_SOURCE_PRESETS[0]["url"]
+        ready = [item for item in presets.json() if item["url"]]
+        assert len(ready) == 10
+        for publisher in ("Anthropic", "xAI", "DeepSeek", "豆包", "Kimi"):
+            assert any(publisher in item["name"] for item in ready)
+        pending = [item for item in presets.json() if not item["url"]]
+        assert len(pending) == 1 and "X / Twitter" in pending[0]["name"]
+        assert "待配置" in pending[0]["description"]
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as anonymous:
             assert (await anonymous.get("/api/connectors/rss/sources")).status_code == 401
         installed = await client.post("/api/admin/connectors/rss/install")

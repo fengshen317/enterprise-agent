@@ -14,7 +14,7 @@ let lastEmitted: string | undefined
 let stopped = false
 
 const groups = computed(() => [...new Set(sources.value.map(source => source.category))])
-const sourceUrls = computed(() => new Set(sources.value.map(source => source.url)))
+const sourceUrls = computed(() => new Set(sources.value.map(source => source.url).filter(Boolean)))
 const urls = computed(() => [...new Set([
   ...selected.value,
   ...custom.value.split('\n').map(line => line.trim()).filter(Boolean),
@@ -124,17 +124,23 @@ onUnmounted(() => { stopped = true })
         <legend>{{ group }}</legend>
         <label
           v-for="source in sources.filter(item => item.category === group)"
-          :key="source.url"
+          :key="source.url || source.name"
           class="rss-picker__option"
         >
           <input
             type="checkbox"
             :value="source.url"
-            :checked="urls.includes(source.url)"
-            :disabled="!urls.includes(source.url) && urls.length >= 10"
+            :checked="Boolean(source.url) && urls.includes(source.url)"
+            :disabled="!source.url || (!urls.includes(source.url) && urls.length >= 10)"
             @change="toggle(source.url, $event)"
           />
-          {{ source.name }}
+          <span>
+            {{ source.name }}
+            <small
+              v-if="source.description"
+              class="rss-picker__description"
+            >{{ source.description }}</small>
+          </span>
         </label>
       </fieldset>
       <label class="rss-picker__label">
@@ -172,6 +178,7 @@ onUnmounted(() => { stopped = true })
   &__group legend { padding: 0 5px; font-size: 13px; }
   &__option { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 13px; }
   &__option input { accent-color: $green; }
+  &__description { display: block; margin-top: 4px; color: $muted; line-height: 1.5; }
   &__label { display: grid; gap: 8px; font-size: 13px; }
   &__label textarea {
     box-sizing: border-box;

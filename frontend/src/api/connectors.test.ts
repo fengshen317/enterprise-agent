@@ -16,6 +16,13 @@ it('预置信源读取接口校验目录内容', async () => {
   await expect(listRssSources()).rejects.toThrow('连接器数据格式不正确')
 })
 
+it('允许带有说明的待配置信源，拒绝无法识别的空地址', async () => {
+  const pending = [{ name: 'X', category: '社交平台', url: '', description: '待配置 RSSHub' }]
+  vi.mocked(requestJson).mockResolvedValueOnce(pending).mockResolvedValueOnce([{ ...pending[0], description: '' }])
+  await expect(listRssSources()).resolves.toEqual(pending)
+  await expect(listRssSources()).rejects.toThrow('连接器数据格式不正确')
+})
+
 it('连接检查保留后端最大执行时间和传输余量', async () => {
   vi.mocked(requestJson).mockResolvedValue({ status: 'connected' })
   await testConnector('cli/name')

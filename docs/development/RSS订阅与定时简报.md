@@ -13,6 +13,18 @@
 | 模型社区 | Hugging Face 社区博客 | 平台与社区的模型、工具文章 |
 | 开源发布 | LangGraph 版本发布 | 官方仓库 Release |
 | 开源发布 | Deep Agents 版本发布 | 官方仓库 Release |
+| 厂商官方项目 | Anthropic · Claude Code | Claude Code 版本与更新说明 |
+| 厂商官方项目 | xAI · Python SDK | 官方 Python SDK 发布 |
+| 厂商官方项目 | DeepSeek · Harness | 官方 Agent 框架发布 |
+| 厂商官方项目 | 豆包相关 · 火山引擎 SDK | 包含方舟接入组件，也覆盖其他云服务更新 |
+| 厂商官方项目 | Kimi · Kimi Code | Moonshot AI 官方 Kimi Code 发布 |
+| 社交平台 | X / Twitter · 账号动态 | 待配置 RSSHub 账号订阅 |
+
+目录包含 10 个可直接勾选的订阅，以及 X 的待配置入口。厂商官方项目各自覆盖表中产品。Anthropic、xAI、DeepSeek、豆包和 Kimi 的官网全量公告仍需进一步适配，本次验证的可用入口是其官方项目发布源。页面会展示覆盖说明。
+
+X 入口显示为不可勾选，并提示通过自建或可访问的 RSSHub 服务为具体账号生成订阅，再将生成的 HTTPS 地址加入自定义订阅。RSSHub 路由为 `/twitter/user/:id`，回复、转发等附加内容可能需要在 RSSHub 侧设置凭据。适配服务的可用性和账号授权由部署环境验证。[RSSHub 官方路由实现](https://github.com/DIYgod/RSSHub/blob/master/lib/routes/twitter/user.ts)
+
+视频提到的 GitHub 通过项目发布 Atom 接入，Hugging Face 通过社区博客 RSS 接入。视频中的 AIHOT 与 RSS 用于信息聚合和订阅，现有连接器承担订阅读取。
 
 新增安装保持未选择状态。已经保存的订阅地址如果匹配预置信源，会自动显示为勾选，其余地址显示在自定义订阅输入框。加载和查看目录不会自动改写配置，取消勾选后保存才会移除订阅。
 
@@ -29,7 +41,7 @@
 
 保存后启用插件，点击测试查看健康状态。订阅配置持久化在现有 `connectors.config`，沿用现有管理员配置权限，同一部署的成员共用公开订阅列表。管理员保存配置时校验格式，校验失败保留原配置。
 
-`GET /api/connectors/rss/sources` 向已登录的空间成员返回预置信源的名称、分类和 URL。目录展示与网络可用性分开检查，运行与手动测试仍使用既有公网地址校验和故障状态。
+`GET /api/connectors/rss/sources` 向已登录的空间成员返回预置信源的名称、分类、URL 与覆盖说明 `description`。URL 为空且带有说明时表示待配置入口，前端禁用该条目的勾选。目录展示与网络可用性分开检查，运行与手动测试仍使用既有公网地址校验和故障状态。
 
 源需要返回实际 RSS / Atom XML，网站首页和登录页会被标记为格式异常。某些网站没有公开订阅源，需要先提供可访问的 RSS 服务。请勿在源地址中放登录凭据或私人订阅令牌，配置和来源链接对成员可见。
 
@@ -78,5 +90,11 @@
 同日为预置目录核实了 Google AI RSS 20 条、Hugging Face RSS 200 条与 Deep Agents Atom 10 条，使用的解析校验方式与上述真实联网验证相同。OpenAI 与 LangGraph 沿用同日已验证的源。预置信源勾选、取消、旧配置恢复、自定义源合并、数量限制及加载失败重试通过前端回归。
 
 预置目录更新后再次运行后端全套检查，587 项通过、7 项跳过，覆盖率 80.57%，Ruff 和 mypy 通过。前端 lint、类型检查、216 项测试和构建通过。真实 PostgreSQL 接口测试覆盖已登录成员读取目录与匿名访问拒绝。
+
+按视频范围补充目录时，通过真实 HTTPS 读取了 Claude Code、xAI Python SDK、DeepSeek Harness、火山引擎 Python SDK 和 Kimi Code 的 Atom，每源均解析到 10 条，保留原文日期和链接。验证进程沿用上述公共 DNS 解析方式。官网 RSS 候选在本次检查中返回请求或格式错误，未加入可勾选源。X 的适配条件依据 RSSHub 官方实现，尚未连接真实 X 账号。
+
+官方项目归属与覆盖范围参考 [Anthropic](https://github.com/anthropics/claude-code)、[xAI](https://github.com/xai-org/xai-sdk-python)、[DeepSeek](https://github.com/deepseek-ai)、[火山引擎](https://github.com/volcengine/volcengine-python-sdk)、[Moonshot AI](https://github.com/MoonshotAI)。
+
+视频信源补充后的后端全套回归 587 项通过、7 项跳过，覆盖率 80.55%，Ruff 和 mypy 通过。前端 lint、类型检查、218 项测试和构建通过。回归覆盖厂商目录完整性、待配置项的说明与禁用状态，以及有效订阅和待配置项共存时的保存。
 
 规范依据见 [RSS 2.0](https://www.rssboard.org/rss-specification) 和 [Atom RFC 4287](https://www.rfc-editor.org/rfc/rfc4287)。
