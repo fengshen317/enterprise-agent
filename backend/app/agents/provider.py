@@ -119,7 +119,7 @@ class DeepSeekProvider:
         from langchain.agents.middleware import ModelRequest, ModelResponse, wrap_model_call, wrap_tool_call
         from langchain.agents.middleware.types import InputAgentState
         from langchain.tools.tool_node import ToolCallRequest
-        from langchain_core.messages import AIMessage, AIMessageChunk, AnyMessage, ToolMessage
+        from langchain_core.messages import AIMessage, AIMessageChunk, AnyMessage, SystemMessage, ToolMessage
         from langchain_core.tools import BaseTool, StructuredTool
         from langgraph.config import get_stream_writer
         from langgraph.types import Command, StreamMode
@@ -208,13 +208,30 @@ class DeepSeekProvider:
                     characters += len(str(request.system_message.content))
                 if characters > self.settings.model_context_characters:
                     raise ApplicationError("CONTEXT_TOO_LONG", "工具或子任务上下文超过限制，请缩小范围", 422)
+                active_tools = list(allowed_tools)
+                model_request = request
+                if executor is not None:
+                    exhausted = await executor.exhausted_tool_keys() & permitted
+                    if exhausted:
+                        active_tools = [tool for tool in allowed_tools if tool.name not in exhausted]
+                        notice = (
+                            "本轮以下工具的调用配额已耗尽，已移除：" + "、".join(sorted(exhausted))
+                            + "。请使用已有查询结果回答；资料不足时明确说明，不能编造或重复调用这些工具。"
+                        )
+                        content = request.system_message.content if request.system_message is not None else ""
+                        updated_content = (
+                            content + "\n\n" + notice if isinstance(content, str)
+                            else [*content, {"type": "text", "text": notice}]
+                        )
+                        model_request = request.override(system_message=SystemMessage(content=updated_content))
+                model_request = model_request.override(tools=list(active_tools))
                 if on_preview is None:
-                    return await handler(request.override(tools=list(allowed_tools)))
+                    return await handler(model_request)
                 # 重试边界与 SDK 文本片段共用同一个事件流，保证清除旧草稿后才接收下一次输出。
                 writer = get_stream_writer()
                 writer(_PREVIEW_START)
                 try:
-                    return await handler(request.override(tools=list(allowed_tools)))
+                    return await handler(model_request)
                 except Exception:
                     writer(_PREVIEW_CLEAR)
                     raise
@@ -290,6 +307,9 @@ class DeepSeekProvider:
                 for message in node.get("messages", []):
                     if isinstance(message, AIMessage):
                         if message.response_metadata.get("finish_reason") == "length":
+                            # 正文仍是有价值的部分结果；工具参数截断时不能发布或执行。
+                            if not message.tool_calls and message.text:
+                                yield message.text
                             raise ApplicationError(
                                 "MODEL_OUTPUT_TRUNCATED", "模型回答达到长度限制，请缩小问题范围", 422
                             )

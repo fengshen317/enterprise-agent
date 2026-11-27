@@ -140,6 +140,24 @@ class ToolExecutor:
         scope, _ = await self._scope_row(session)
         return scope
 
+    def _call_limit(self, spec: ToolSpec) -> int:
+        """系统工具保留自身预算，业务工具再受部署配置约束。"""
+        return spec.quota_per_run if spec.system else min(spec.quota_per_run, self.settings.tool_max_calls_per_run)
+
+    async def exhausted_tool_keys(self) -> frozenset[str]:
+        """按运行共享审计计数收窄下一轮工具，避免模型反复尝试耗尽的能力。"""
+        async with self.factory() as session:
+            await self._scope(session)
+            rows = await session.execute(
+                select(ToolCall.tool_name, func.count().label("call_count"))
+                .where(ToolCall.run_id == self.run_id)
+                .group_by(ToolCall.tool_name)
+            )
+            counts = {row.tool_name: row.call_count for row in rows}
+        return frozenset(
+            spec.key for spec in self.assembly.tools if counts.get(spec.key, 0) >= self._call_limit(spec)
+        )
+
     async def _begin(self, name: str, limit: int, spec: ToolSpec | None = None) -> tuple[UUID, bool]:
         """锁定运行后按能力计数，防止并行调用绕过次数限制。
 
@@ -319,7 +337,7 @@ class ToolExecutor:
         if spec is None:
             raise ApplicationError("TOOL_NOT_ALLOWED", "当前工具未获授权", 403)
         # 系统工具按自身配额，业务工具再受全局单次运行上限约束。
-        limit = spec.quota_per_run if spec.system else min(spec.quota_per_run, self.settings.tool_max_calls_per_run)
+        limit = self._call_limit(spec)
         identifier, allowed = await self._begin(name, limit, spec)
         arguments: BaseModel | None = None
         approval_approved = False

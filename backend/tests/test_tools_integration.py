@@ -119,10 +119,14 @@ async def test_tool_limits_timeout_cancel_and_whitelist(
     app, client, _ = chat
     executor = await executor_for(app, client)
     executor.settings = executor.settings.model_copy(update={"tool_max_calls_per_run": 1})
+    assert TOOL_NAME not in await executor.exhausted_tool_keys()
     results = await asyncio.gather(executor.invoke(TOOL_NAME, {}), executor.invoke(TOOL_NAME, {}))
     decoded = [json.loads(item) for item in results]
     assert sum(item["ok"] for item in decoded) == 1
     assert any(item.get("error_code") == "TOOL_CALL_LIMIT" for item in decoded)
+    # 新执行器仍读取同一运行的共享计数，不能因子 Agent 或重建对象恢复配额。
+    shared = ToolExecutor(executor.factory, executor.settings, executor.run_id)
+    assert TOOL_NAME in await shared.exhausted_tool_keys()
     with pytest.raises(ApplicationError, match="未获授权"):
         await executor.invoke("execute", {})
     executor.settings = executor.settings.model_copy(update={"tools_enabled": False})
@@ -194,9 +198,11 @@ async def test_revoke_before_publishing_drops_tool_result(
     assert (await client.get(f"/api/runs/{executor.run_id}/tool-calls")).status_code == 403
 
 
+@pytest.mark.parametrize("call_limit", [1, 8])
 @pytest.mark.parametrize("requested_tool", [TOOL_NAME, "task", "read_file"])
 async def test_real_sdk_tool_roundtrip_and_builtin_denial(
-    chat: tuple[FastAPI, httpx.AsyncClient, ControlledProvider], monkeypatch: pytest.MonkeyPatch, requested_tool: str
+    chat: tuple[FastAPI, httpx.AsyncClient, ControlledProvider],
+    monkeypatch: pytest.MonkeyPatch, requested_tool: str, call_limit: int
 ) -> None:
     """真实 Deep Agents 图执行数据库工具，内置能力在执行前被拒绝。
 
@@ -204,6 +210,7 @@ async def test_real_sdk_tool_roundtrip_and_builtin_denial(
         chat: 真实数据库应用。
         monkeypatch: 只替换供应商 HTTP 传输。
         requested_tool: 模型尝试调用的工具。
+        call_limit: 业务工具的运行内配额。
     """
     from langchain_deepseek import ChatDeepSeek
 
@@ -221,7 +228,7 @@ async def test_real_sdk_tool_roundtrip_and_builtin_denial(
         """
         body = json.loads(request.content)
         captured.append(body)
-        assert {item["function"]["name"] for item in body["tools"]} == {
+        expected_tools = {
             TOOL_NAME,
             "search_uploaded_materials",
             "read_uploaded_material",
@@ -232,6 +239,10 @@ async def test_real_sdk_tool_roundtrip_and_builtin_denial(
             "publish_private_skill",
             "create_private_agent",
         }
+        if len(captured) > 1 and call_limit == 1:
+            expected_tools.remove(TOOL_NAME)
+            assert "配额已耗尽" in body["messages"][0]["content"]
+        assert {item["function"]["name"] for item in body["tools"]} == expected_tools
         if len(captured) == 1:
             delta = {
                 "tool_calls": [
@@ -276,7 +287,9 @@ async def test_real_sdk_tool_roundtrip_and_builtin_denial(
 
         monkeypatch.setattr("langchain_deepseek.ChatDeepSeek", model)
         runtime = app.state.chat_runtime
-        runtime.settings = runtime.settings.model_copy(update={"deepseek_api_key": "test-only"})
+        runtime.settings = runtime.settings.model_copy(
+            update={"deepseek_api_key": "test-only", "tool_max_calls_per_run": call_limit}
+        )
         # model_copy 不执行 SecretStr 转换，明确构造有效类型。
         from pydantic import SecretStr
 

@@ -37,7 +37,7 @@ async def test_closing_one_model_keeps_other_runs_open(provider_name: str) -> No
 
 
 @pytest.mark.parametrize("finish_reason", ["stop", "length", "tool_calls"])
-@pytest.mark.parametrize("provider_name", ["deepseek", "openai_compatible"])
+@pytest.mark.parametrize("provider_name", ["deepseek", "openai_compatible", "mimo"])
 async def test_real_sdk_stream_with_mock_http(
     monkeypatch: pytest.MonkeyPatch, finish_reason: str, provider_name: str
 ) -> None:
@@ -52,9 +52,10 @@ async def test_real_sdk_stream_with_mock_http(
     from langchain_openai import ChatOpenAI
 
     captured: list[dict] = []
-    compatible = provider_name == "openai_compatible"
+    compatible = provider_name != "deepseek"
+    mimo = provider_name == "mimo"
     sdk = ChatOpenAI if compatible else ChatDeepSeek
-    expected_model = "fixture-model" if compatible else "deepseek-flash"
+    expected_model = "mimo-v2.6-pro" if mimo else "fixture-model" if compatible else "deepseek-flash"
 
     def transport(request: httpx.Request) -> httpx.Response:
         """返回供应商格式的 SSE，不访问网络。
@@ -67,13 +68,14 @@ async def test_real_sdk_stream_with_mock_http(
         """
         body = json.loads(request.content)
         captured.append(body)
-        assert request.url.host == ("local-llm.invalid" if compatible else "api.deepseek.com")
+        expected_host = "api.xiaomimimo.com" if mimo else "local-llm.invalid" if compatible else "api.deepseek.com"
+        assert request.url.host == expected_host
         assert request.headers["Authorization"] == ("Bearer compatible-test" if compatible else "Bearer test-only")
         assert request.url.path == ("/v1/chat/completions" if compatible else "/chat/completions")
         assert not body.get("tools")
         assert body["stream"] is True
         assert body["model"] == expected_model
-        assert body.get("thinking") == (None if compatible else {"type": "disabled"})
+        assert body.get("thinking") == (None if compatible and not mimo else {"type": "disabled"})
         chunks = []
         for content, finish in [("你好", None), ("，世界", None), ("", finish_reason)]:
             chunk = {
@@ -121,9 +123,9 @@ async def test_real_sdk_stream_with_mock_http(
             Settings(
                 _env_file=None,
                 deepseek_api_key="test-only",
-                llm_provider=provider_name,
-                llm_base_url="http://local-llm.invalid/v1",
-                llm_model="fixture-model",
+                llm_provider="openai_compatible" if compatible else "deepseek",
+                llm_base_url="https://api.xiaomimimo.com/v1" if mimo else "http://local-llm.invalid/v1",
+                llm_model=expected_model,
                 llm_api_key="compatible-test",
             )
         )
@@ -136,8 +138,11 @@ async def test_real_sdk_stream_with_mock_http(
             assert not any(previews)
             return
         if finish_reason == "length":
+            partial: list[str] = []
             with pytest.raises(ApplicationError, match="模型回答达到长度限制"):
-                _ = [part async for part in stream]
+                async for part in stream:
+                    partial.append(part)
+            assert "".join(partial) == "你好，世界"
             return
         output = "".join([part async for part in stream])
     assert output == "你好，世界"

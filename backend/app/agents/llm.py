@@ -1,6 +1,7 @@
 """统一构造问答、摘要、子 Agent 与计划使用的 LLM。"""
 
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from httpx import Timeout
 from pydantic import SecretStr
@@ -51,6 +52,12 @@ def create_llm(
             max_retries=0,
             streaming=streaming,
             use_responses_api=False,
+            # MiMo 默认思考会占用正文额度，且兼容 SDK 不保留其工具轮次的推理字段。
+            extra_body=(
+                {"thinking": {"type": "disabled"}}
+                if urlsplit(settings.llm_base_url).hostname == "api.xiaomimimo.com"
+                else None
+            ),
         )
 
     from langchain_deepseek import ChatDeepSeek
