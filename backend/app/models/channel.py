@@ -68,7 +68,7 @@ class ChannelAccount(Base):
             "channel_type",
             "ilink_user_id",
             unique=True,
-            postgresql_where=text("status <> 'unbound' AND ilink_user_id <> ''"),
+            postgresql_where=text("channel_type <> 'ilink' AND status <> 'unbound' AND ilink_user_id <> ''"),
         ),
         Index("ix_channel_accounts_status", "status"),
     )

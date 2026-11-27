@@ -10,18 +10,25 @@ const error = ref('')
 const now = ref(Date.now())
 const clock = setInterval(() => { now.value = Date.now() }, 1000)
 const remaining = computed(() => Math.max(0, Math.ceil((Date.parse(props.approval.expires_at) - now.value) / 1000)))
-const preview = computed(() => Object.entries(props.approval.args_preview).filter(([, value]) => value !== null && value !== ''))
+const preview = computed(() => {
+  const args = props.approval.args_preview
+  // 旧审批只有微信开关，新审批用渠道列表展示同一设置。
+  return Object.entries(args).filter(([key, value]) =>
+    value !== null && value !== '' && (key !== 'push_to_wechat' || !('push_channels' in args)))
+})
 const fieldLabels: Record<string, string> = {
   summary: '操作', effect: '影响', name: '名称', key: '标识', description: '说明', visibility: '可见范围',
   version: '版本', skill_id: '技能 ID', schedule_id: '任务 ID', tool_keys: '工具', skill_ids: '绑定技能',
   knowledge_scope: '知识库范围', cron: 'Cron 表达式', cron_expression: 'Cron 表达式', timezone: '时区',
   preview: '内容预览', calendar_mode: '日期规则', prompt: '任务指令',
   enabled: '启用任务', push_to_wechat: '微信推送', skills: '绑定技能及版本', content_md: '技能正文',
+  push_channels: '推送渠道',
   instructions: 'Agent 指令', allow_planning: '允许规划', allow_delegation: '允许委派',
 }
 function isChange(value: unknown): value is { before: unknown; after: unknown } {
   return typeof value === 'object' && value !== null && 'before' in value && 'after' in value
 }
+const pushChannelLabels: Record<string, string> = { ilink: '微信', feishu: '飞书', dingtalk: '钉钉', qq: 'QQ' }
 function previewText(key: string, value: unknown): string {
   if (key === 'visibility' && value === 'private') return '仅自己可见'
   if (key === 'knowledge_scope' && typeof value === 'object' && value !== null && 'mode' in value) {
@@ -29,7 +36,10 @@ function previewText(key: string, value: unknown): string {
     if (value.mode === 'selected' && 'kb_ids' in value && Array.isArray(value.kb_ids)
       && value.kb_ids.every(id => typeof id === 'string')) return value.kb_ids.join('、') || '无'
   }
-  if (Array.isArray(value) && value.every(item => typeof item === 'string')) return value.join('、') || '无'
+  if (Array.isArray(value) && value.every(item => typeof item === 'string')) {
+    if (key === 'push_channels') return value.map(item => pushChannelLabels[item] ?? item).join('、') || '不推送'
+    return value.join('、') || '无'
+  }
   if (typeof value === 'boolean') return value ? '是' : '否'
   if (typeof value === 'object') return JSON.stringify(value, null, 2)
   return String(value)

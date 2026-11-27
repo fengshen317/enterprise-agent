@@ -8,6 +8,7 @@ import json
 import logging
 import threading
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from time import monotonic
 from typing import Any
 
@@ -121,7 +122,6 @@ class FeishuClient:
         self._tokens: dict[str, tuple[str, float]] = {}
         self._lock = asyncio.Lock()
         self._next_send: dict[str, float] = {}
-        self._sessions: dict[str, _FeishuSession] = {}
 
     async def aclose(self) -> None:
         """关闭自己创建的 HTTP 客户端。"""
@@ -167,20 +167,42 @@ class FeishuClient:
         """
         key = str(app.id)
         session = _FeishuSession()
-        self._sessions[key] = session
         loop = asyncio.get_running_loop()
+        finished = asyncio.Event()
+
+        def run_sdk() -> None:
+            """无论 SDK 正常退出或报错，都让监督任务看到连接已经结束。"""
+            try:
+                _run_sdk(app.external_app_id, app.secret, loop, dispatch, session)
+            except Exception as exc:
+                if not session.stopped:
+                    logger.warning("feishu_connection_failed", extra={"app_id": key, "error_type": type(exc).__name__})
+            finally:
+                session.stopped = True
+                thread_loop = session.loop
+                try:
+                    if thread_loop is not None:
+                        for task in asyncio.all_tasks(thread_loop):
+                            task.cancel()
+                        # 给 SDK 的协程一次退出机会，再释放线程自己的事件循环。
+                        try:
+                            thread_loop.run_until_complete(asyncio.sleep(0))
+                        finally:
+                            thread_loop.close()
+                finally:
+                    with suppress(RuntimeError):
+                        loop.call_soon_threadsafe(finished.set)
+
         thread = threading.Thread(
-            target=_run_sdk,
-            args=(app.external_app_id, app.secret, loop, dispatch, session),
+            target=run_sdk,
             name=f"feishu-{key[:8]}",
             daemon=True,
         )
-        session.thread = thread
         thread.start()
         try:
-            await asyncio.Future()
+            await finished.wait()
         except asyncio.CancelledError:
-            # 只发停止信号，不在问答事件循环里 join。SDK 的 start() 经常不返回，join 会把微信轮询一起卡住。
+            # SDK 的网络调用可能阻塞，不能在问答事件循环里等待线程退出。
             _stop_feishu(session)
             logger.info("feishu_connection_task_cancelled", extra={"app_id": key})
             raise
@@ -243,7 +265,6 @@ class _FeishuSession:
     """一条飞书长连接的线程和事件循环，取消时用来关掉它。"""
 
     def __init__(self) -> None:
-        self.thread: threading.Thread | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
         self.client: Any | None = None
         self.stopped = False
@@ -301,10 +322,7 @@ def _run_sdk(
     client = lark.ws.Client(app_id, secret, event_handler=handler, log_level=lark.LogLevel.WARNING)
     session.client = client
     client._auto_reconnect = True
-    try:
-        client.start()
-    finally:
-        session.stopped = True
+    client.start()
 
 
 def _stop_feishu(session: _FeishuSession) -> None:
@@ -316,12 +334,16 @@ def _stop_feishu(session: _FeishuSession) -> None:
 
         async def shutdown() -> None:
             client._auto_reconnect = False
-            await client._disconnect()
-            thread_loop.stop()
+            try:
+                await client._disconnect()
+            finally:
+                thread_loop.stop()
 
-        thread_loop.call_soon_threadsafe(lambda: thread_loop.create_task(shutdown()))
+        with suppress(RuntimeError):
+            thread_loop.call_soon_threadsafe(lambda: thread_loop.create_task(shutdown()))
     elif thread_loop is not None and not thread_loop.is_running():
-        thread_loop.call_soon_threadsafe(thread_loop.stop)
+        with suppress(RuntimeError):
+            thread_loop.call_soon_threadsafe(thread_loop.stop)
 
 
 def _token_key(app: AppRecord) -> str:

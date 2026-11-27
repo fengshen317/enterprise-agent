@@ -105,10 +105,13 @@ async def test_approve_executes_and_reject_has_no_side_effect(
     """批准后才创建定时任务；拒绝不产生业务副作用。"""
     app, client, _ = chat
     executor = await write_executor(app, client)
-    task = asyncio.create_task(executor.invoke("create_scheduled_task", dict(TASK)))
+    task = asyncio.create_task(
+        executor.invoke("create_scheduled_task", {**TASK, "push_channels": ["dingtalk", "feishu", "dingtalk"]})
+    )
     approval = await wait_approval(client, executor.run_id)
     assert approval["risk_level"] == "write"
     assert "创建定时任务" in approval["args_preview"]["summary"]
+    assert approval["args_preview"]["push_channels"] == ["dingtalk", "feishu"]
     snapshot = (await client.get(f"/api/runs/{executor.run_id}")).json()
     assert snapshot["approval"]["id"] == approval["id"]
     decided = await client.post(
@@ -119,7 +122,7 @@ async def test_approve_executes_and_reject_has_no_side_effect(
     result = await asyncio.wait_for(task, 5)
     assert '"ok": true' in result
     schedules = (await client.get("/api/schedules")).json()
-    assert any(item["name"] == TASK["name"] for item in schedules)
+    assert any(item["name"] == TASK["name"] and item["push_channels"] == ["dingtalk", "feishu"] for item in schedules)
     async with app.state.database.session_factory() as session:
         call = await session.scalar(select(ToolCall).where(ToolCall.run_id == executor.run_id))
         row = await session.scalar(select(Approval).where(Approval.run_id == executor.run_id))

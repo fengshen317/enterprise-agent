@@ -16,8 +16,15 @@ beforeEach(() => vi.resetAllMocks())
 it('展示影响说明并批准执行', async () => {
   const approved = { ...approval, status: 'approved' as const }
   vi.mocked(api.decideApproval).mockResolvedValue(approved)
-  const wrapper = mount(ApprovalCard, { props: { approval, runId: 'r1' } })
+  const pending = {
+    ...approval,
+    args_preview: { ...approval.args_preview, push_to_wechat: false, push_channels: ['dingtalk', 'feishu'] },
+  }
+  const wrapper = mount(ApprovalCard, { props: { approval: pending, runId: 'r1' } })
   expect(wrapper.text()).toContain('创建定时任务「每周复盘」')
+  expect(wrapper.text()).toContain('推送渠道')
+  expect(wrapper.text()).toContain('钉钉、飞书')
+  expect(wrapper.text()).not.toContain('微信推送')
   expect(wrapper.text()).toContain('批准并执行')
   await wrapper.get('.approval__approve').trigger('click')
   await flushPromises()

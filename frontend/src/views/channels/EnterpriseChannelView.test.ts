@@ -35,13 +35,14 @@ beforeEach(() => {
   })
 })
 
-function mountView(role: 'admin' | 'member' = 'admin') {
+function mountView(systemAdmin = true, role: 'admin' | 'member' = 'member') {
   const pinia = createPinia()
   const auth = useAuthStore(pinia)
   auth.session = {
     user: { id: 'u1', username: 'a', display_name: '甲' },
     csrf_token: 'csrf',
     expires_at: '',
+    system_admin: systemAdmin,
     workspaces: [{ id: 'w1', slug: 'default', name: '空间', status: 'active', role }],
   }
   auth.selectedWorkspaceId = 'w1'
@@ -68,9 +69,17 @@ it('管理员可以保存飞书应用，员工可以生成绑定码', async () =
 })
 
 it('普通成员看不到密钥表单', async () => {
-  const wrapper = mountView('member')
+  const wrapper = mountView(false)
   await flushPromises()
   expect(wrapper.find('form').exists()).toBe(false)
   expect(wrapper.text()).toContain('生成绑定码')
+  wrapper.unmount()
+})
+
+it('空间管理员只能管理自己的绑定', async () => {
+  const wrapper = mountView(false, 'admin')
+  await flushPromises()
+  expect(wrapper.find('form').exists()).toBe(false)
+  expect(wrapper.get('.enterprise__actions button').attributes('disabled')).toBeUndefined()
   wrapper.unmount()
 })

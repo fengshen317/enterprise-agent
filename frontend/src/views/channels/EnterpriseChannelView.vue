@@ -49,7 +49,7 @@ const copy: Record<EnterpriseChannel, { title: string, lead: string, limits: str
 }
 
 const auth = useAuthStore()
-const isAdmin = computed(() => auth.activeWorkspace?.role === 'admin' && auth.activeWorkspace.status === 'active')
+const isAdmin = computed(() => auth.session?.system_admin === true)
 const page = computed(() => copy[props.channel])
 const app = ref<EnterpriseApp | null>(null)
 const binding = ref<EnterpriseBinding | null>(null)

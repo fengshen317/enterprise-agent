@@ -229,7 +229,7 @@ class DingTalkClient:
 
 
 async def _handle_frame(socket: Any, raw: str | bytes, dispatch: Dispatch) -> None:
-    """先回 ACK，再把消息交给问答。群消息也交给上层记账。"""
+    """上层接收成功后再确认回调，处理异常时不发成功 ACK。"""
     try:
         message = json.loads(raw)
     except json.JSONDecodeError:
@@ -238,13 +238,12 @@ async def _handle_frame(socket: Any, raw: str | bytes, dispatch: Dispatch) -> No
         return
     headers = _mapping(message.get("headers"))
     kind = str(message.get("type") or "")
-    if kind == "SYSTEM" and headers.get("topic") == "disconnect":
-        await socket.close()
+    if kind == "SYSTEM":
+        await socket.send(json.dumps(_ack(headers, message.get("data"))))
+        if headers.get("topic") == "disconnect":
+            await socket.close()
         return
-    if kind != "CALLBACK":
-        return
-    await socket.send(json.dumps(_ack(headers)))
-    if headers.get("topic") != TOPIC:
+    if kind != "CALLBACK" or headers.get("topic") != TOPIC:
         return
     data: Any = message.get("data")
     if isinstance(data, str):
@@ -254,6 +253,7 @@ async def _handle_frame(socket: Any, raw: str | bytes, dispatch: Dispatch) -> No
             return
     if isinstance(data, dict):
         await dispatch(parse_dingtalk_message(data))
+        await socket.send(json.dumps(_ack(headers)))
 
 
 def _token_key(app: AppRecord) -> str:
@@ -269,10 +269,12 @@ def _mapping(value: object) -> dict[str, Any]:
     return {}
 
 
-def _ack(headers: dict[str, Any]) -> dict[str, Any]:
+def _ack(headers: dict[str, Any], data: object = None) -> dict[str, Any]:
     """回传 messageId，钉钉才认为这条回调已经处理。"""
-    echoed = {key: headers[key] for key in ("messageId", "topic", "contentType") if key in headers}
-    return {"code": 200, "headers": echoed, "message": "OK", "data": "{}"}
+    echoed = {key: headers[key] for key in ("messageId", "topic") if key in headers}
+    echoed["contentType"] = "application/json"
+    payload = data if isinstance(data, str) else json.dumps(data if isinstance(data, dict) else {})
+    return {"code": 200, "headers": echoed, "message": "OK", "data": payload}
 
 
 def _has_flow_control(body: dict[str, Any]) -> bool:

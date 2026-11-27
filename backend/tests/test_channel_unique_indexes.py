@@ -11,11 +11,13 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.sql.selectable import Select
 
 from app.channels.crypto import ChannelCrypto
+from app.channels.enterprise import EnterpriseChannelService
 from app.channels.repository import ChannelStore
 from app.core.config import Settings
 from app.core.errors import ApplicationError
 from app.models.channel import ChannelAccount, ChannelApp, ChannelBindCode
 from app.models.identity import User, Workspace
+from app.schemas.auth import ResourceScope
 
 _SCHEMA = """
 CREATE TABLE users (id CHAR(32) PRIMARY KEY);
@@ -55,7 +57,7 @@ CREATE UNIQUE INDEX uq_channel_accounts_user_open
     ON channel_accounts (user_id, channel_type) WHERE status <> 'unbound';
 CREATE UNIQUE INDEX uq_channel_accounts_platform_user
     ON channel_accounts (channel_type, ilink_user_id)
-    WHERE status <> 'unbound' AND ilink_user_id <> '';
+    WHERE channel_type <> 'ilink' AND status <> 'unbound' AND ilink_user_id <> '';
 CREATE TABLE channel_bind_codes (
     id CHAR(32) PRIMARY KEY,
     user_id CHAR(32) NOT NULL,
@@ -165,6 +167,34 @@ async def test_replacing_app_disables_old_row_before_insert(store) -> None:
     assert [item.status for item in apps] == ["active", "disabled"]
     assert account is not None and account.status == "unbound" and account.app_id == first.id
     assert bind_code is not None and bind_code.status == "expired"
+
+
+async def test_binding_uses_only_current_app_after_reenable(store) -> None:
+    """页面允许重新绑定，避免同一 App ID 重建后旧记录盖住绑定入口。"""
+    channel_store, _ = store
+    scope = ResourceScope(uuid4(), uuid4())
+    config = {
+        "workspace_id": scope.workspace_id,
+        "user_id": scope.user_id,
+        "channel_type": "dingtalk",
+        "external_app_id": "robot",
+        "ciphertext": "",
+        "public_config": {},
+    }
+    original = await channel_store.save_app(**config)
+    issued = await channel_store.issue_bind_code(scope.user_id, scope.workspace_id, original.id)
+    assert await channel_store.redeem_bind_code("dingtalk", "staff", issued.code) is not None
+    service = EnterpriseChannelService(channel_store, channel_store.crypto)
+    assert (await service.binding(scope, "dingtalk")).bound
+    await channel_store.disable_app("dingtalk")
+    assert not (await service.binding(scope, "dingtalk")).bound
+    replacement = await channel_store.save_app(**config)
+    view = await service.binding(scope, "dingtalk")
+    assert view.app_configured and not view.bound
+    issued = await service.issue_code(scope, "dingtalk")
+    account = await channel_store.redeem_bind_code("dingtalk", "staff", issued.code)
+    assert account is not None and account.app_id == replacement.id
+    assert (await service.binding(scope, "dingtalk")).bound
 
 
 async def test_rebind_from_disabled_app_releases_unique_rows_first(store) -> None:

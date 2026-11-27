@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import httpx
 import pytest
+from fastapi import FastAPI
 
+from app.api.auth import get_identity, get_scope
 from app.channels.capabilities import (
     bind_instructions,
     capability_for,
@@ -16,7 +21,7 @@ from app.channels.capabilities import (
     welcome_text,
 )
 from app.channels.commands import parse_inbound
-from app.channels.dingtalk import DingTalkClient, classify_dingtalk_send, parse_dingtalk_message
+from app.channels.dingtalk import TOPIC, DingTalkClient, _handle_frame, classify_dingtalk_send, parse_dingtalk_message
 from app.channels.enterprise import EnterpriseChannelService
 from app.channels.feishu import FeishuClient, parse_feishu_card, parse_feishu_event
 from app.channels.handler import InboundHandler
@@ -25,8 +30,87 @@ from app.channels.records import AccountRecord, AppRecord, PeerLink
 from app.channels.send_error import ChannelSendError
 from app.core.config import Settings
 from app.core.errors import ApplicationError
-from app.schemas.auth import ResourceScope
+from app.schemas.auth import AuthContext, ResourceScope
 from app.services.push_channels import apply_wechat_flag, normalize_push_channels
+
+
+async def test_enterprise_config_routes_require_system_admin(
+    app: FastAPI, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """有效空间不会给普通会话部署级写入权限。"""
+    user_id, workspace_id = uuid4(), uuid4()
+    first_admin = False
+
+    async def identity() -> AuthContext:
+        return AuthContext(user_id, uuid4(), "robot-admin", "用户", datetime.now(UTC), first_admin=first_admin)
+
+    async def scope() -> ResourceScope:
+        return ResourceScope(user_id, workspace_id)
+
+    app.dependency_overrides[get_identity] = identity
+    app.dependency_overrides[get_scope] = scope
+    service = app.state.enterprise_channels
+    save = AsyncMock(
+        return_value={
+            "channel_type": "dingtalk",
+            "external_app_id": "robot",
+            "status": "active",
+            "secret_configured": True,
+        }
+    )
+    disable = AsyncMock()
+    monkeypatch.setattr(service, "save_app", save)
+    monkeypatch.setattr(service, "disable_app", disable)
+    payload = {"channel_type": "dingtalk", "external_app_id": "robot"}
+    assert (await client.post("/api/channels/apps", json=payload)).status_code == 403
+    assert (await client.post("/api/channels/apps/dingtalk/disable")).status_code == 403
+    save.assert_not_awaited()
+    disable.assert_not_awaited()
+    first_admin = True
+    assert (await client.post("/api/channels/apps", json=payload)).status_code == 200
+    assert (await client.post("/api/channels/apps/dingtalk/disable")).status_code == 204
+    save.assert_awaited_once()
+    disable.assert_awaited_once_with("dingtalk")
+
+
+async def test_feishu_task_exits_when_sdk_thread_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SDK 失败后释放监督任务，下一轮可以建立新的连接。"""
+    import lark_oapi.ws
+
+    sdk_calls: list[lark_oapi.ws.Client] = []
+
+    def start(sdk: lark_oapi.ws.Client) -> None:
+        sdk_calls.append(sdk)
+        if len(sdk_calls) == 1:
+            raise RuntimeError("SDK exited")
+
+    monkeypatch.setattr(lark_oapi.ws.Client, "start", start)
+    app = AppRecord(uuid4(), None, "feishu", "app-id", "active")
+    client = FeishuClient()
+    try:
+        for _ in range(2):
+            await asyncio.wait_for(client.serve(app, AsyncMock()), timeout=2)
+    finally:
+        await client.aclose()
+    assert len(sdk_calls) == 2 and sdk_calls[0] is not sdk_calls[1]
+
+
+async def test_dingtalk_ack_follows_successful_dispatch() -> None:
+    """处理失败时不给成功确认，控制帧仍独立应答。"""
+    socket = AsyncMock()
+    frame = json.dumps({"type": "CALLBACK", "headers": {"topic": TOPIC, "messageId": "m1"}, "data": {"msgId": "m1"}})
+
+    async def receive(_event: object) -> None:
+        socket.send.assert_not_awaited()
+
+    with pytest.raises(RuntimeError, match="store unavailable"):
+        await _handle_frame(socket, frame, AsyncMock(side_effect=RuntimeError("store unavailable")))
+    socket.send.assert_not_awaited()
+    await _handle_frame(socket, frame, receive)
+    assert json.loads(socket.send.await_args.args[0])["headers"]["messageId"] == "m1"
+    ping = json.dumps({"type": "SYSTEM", "headers": {"topic": "ping", "messageId": "p1"}, "data": '{"opaque":"x"}'})
+    await _handle_frame(socket, ping, AsyncMock())
+    assert json.loads(socket.send.await_args.args[0])["data"] == '{"opaque":"x"}'
 
 
 def test_window_policy_follows_each_platform() -> None:

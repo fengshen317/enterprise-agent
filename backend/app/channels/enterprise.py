@@ -57,7 +57,7 @@ class ChannelBindingView(BaseModel):
 
 
 class EnterpriseChannelService:
-    """空间管理员配置一个企业机器人，员工用绑定码把平台身份对应到自己。"""
+    """系统管理员配置全站机器人，员工用绑定码关联自己的平台身份。"""
 
     def __init__(self, repo: ChannelStore, crypto: ChannelCrypto) -> None:
         """保存存储和加密器。
@@ -87,7 +87,7 @@ class EnterpriseChannelService:
         return views
 
     async def save_app(self, scope: ResourceScope, body: ChannelAppInput) -> ChannelAppView:
-        """保存或替换企业机器人。只有空间管理员可以做。
+        """为已通过系统管理员校验的请求保存或替换企业机器人。
 
         Args:
             scope: 当前用户和空间。
@@ -97,10 +97,9 @@ class EnterpriseChannelService:
             不含密钥的配置状态。
 
         Raises:
-            ApplicationError: 不是管理员，或没有提供可用密钥。
+            ApplicationError: 没有提供可用密钥。
         """
         self._require_crypto()
-        await self._require_admin(scope)
         secret = body.secret.strip()
         current = await self.repo.active_app(body.channel_type)
         if not secret:
@@ -119,15 +118,13 @@ class EnterpriseChannelService:
         )
         return _app_view(body.channel_type, saved)
 
-    async def disable_app(self, scope: ResourceScope, channel_type: str) -> None:
-        """停用企业机器人。
+    async def disable_app(self, channel_type: str) -> None:
+        """为已通过系统管理员校验的请求停用企业机器人。
 
         Args:
-            scope: 当前用户。
             channel_type: feishu、dingtalk 或 qq。
         """
         self._require_known(channel_type)
-        await self._require_admin(scope)
         await self.repo.disable_app(channel_type)
 
     async def issue_code(self, scope: ResourceScope, channel_type: str) -> BindCodeView:
@@ -177,14 +174,15 @@ class EnterpriseChannelService:
         self._require_known(channel_type)
         app = await self.repo.active_app(channel_type)
         account = await self.repo.account_for_user(scope.user_id, channel_type)
-        if account is None:
+        # 员工的旧绑定可能仍在已停用的应用上，不能阻止绑定当前应用。
+        if account is None or app is None or account.app_id != app.id:
             return ChannelBindingView(bound=False, app_configured=app is not None)
         return ChannelBindingView(
             bound=True,
             account_id=account.id,
             platform_user_id=account.ilink_user_id,
             status=account.status,
-            app_configured=app is not None,
+            app_configured=True,
         )
 
     async def unbind(self, scope: ResourceScope, channel_type: str) -> None:
@@ -204,12 +202,6 @@ class EnterpriseChannelService:
         """没有 Fernet 密钥时不能保存应用凭证。"""
         if not self.crypto.configured:
             raise ApplicationError("CHANNEL_NOT_CONFIGURED", "渠道密钥还没有配置", 503)
-
-    async def _require_admin(self, scope: ResourceScope) -> None:
-        """企业凭证属于整个部署，只允许空间管理员写入。"""
-        role = await self.repo.workspace_role(scope.user_id, scope.workspace_id)
-        if role != "admin":
-            raise ApplicationError("ADMIN_REQUIRED", "只有空间管理员可以配置企业机器人", 403)
 
     @staticmethod
     def _require_known(channel_type: str) -> None:

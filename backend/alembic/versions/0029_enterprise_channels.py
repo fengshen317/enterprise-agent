@@ -1,15 +1,15 @@
 """增加企业渠道应用、员工绑定码，并把定时推送扩展到多个渠道。
 
-Revision ID: 0028
-Revises: 0027
+Revision ID: 0029
+Revises: 0028
 """
 
 import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0028"
-down_revision: str | None = "0027"
+revision: str = "0029"
+down_revision: str | None = "0028"
 branch_labels: str | None = None
 depends_on: str | None = None
 
@@ -51,9 +51,10 @@ def upgrade() -> None:
         unique=True,
         postgresql_where=sa.text("status = 'active'"),
     )
-    op.drop_constraint("ck_channel_accounts_channel_type", "channel_accounts", type_="check")
+    # 这里引用的是已命名的数据库约束，避免命名约定重复添加前缀。
+    op.drop_constraint(op.f("ck_channel_accounts_channel_type"), "channel_accounts", type_="check")
     op.create_check_constraint(
-        "ck_channel_accounts_channel_type",
+        op.f("ck_channel_accounts_channel_type"),
         "channel_accounts",
         "channel_type IN ('ilink', 'feishu', 'dingtalk', 'qq')",
     )
@@ -71,7 +72,8 @@ def upgrade() -> None:
         "channel_accounts",
         ["channel_type", "ilink_user_id"],
         unique=True,
-        postgresql_where=sa.text("status <> 'unbound' AND ilink_user_id <> ''"),
+        # 旧版允许不同工作台账号绑定同一个微信身份，升级时保留这些历史绑定。
+        postgresql_where=sa.text("channel_type <> 'ilink' AND status <> 'unbound' AND ilink_user_id <> ''"),
     )
     op.add_column(
         "channel_peers",
@@ -140,7 +142,7 @@ def upgrade() -> None:
         sa.Column("push_channels", sa.JSON(), server_default=sa.text("'[]'::json"), nullable=False),
     )
     op.execute("UPDATE scheduled_tasks SET push_channels = '[\"ilink\"]'::json WHERE push_to_wechat IS TRUE")
-    op.execute("UPDATE system_metadata SET value = '28' WHERE key = 'schema_version'")
+    op.execute("UPDATE system_metadata SET value = '29' WHERE key = 'schema_version'")
 
 
 def downgrade() -> None:
@@ -155,8 +157,10 @@ def downgrade() -> None:
     op.drop_index("uq_channel_accounts_platform_user", table_name="channel_accounts")
     op.drop_constraint("fk_channel_accounts_app_id_channel_apps", "channel_accounts", type_="foreignkey")
     op.drop_column("channel_accounts", "app_id")
-    op.drop_constraint("ck_channel_accounts_channel_type", "channel_accounts", type_="check")
-    op.create_check_constraint("ck_channel_accounts_channel_type", "channel_accounts", "channel_type IN ('ilink')")
+    op.drop_constraint(op.f("ck_channel_accounts_channel_type"), "channel_accounts", type_="check")
+    op.create_check_constraint(
+        op.f("ck_channel_accounts_channel_type"), "channel_accounts", "channel_type IN ('ilink')"
+    )
     op.drop_index("uq_channel_apps_type_active", table_name="channel_apps")
     op.drop_table("channel_apps")
-    op.execute("UPDATE system_metadata SET value = '27' WHERE key = 'schema_version'")
+    op.execute("UPDATE system_metadata SET value = '28' WHERE key = 'schema_version'")

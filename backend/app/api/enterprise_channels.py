@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Request, Response
 
-from app.api.auth import ScopeDependency
+from app.api.auth import ScopeDependency, SystemAdminDependency
 from app.channels.enterprise import (
     BindCodeView,
     ChannelAppInput,
@@ -34,15 +34,17 @@ async def list_apps(request: Request, scope: ScopeDependency) -> list[ChannelApp
 
 
 @router.post("/apps", response_model=ChannelAppView)
-async def save_app(body: ChannelAppInput, request: Request, scope: ScopeDependency) -> ChannelAppView:
-    """保存企业机器人。只有空间管理员可以调用。"""
+async def save_app(
+    body: ChannelAppInput, request: Request, identity: SystemAdminDependency, scope: ScopeDependency
+) -> ChannelAppView:
+    """只有系统管理员可以保存全站共用的机器人，当前空间用于记录操作来源。"""
     return await service(request).save_app(scope, body)
 
 
 @router.post("/apps/{channel_type}/disable", status_code=204)
-async def disable_app(channel_type: str, request: Request, scope: ScopeDependency) -> Response:
-    """停用一种企业机器人。"""
-    await service(request).disable_app(scope, channel_type)
+async def disable_app(channel_type: str, request: Request, identity: SystemAdminDependency) -> Response:
+    """只有系统管理员可以停用全站共用的机器人。"""
+    await service(request).disable_app(channel_type)
     return Response(status_code=204)
 
 

@@ -1326,28 +1326,6 @@ class ChannelStore:
             peer.updated_at = datetime.now(UTC)
             return peer.passive_reply_count
 
-    async def workspace_role(self, user_id: UUID, workspace_id: UUID) -> str | None:
-        """读取成员角色，供企业机器人配置做管理员校验。
-
-        Args:
-            user_id: 用户。
-            workspace_id: 空间。
-
-        Returns:
-            admin 或 member；不是有效成员时为 None。
-        """
-        from app.models.identity import WorkspaceMembership
-
-        async with self.factory() as session:
-            role = await session.scalar(
-                select(WorkspaceMembership.role).where(
-                    WorkspaceMembership.workspace_id == workspace_id,
-                    WorkspaceMembership.user_id == user_id,
-                    WorkspaceMembership.status == "active",
-                )
-            )
-        return role if isinstance(role, str) else None
-
     async def _lock_peer(
         self, session: AsyncSession, account_id: UUID, workspace_id: UUID, peer_id: str
     ) -> ChannelPeer:

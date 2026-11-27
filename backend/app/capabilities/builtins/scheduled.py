@@ -13,6 +13,7 @@ from app.schemas.schedule import (
     SetScheduledTaskEnabledArgs,
     UpdateScheduledTaskArgs,
 )
+from app.services.push_channels import apply_wechat_flag, normalize_push_channels
 from app.services.schedule_calendar import CALENDAR_LABELS
 from app.services.schedule_store import ScheduleStore
 from app.services.scheduling import timezone_info, validate_expression
@@ -87,11 +88,13 @@ def scheduled_spec(settings: Settings) -> ToolSpec:
             effect = (
                 f"新建专用对话「{arguments.name.strip()}」，绑定私有 Agent「{name}」（{arguments.agent_profile_id}）"
             )
+        wechat, channels = normalize_push_channels(arguments.push_to_wechat, arguments.push_channels)
         return {
             "summary": f"创建定时任务「{arguments.name}」",
             "effect": effect,
             "enabled": arguments.enabled,
-            "push_to_wechat": arguments.push_to_wechat,
+            "push_to_wechat": wechat,
+            "push_channels": channels,
             "cron": arguments.cron_expression,
             "timezone": arguments.timezone or store.default_timezone,
             "calendar_mode": CALENDAR_LABELS[arguments.calendar_mode],
@@ -346,6 +349,12 @@ def update_scheduled_task_spec(settings: Settings) -> ToolSpec:
         current = await store.get(context.scope, arguments.schedule_id)
         store.check_revision(current.revision, arguments.revision)
         fields = arguments.changes()
+        # 审批展示存储层实际采用的渠道列表，包括旧接口单独切换微信的情况。
+        if arguments.push_channels is not None:
+            fields["push_channels"] = normalize_push_channels(False, arguments.push_channels)[1]
+        elif arguments.push_to_wechat is not None:
+            fields["push_channels"] = apply_wechat_flag(current.push_channels, arguments.push_to_wechat)
+        fields.pop("push_to_wechat", None)
         if arguments.name is not None:
             fields["name"] = arguments.name.strip()
         if arguments.cron_expression is not None:
