@@ -5,7 +5,7 @@ import { useConnectorsStore } from './connectors'
 import * as api from '../api/auth'
 import { ApiError, getWorkspaceId, setSecurityContext } from '../api/client'
 
-vi.mock('../api/auth', () => ({ getSession: vi.fn(), login: vi.fn(), logout: vi.fn() }))
+vi.mock('../api/auth', () => ({ getSession: vi.fn(), login: vi.fn(), logout: vi.fn(), changePassword: vi.fn() }))
 const session: api.Session = { user: { id: 'u1', username: 'alice', display_name: '甲' }, csrf_token: 'csrf-memory-only', expires_at: '2099-01-01', workspaces: [{ id: 'w1', name: '空间甲', slug: 'first', status: 'active', role: 'admin' }, { id: 'w2', name: '空间乙', slug: 'second', status: 'active', role: 'member' }] }
 beforeEach(() => { setActivePinia(createPinia()); localStorage.clear(); vi.resetAllMocks(); setSecurityContext('', '') })
 it('登录和空间选择只持久化公开空间标识，退出清空安全上下文', async () => {
@@ -73,4 +73,17 @@ it('会话过期与网络故障分别处理', async () => {
   expect(await auth.restore()).toBe(false)
   vi.mocked(api.getSession).mockRejectedValue(new ApiError('服务不可用', 503))
   await expect(auth.restore()).rejects.toThrow('服务不可用')
+})
+it('改密校验失败时保留会话，成功后清理会话并通知其他标签页', async () => {
+  const auth = useAuthStore()
+  vi.mocked(api.getSession).mockResolvedValue({ ...session, must_change_password: true })
+  vi.mocked(api.changePassword).mockRejectedValueOnce(new ApiError('当前密码不正确', 422)).mockResolvedValueOnce()
+  await auth.restore()
+  await expect(auth.changePassword('wrong', 'private-password')).rejects.toThrow('当前密码不正确')
+  expect(auth.session?.must_change_password).toBe(true)
+  await auth.changePassword('initial-password', 'private-password')
+  expect(auth.session).toBeNull()
+  expect(getWorkspaceId()).toBe('')
+  expect(localStorage.getItem('ea-auth-event')).toBeTruthy()
+  expect(JSON.stringify(localStorage)).not.toContain('private-password')
 })

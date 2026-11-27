@@ -35,7 +35,7 @@ async def list_events(
         当前空间事件和筛选后的统计。
     """
     database: Database = request.app.state.database
-    await AdminService(database.session_factory).authorize(scope)
+    await AdminService(database.session_factory, request.app.state.settings).authorize(scope)
     response.headers["Cache-Control"] = "no-store"
     return await list_system_logs(session, scope.workspace_id, filters)
 
@@ -61,6 +61,6 @@ async def event_detail(
         当前空间中的脱敏事件和时间线。
     """
     database: Database = request.app.state.database
-    await AdminService(database.session_factory).authorize(scope)
+    await AdminService(database.session_factory, request.app.state.settings).authorize(scope)
     response.headers["Cache-Control"] = "no-store"
     return await get_system_log(session, scope.workspace_id, event_id)

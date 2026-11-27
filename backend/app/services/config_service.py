@@ -1,14 +1,16 @@
 """部署级 API 配置，数据库覆盖值优先于环境变量。"""
 
 import asyncio
+import json
 import logging
 from datetime import UTC, datetime
+from typing import Literal
 from urllib.parse import urlsplit
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from cryptography.fernet import Fernet, InvalidToken
 from pydantic import BaseModel, SecretStr, ValidationError
-from sqlalchemy import select
+from sqlalchemy import delete, exists, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -16,9 +18,12 @@ from app.core.config import Settings
 from app.core.errors import ApplicationError
 from app.core.secret_files import cipher_for
 from app.models.config import IntegrationConfig
+from app.schemas.model_profiles import ModelProfileDraft, ModelProfileView
+from app.services.accounts import MAX_MEMBER_PASSWORD_LENGTH, MIN_MEMBER_PASSWORD_LENGTH
 
 logger = logging.getLogger(__name__)
 ENCRYPTED_PREFIX = "fernet:v1:"
+MEMBER_INITIAL_PASSWORD_KEY = "member_initial_password"
 LEGACY_NUMERIC_KEYS = {
     "model_timeout_seconds",
     "model_max_tokens",
@@ -38,7 +43,17 @@ MANAGED_KEYS: dict[str, tuple[bool, str]] = {
     "tavily_api_key": (True, "Tavily API Key"),
     "web_search_timeout_seconds": (False, "搜索超时（秒）"),
     "web_search_max_results": (False, "搜索返回条数"),
+    MEMBER_INITIAL_PASSWORD_KEY: (True, "统一初始密码"),
 }
+ConfigGroup = Literal["llm", "search"]
+SEARCH_KEYS = frozenset({"tavily_api_key", "web_search_timeout_seconds", "web_search_max_results"})
+PROFILE_PREFIX = "llm-profile:"
+ACTIVE_PROFILE_KEY = "llm-active-profile"
+MODEL_CONNECTION_KEYS = frozenset({
+    "llm_provider", "deepseek_model", "deepseek_api_key",
+    "llm_base_url", "llm_model", "llm_vision_model", "llm_api_key",
+})
+SECRET_KEYS = tuple(key for key, (secret, _) in MANAGED_KEYS.items() if secret)
 
 
 class ConfigItem(BaseModel):
@@ -65,7 +80,21 @@ class ConfigService:
     async def _cipher(self, *, create: bool) -> Fernet:
         """文件读写放在线程中，统一屏蔽底层密钥路径。"""
         try:
-            return await asyncio.to_thread(cipher_for, self._settings.integration_config_key_file, create=create)
+            path = self._settings.integration_config_key_file
+            try:
+                return await asyncio.to_thread(cipher_for, path, create=False)
+            except FileNotFoundError:
+                if not create:
+                    raise
+            # 模型单独保存但尚未启用时，也需要保护其密文对应的密钥。
+            async with self._factory() as session:
+                has_ciphertext = await session.scalar(select(exists().where(
+                    or_(IntegrationConfig.key.in_(SECRET_KEYS), IntegrationConfig.key.startswith(PROFILE_PREFIX)),
+                    IntegrationConfig.value.startswith(ENCRYPTED_PREFIX),
+                )))
+            if has_ciphertext:
+                raise FileNotFoundError("配置加密密钥缺失")
+            return await asyncio.to_thread(cipher_for, path, create=True)
         except (OSError, ValueError) as exc:
             raise ApplicationError("CONFIG_KEY_UNAVAILABLE", "无法读取集成配置加密密钥，请检查部署文件", 503) from exc
 
@@ -76,8 +105,16 @@ class ConfigService:
 
     def _validate(self, values: dict[str, str], *, enforce_profile: bool) -> Settings:
         """验证输入类型和供应商地址，拦截密钥跨服务复用。"""
+        password = values.get(MEMBER_INITIAL_PASSWORD_KEY)
+        if password is not None and not (
+            MIN_MEMBER_PASSWORD_LENGTH <= len(password) <= MAX_MEMBER_PASSWORD_LENGTH and password.strip()
+        ):
+            raise ApplicationError("INITIAL_PASSWORD_INVALID", "统一初始密码需为 8 至 128 个字符，且不能全为空白", 422)
         try:
             candidate = Settings.model_validate({**self._settings.model_dump(), **values})
+            # 成员密码单独保存时不依赖模型配置是否齐备。
+            if values.keys() == {MEMBER_INITIAL_PASSWORD_KEY}:
+                return candidate
             if "llm_base_url" in values or candidate.llm_provider == "openai_compatible":
                 url = urlsplit(candidate.llm_base_url)
                 _ = url.port
@@ -149,43 +186,141 @@ class ConfigService:
         if not self._loaded:
             await self.load()
 
+    @staticmethod
+    def _normalize(values: dict[str, str], allowed: set[str]) -> dict[str, str]:
+        """统一检查保存和测试提交的配置值。"""
+        if not values.keys() <= allowed:
+            raise ApplicationError("CONFIG_KEY_UNKNOWN", "存在不可管理的配置项", 422)
+        if any(ch in values.get(MEMBER_INITIAL_PASSWORD_KEY, "") for ch in "\r\n\0"):
+            raise ApplicationError("INITIAL_PASSWORD_INVALID", "统一初始密码需为单行文本", 422)
+        # 密码原样保存，其他配置继续沿用原有的首尾空白处理。
+        normalized = {
+            key: value if key == MEMBER_INITIAL_PASSWORD_KEY else value.strip() for key, value in values.items()
+        }
+        if any(any(ch in value for ch in "\r\n\0") for value in normalized.values()):
+            raise ApplicationError("CONFIG_VALUE_INVALID", "配置值不能包含控制字符", 422)
+        return normalized
+
+    async def settings_for_test(self, group: ConfigGroup, values: dict[str, str]) -> Settings:
+        """按组构造独立快照，仅在地址匹配时复用已保存的模型密钥。"""
+        allowed = (
+            set(SEARCH_KEYS) if group == "search" else MANAGED_KEYS.keys() - SEARCH_KEYS - {MEMBER_INITIAL_PASSWORD_KEY}
+        )
+        values = self._normalize(values, allowed)
+        async with self._lock:
+            await self._ensure_loaded()
+            return self._validate(values, enforce_profile=group == "llm")
+
+    @staticmethod
+    async def _write(session: AsyncSession, values: dict[str, str], user_id: UUID) -> None:
+        """把配置值及对应的模型标识一起写入同一事务。"""
+        updated_at = datetime.now(UTC)
+        statement = insert(IntegrationConfig).values([
+            {"key": key, "value": value, "updated_by": user_id, "updated_at": updated_at}
+            for key, value in values.items()
+        ])
+        await session.execute(statement.on_conflict_do_update(
+            index_elements=[IntegrationConfig.key],
+            set_={
+                "value": statement.excluded.value,
+                "updated_by": statement.excluded.updated_by,
+                "updated_at": statement.excluded.updated_at,
+            },
+        ))
+
+    async def _stored_config(self, values: dict[str, str]) -> dict[str, str]:
+        """加密当前配置中的非空凭据，供保存和模型切换复用。"""
+        secrets = {key: value for key, value in values.items() if key in SECRET_KEYS and value}
+        if not secrets:
+            return values.copy()
+        cipher = await self._cipher(create=True)
+        return {**values, **{
+            key: ENCRYPTED_PREFIX + cipher.encrypt(value.encode()).decode() for key, value in secrets.items()
+        }}
+
     async def update(self, values: dict[str, str], user_id: UUID) -> None:
         """整批校验并保存，避免供应商参数只写入一部分。"""
-        if not values.keys() <= MANAGED_KEYS.keys():
-            raise ApplicationError("CONFIG_KEY_UNKNOWN", "存在不可管理的配置项", 422)
-        values = {key: value.strip() for key, value in values.items()}
-        if any(any(ch in value for ch in "\r\n\0") for value in values.values()):
-            raise ApplicationError("CONFIG_VALUE_INVALID", "配置值不能包含控制字符", 422)
+        values = self._normalize(values, set(MANAGED_KEYS))
         async with self._lock:
             await self._ensure_loaded()
             candidate = self._validate(values, enforce_profile=True)
-            secrets = {key: value for key, value in values.items() if MANAGED_KEYS[key][0] and value}
-            stored = values.copy()
-            if secrets:
-                cipher = await self._cipher(create=True)
-                stored.update(
-                    {key: ENCRYPTED_PREFIX + cipher.encrypt(value.encode()).decode() for key, value in secrets.items()}
-                )
+            stored = await self._stored_config(values)
+            connection_changed = any(
+                getattr(self._settings, key) != getattr(candidate, key) for key in values.keys() & MODEL_CONNECTION_KEYS
+            )
             async with self._factory.begin() as session:
-                updated_at = datetime.now(UTC)
-                statement = insert(IntegrationConfig).values(
-                    [
-                        {"key": key, "value": value, "updated_by": user_id, "updated_at": updated_at}
-                        for key, value in stored.items()
-                    ]
-                )
-                await session.execute(
-                    statement.on_conflict_do_update(
-                        index_elements=[IntegrationConfig.key],
-                        set_={
-                            "value": statement.excluded.value,
-                            "updated_by": statement.excluded.updated_by,
-                            "updated_at": statement.excluded.updated_at,
-                        },
-                    )
-                )
+                await self._write(session, stored, user_id)
+                if connection_changed:
+                    await session.execute(delete(IntegrationConfig).where(IntegrationConfig.key == ACTIVE_PROFILE_KEY))
             self._apply(candidate, values)
             logger.info("config_updated", extra={"keys": list(values)})
+
+    @staticmethod
+    def _profile_view(profile: ModelProfileDraft, profile_id: UUID, active: bool) -> ModelProfileView:
+        """转换为可公开给管理页面的模型选项。"""
+        return ModelProfileView(
+            **profile.model_dump(exclude={"api_key"}),
+            id=profile_id,
+            active=active,
+            has_api_key=bool(profile.api_key.get_secret_value().strip()),
+        )
+
+    @staticmethod
+    def _decode_profile(row: IntegrationConfig, cipher: Fernet) -> ModelProfileDraft:
+        """读取加密模型记录，并为密钥不匹配提供固定错误提示。"""
+        try:
+            if not row.value.startswith(ENCRYPTED_PREFIX):
+                raise ValueError("模型记录缺少加密标识")
+            encoded = row.value.removeprefix(ENCRYPTED_PREFIX).encode()
+            return ModelProfileDraft.model_validate_json(cipher.decrypt(encoded))
+        except (InvalidToken, ValueError) as exc:
+            raise ApplicationError("MODEL_PROFILE_UNAVAILABLE", "已保存模型无法读取，请检查集成配置密钥", 503) from exc
+
+    async def list_model_profiles(self) -> list[ModelProfileView]:
+        """列出管理端模型选项和当前选中的默认项。"""
+        async with self._lock, self._factory() as session:
+            active = await session.get(IntegrationConfig, ACTIVE_PROFILE_KEY)
+            rows = (await session.scalars(
+                select(IntegrationConfig).where(IntegrationConfig.key.startswith(PROFILE_PREFIX))
+                .order_by(IntegrationConfig.updated_at.desc(), IntegrationConfig.key)
+            )).all()
+            if not rows:
+                return []
+            cipher = await self._cipher(create=False)
+            return [self._profile_view(
+                self._decode_profile(row, cipher),
+                UUID(row.key.removeprefix(PROFILE_PREFIX)),
+                active is not None and active.value == row.key.removeprefix(PROFILE_PREFIX),
+            ) for row in rows]
+
+    async def add_model_profile(self, draft: ModelProfileDraft, user_id: UUID) -> ModelProfileView:
+        """加密保存独立模型配置，等待管理员选择默认项。"""
+        profile_id = uuid4()
+        values = self._normalize(draft.config_values(), set(MODEL_CONNECTION_KEYS))
+        async with self._lock:
+            await self._ensure_loaded()
+            self._validate(values, enforce_profile=True)
+            cipher = await self._cipher(create=True)
+            payload = {**draft.model_dump(exclude={"api_key"}), "api_key": draft.api_key.get_secret_value().strip()}
+            encrypted = ENCRYPTED_PREFIX + cipher.encrypt(json.dumps(payload).encode()).decode()
+            async with self._factory.begin() as session:
+                await self._write(session, {f"{PROFILE_PREFIX}{profile_id}": encrypted}, user_id)
+        return self._profile_view(draft, profile_id, active=False)
+
+    async def activate_model_profile(self, profile_id: UUID, user_id: UUID) -> None:
+        """原子更新默认模型及其凭据，事务提交后切换后续调用。"""
+        async with self._lock:
+            await self._ensure_loaded()
+            async with self._factory.begin() as session:
+                row = await session.get(IntegrationConfig, f"{PROFILE_PREFIX}{profile_id}")
+                if row is None:
+                    raise ApplicationError("MODEL_PROFILE_NOT_FOUND", "找不到这个模型配置", 404)
+                draft = self._decode_profile(row, await self._cipher(create=False))
+                values = self._normalize(draft.config_values(), set(MODEL_CONNECTION_KEYS))
+                candidate = self._validate(values, enforce_profile=True)
+                stored = await self._stored_config(values)
+                await self._write(session, {**stored, ACTIVE_PROFILE_KEY: str(profile_id)}, user_id)
+            self._apply(candidate, values)
 
     async def list_configs(self) -> list[ConfigItem]:
         """读取生效配置和更新时间，密钥只显示有无。"""

@@ -83,3 +83,21 @@ it('登录失败展示公开错误并清空密码', async () => {
   expect(router.currentRoute.value.path).toBe('/login')
   wrapper.unmount()
 })
+
+it.each([
+  ['/chat/linked?workspace_id=space', '/chat/linked?workspace_id=space'],
+  ['//outside.invalid/chat', '/chat'],
+])('登录后处理对话链接 %s', async (target, expected) => {
+  const router = createRouter({ history: createMemoryHistory(), routes: [
+    { path: '/login', component: LoginView },
+    { path: '/chat/:conversationId?', name: 'chat', component: { template: '<div>问答</div>' } },
+  ] })
+  await router.push({ path: '/login', query: { return_to: target } })
+  vi.mocked(api.login).mockResolvedValue({ user: { id: 'u1', username: 'alice', display_name: '甲' }, workspaces: [], csrf_token: 'csrf', expires_at: '' })
+  const wrapper = mount(LoginView, { global: { plugins: [createPinia(), router] } })
+  await wrapper.get('#username').setValue('alice')
+  await wrapper.get('form').trigger('submit')
+  await flushPromises()
+  expect(router.currentRoute.value.fullPath).toBe(expected)
+  wrapper.unmount()
+})

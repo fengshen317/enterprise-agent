@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { ApiError } from '../api/client'
 import { createInitialAdmin, getInitialSetup, type InitialSetupStatus } from '../api/initialSetup'
 
 const MIN_PASSWORD_LENGTH = 4
 const router = useRouter()
+const route = useRoute()
 const auth = useAuthStore()
 const username = ref('')
 const password = ref('')
@@ -20,7 +21,7 @@ const setupPassword = ref('')
 const confirmPassword = ref('')
 const setupBusy = ref(false)
 const setupError = ref('')
-const notice = ref('')
+const notice = ref(route.query.password_changed === '1' ? '密码已修改，请使用新密码登录。' : '')
 
 async function loadSetup(): Promise<void> {
   try {
@@ -75,7 +76,13 @@ onMounted(loadSetup)
 async function signIn(): Promise<void> {
   if (busy.value) return
   busy.value = true; error.value = ''
-  try { await auth.signIn(username.value, password.value); password.value = ''; await router.replace('/chat') }
+  try {
+    await auth.signIn(username.value, password.value)
+    password.value = ''
+    const target = route.query.return_to
+    const conversation = typeof target === 'string' && target.startsWith('/chat/') && router.resolve(target).name === 'chat'
+    await router.replace(conversation ? target : '/chat')
+  }
   catch (value) {
     error.value = value instanceof Error ? value.message : '登录失败，请稍后重试'
     if (value instanceof ApiError && value.requestId) error.value += ' · 请求标识：' + value.requestId

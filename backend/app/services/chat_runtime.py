@@ -82,11 +82,20 @@ class ChatRuntime:
         self.registry = registry or build_default_registry(settings, knowledge_service, schedule_store)
         self.assembler = AgentAssembler(database.session_factory, self.registry, settings, knowledge_service)
         self.tasks: dict[UUID, asyncio.Task[None]] = {}
+        self._live_content: dict[UUID, str] = {}
         self.lock = asyncio.Lock()
         self.lease: AsyncConnection | None = None
         self.closing = False
         # 渠道等旁路在运行落库后推送结果；监听器失败不能改变问答终态。
         self.on_run_finished: list[Callable[[UUID], Awaitable[None]]] = []
+
+    async def snapshot(self, run_id: UUID) -> RunSnapshot:
+        """给已鉴权的网页订阅叠加运行中的正文，历史和渠道继续读取已提交数据。"""
+        snapshot = await self.store.snapshot(run_id)
+        live = self._live_content.get(run_id)
+        if live is not None and snapshot.run.status in ACTIVE:
+            return snapshot.model_copy(update={"message": snapshot.message.model_copy(update={"content": live})})
+        return snapshot
 
     async def ensure_ready(self) -> None:
         """首次问答访问获得数据库会话锁并恢复遗留状态。
@@ -310,6 +319,10 @@ class ChatRuntime:
         channel = {"channel": "wechat"} if request_id.startswith("wechat-") else {}
         logger.info("run_started", extra={"run_id": str(run_id), "request_id": request_id})
 
+        def publish_preview(preview: str) -> None:
+            """只在内存发布本次尝试，重试时直接替换旧草稿。"""
+            self._live_content[run_id] = (content + preview)[: self.settings.model_output_characters]
+
         async def generate() -> None:
             """生成正文时共享累计内容，取消仍可保留已接收片段。"""
             nonlocal content, claimed
@@ -365,8 +378,8 @@ class ChatRuntime:
                         schedule_store=self.schedule_store,
                     ),
                 )
-            if state.images and isinstance(provider, DeepSeekProvider):
-                stream = provider.stream(history, images=state.images)
+            if isinstance(provider, DeepSeekProvider):
+                stream = provider.stream(history, images=state.images, on_preview=publish_preview)
             else:
                 stream = provider.stream(history)
             async for fragment in stream:
@@ -374,6 +387,7 @@ class ChatRuntime:
                 if len(content) > self.settings.model_output_characters:
                     content = content[: self.settings.model_output_characters]
                     raise ApplicationError("OUTPUT_TOO_LONG", "回答超过长度限制，请缩小问题范围", 422)
+                publish_preview("")
                 if len(content) - saved_length >= FLUSH_CHARACTERS or monotonic() - saved_at >= FLUSH_INTERVAL:
                     await self.store.save_content(run_id, content)
                     saved_length, saved_at = len(content), monotonic()
@@ -406,12 +420,20 @@ class ChatRuntime:
             for task in tasks:
                 if not task.done():
                     task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            finally:
+                self._live_content.pop(run_id, None)
         if self.closing and status == "cancelled" and await self.store.recoverable_schedules(run_id):
             return
         if not claimed and status == "completed":
             return
-        terminal = await self.store.finish(run_id, content, status, code, error)
+        # 终态提交期间保留已确认正文，避免前端先回到旧快照再显示结果。
+        publish_preview("")
+        try:
+            terminal = await self.store.finish(run_id, content, status, code, error)
+        finally:
+            self._live_content.pop(run_id, None)
         if terminal is not None and self.log_recorder is not None:
             final_status, final_code = terminal
             outcome: Outcome = (

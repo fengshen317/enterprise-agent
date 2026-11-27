@@ -2,13 +2,16 @@
 
 import asyncio
 import re
+import secrets
 from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import Settings
 from app.core.errors import ApplicationError
+from app.core.secret_files import read_or_create_secret
 from app.core.security import hash_password, normalize_username
 from app.models.conversation import Conversation, Run
 from app.models.identity import User, Workspace, WorkspaceMembership
@@ -16,6 +19,41 @@ from app.models.system import FIRST_ADMIN_KEY, SystemMetadata
 
 ACCOUNT_LOCK = 782341913
 MIN_PASSWORD_LENGTH = 4
+MIN_MEMBER_PASSWORD_LENGTH = 8
+MAX_MEMBER_PASSWORD_LENGTH = 128
+INITIAL_PASSWORD_BYTES = 24
+
+
+def member_initial_password(settings: Settings, *, create: bool = False) -> str:
+    """共享初始密码来源于部署配置，首次开通时可生成并持久化。"""
+    configured = settings.member_initial_password.get_secret_value()
+    if configured:
+        password = configured
+    else:
+        generated = secrets.token_urlsafe(INITIAL_PASSWORD_BYTES).encode() + b"\n" if create else None
+        try:
+            password = read_or_create_secret(settings.member_initial_password_file, generated).decode().rstrip("\r\n")
+        except FileNotFoundError as exc:
+            if not create:
+                return ""
+            raise ApplicationError(
+                "INITIAL_PASSWORD_UNAVAILABLE", "无法读取成员初始密码，请联系部署管理员", 503
+            ) from exc
+        except (OSError, UnicodeError) as exc:
+            raise ApplicationError(
+                "INITIAL_PASSWORD_UNAVAILABLE", "无法读取成员初始密码，请联系部署管理员", 503
+            ) from exc
+    if create and not (MIN_MEMBER_PASSWORD_LENGTH <= len(password) <= MAX_MEMBER_PASSWORD_LENGTH and password.strip()):
+        raise ApplicationError("INITIAL_PASSWORD_INVALID", "成员初始密码需为 8 至 128 个字符，请检查部署配置", 503)
+    return password
+
+
+def replace_password_hash(user: User, encoded: str, *, must_change: bool = False) -> None:
+    """同时更新凭证和版本，使所有旧会话随事务提交一起失效。"""
+    user.password_hash = encoded
+    user.must_change_password = must_change
+    user.session_version += 1
+    user.password_changed_at = user.updated_at = datetime.now(UTC)
 
 
 def _validate_new_password(password: str) -> None:
@@ -197,7 +235,4 @@ class AccountManager:
             user = await session.scalar(select(User).where(User.username == username).with_for_update())
             if user is None:
                 raise ApplicationError("ACCOUNT_NOT_FOUND", "账号不存在", 404)
-            user.password_hash = encoded
-            user.session_version += 1
-            user.password_changed_at = datetime.now(UTC)
-            user.updated_at = datetime.now(UTC)
+            replace_password_hash(user, encoded)

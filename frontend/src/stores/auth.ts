@@ -53,11 +53,21 @@ export const useAuthStore = defineStore('auth', () => {
     clear()
     localStorage.setItem('ea-auth-event', crypto.randomUUID())
   }
+  async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    try {
+      await api.changePassword(currentPassword, newPassword)
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) clear()
+      throw error
+    }
+    clear()
+    localStorage.setItem('ea-auth-event', crypto.randomUUID())
+  }
   function selectWorkspace(id: string): void {
     if (!session.value?.workspaces.some(item => item.id === id)) throw new Error('不可访问该工作空间')
     setSecurityContext(session.value.csrf_token, id)
     selectedWorkspaceId.value = id
     localStorage.setItem('ea-workspace:' + session.value.user.id, id)
   }
-  return { session, selectedWorkspaceId, initialized, authenticated, activeWorkspace, restore, signIn, signOut, selectWorkspace, clear }
+  return { session, selectedWorkspaceId, initialized, authenticated, activeWorkspace, restore, signIn, signOut, changePassword, selectWorkspace, clear }
 })

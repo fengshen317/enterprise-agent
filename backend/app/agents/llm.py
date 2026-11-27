@@ -2,6 +2,7 @@
 
 from typing import TYPE_CHECKING
 
+from httpx import Timeout
 from pydantic import SecretStr
 
 from app.core.config import Settings
@@ -44,7 +45,8 @@ def create_llm(
             model=vision_model(settings) if vision else settings.llm_model,
             api_key=settings.llm_api_key if settings.llm_api_key.get_secret_value() else SecretStr("local-no-auth"),
             base_url=settings.llm_base_url,
-            timeout=settings.model_timeout_seconds,
+            # SDK 会缓存数字超时对应的客户端，独立超时对象避免结束一轮时关闭其他轮次的连接。
+            timeout=Timeout(settings.model_timeout_seconds),
             max_completion_tokens=max_tokens or settings.model_max_tokens,
             max_retries=0,
             streaming=streaming,

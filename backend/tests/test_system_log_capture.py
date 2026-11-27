@@ -3,7 +3,7 @@
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import httpx
@@ -53,9 +53,16 @@ async def test_ima_failure_correlates_request_run_and_tool_without_payloads(
             )
         return await original_post(client, url, **kwargs)
 
-    async def stream(provider: DeepSeekProvider, history: list[tuple[str, str]]) -> AsyncIterator[str]:
+    async def stream(
+        provider: DeepSeekProvider,
+        history: list[tuple[str, str]],
+        *,
+        images: tuple[tuple[str, bytes], ...] = (),
+        on_preview: Callable[[str], None] | None = None,
+    ) -> AsyncIterator[str]:
         """由测试模型发起一次真实工具执行，工具失败后继续回答。"""
         assert history[-1][1] == _PRIVATE
+        assert not images and on_preview is not None
         assert provider.tool_executor is not None
         tool_result.update(json.loads(await provider.tool_executor.invoke(_IMA_TOOL, {})))
         yield "工具返回格式错误，已结束排查。"

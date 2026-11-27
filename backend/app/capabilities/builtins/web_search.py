@@ -21,14 +21,14 @@ class WebSearchArgs(BaseModel):
     max_results: int = Field(default=5, ge=1, le=10)
 
 
-async def _tavily_search(api_key: str, query: str, max_results: int, timeout_seconds: float) -> list[dict[str, Any]]:
+async def search_tavily(api_key: str, query: str, max_results: int, timeout_seconds: float) -> list[dict[str, Any]]:
     """调用 Tavily 搜索 API。
 
     Args:
         api_key: Tavily API Key。
         query: 搜索问题。
         max_results: 返回条数。
-        timeout: 超时秒数。
+        timeout_seconds: 超时秒数。
 
     Returns:
         搜索结果列表。
@@ -49,7 +49,9 @@ async def _tavily_search(api_key: str, query: str, max_results: int, timeout_sec
             )
             response.raise_for_status()
             data = response.json()
-            results = data.get("results", [])
+            results = data.get("results") if isinstance(data, dict) else None
+            if not isinstance(results, list):
+                raise ValueError("搜索响应缺少结果列表")
             return [r for r in results if isinstance(r, dict)]
     except httpx.TimeoutException:
         raise ApplicationError("WEB_SEARCH_TIMEOUT", "联网搜索超时", 504) from None
@@ -84,7 +86,7 @@ def web_search_spec(settings: Settings) -> ToolSpec:
         api_key = settings.tavily_api_key.get_secret_value().strip()
         if not api_key:
             raise ApplicationError("WEB_SEARCH_NOT_CONFIGURED", "联网搜索未配置 API Key", 503)
-        results = await _tavily_search(
+        results = await search_tavily(
             api_key, arguments.query, min(arguments.max_results, settings.web_search_max_results),
             settings.web_search_timeout_seconds,
         )

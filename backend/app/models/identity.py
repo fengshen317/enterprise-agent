@@ -53,6 +53,7 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(64), unique=True)
     display_name: Mapped[str] = mapped_column(String(100))
     password_hash: Mapped[str] = mapped_column(Text)
+    must_change_password: Mapped[bool] = mapped_column(default=False, server_default="false")
     status: Mapped[str] = mapped_column(
         String(16), default=UserStatus.ACTIVE.value, server_default=UserStatus.ACTIVE.value
     )

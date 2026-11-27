@@ -49,7 +49,8 @@ async def test_session_cookie_rotation_logout_and_csrf(chat: tuple[FastAPI, Asyn
     assert response.status_code == 200
     assert "HttpOnly" in response.headers["set-cookie"]
     assert "SameSite=lax" in response.headers["set-cookie"] and "Path=/api" in response.headers["set-cookie"]
-    assert "password" not in response.text and original not in response.text
+    assert response.json()["must_change_password"] is False
+    assert TEST_PASSWORD not in response.text and "password_hash" not in response.text and original not in response.text
     assert client.cookies.get(COOKIE_NAME) != original
     with pytest.raises(ApplicationError):
         await app.state.auth_service.authenticate(original)

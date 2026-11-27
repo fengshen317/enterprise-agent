@@ -5,6 +5,7 @@ import json
 import httpx
 import pytest
 
+from app.agents.llm import create_llm
 from app.agents.provider import DeepSeekProvider
 from app.core.config import Settings
 from app.core.errors import ApplicationError
@@ -15,6 +16,24 @@ def test_missing_model_key() -> None:
     provider = DeepSeekProvider(Settings(_env_file=None, deepseek_api_key=""))
     with pytest.raises(ApplicationError, match="API 配置"):
         provider.validate()
+
+
+@pytest.mark.parametrize("provider_name", ["deepseek", "openai_compatible"])
+async def test_closing_one_model_keeps_other_runs_open(provider_name: str) -> None:
+    """停止一条生成后，同供应商的其他运行仍可发送请求。"""
+    settings = Settings(
+        _env_file=None, llm_provider=provider_name, deepseek_api_key="test-only", llm_model="fixture-model"
+    )
+    first = create_llm(settings, streaming=True)
+    second = create_llm(settings, streaming=True)
+    try:
+        await first.root_async_client.close()
+        first.root_client.close()
+        assert not second.root_async_client.is_closed()
+        assert not second.root_client.is_closed()
+    finally:
+        await second.root_async_client.close()
+        second.root_client.close()
 
 
 @pytest.mark.parametrize("finish_reason", ["stop", "length", "tool_calls"])
@@ -109,16 +128,21 @@ async def test_real_sdk_stream_with_mock_http(
             )
         )
         provider.validate()
+        previews: list[str] = []
+        stream = provider.stream([("user", "你好")], on_preview=previews.append)
         if finish_reason == "tool_calls":
             with pytest.raises(ApplicationError, match="不支持执行工具"):
-                _ = [part async for part in provider.stream([("user", "你好")])]
+                _ = [part async for part in stream]
+            assert not any(previews)
             return
         if finish_reason == "length":
             with pytest.raises(ApplicationError, match="模型回答达到长度限制"):
-                _ = [part async for part in provider.stream([("user", "你好")])]
+                _ = [part async for part in stream]
             return
-        output = "".join([part async for part in provider.stream([("user", "你好")])])
+        output = "".join([part async for part in stream])
     assert output == "你好，世界"
+    assert [part for part in previews if part] == ["你好", "你好，世界"]
+    assert previews[-1] == ""
     assert len(captured) == 1
     assert captured[0]["messages"][-1] == {"role": "user", "content": "你好"}
 
