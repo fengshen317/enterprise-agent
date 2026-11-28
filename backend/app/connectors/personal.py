@@ -16,11 +16,11 @@ from app.connectors.base import (
     make_tool_key,
 )
 from app.connectors.dynamic_args import make_args_model
+from app.core.config import Settings
 from app.services.personal_credentials import read_credentials
 
 AdapterCall = Callable[[str, dict[str, object], dict[str, str]], Awaitable[object]]
 _TOOL_TIMEOUT_SECONDS = 45
-_TOOL_QUOTA_PER_RUN = 8
 ADAPTERS: dict[str, tuple[tuple[ConnectorToolDef, ...], AdapterCall]] = {
     "qq_mail": (qq_mail.TOOLS, qq_mail.invoke),
     "ima": (ima.TOOLS, ima.invoke),
@@ -32,9 +32,10 @@ ADAPTERS: dict[str, tuple[tuple[ConnectorToolDef, ...], AdapterCall]] = {
 class PersonalConnector:
     """工具可以共享定义，凭证仅在每次调用时按 Run 身份获取。"""
 
-    def __init__(self, key: str) -> None:
+    def __init__(self, key: str, settings: Settings) -> None:
         """保存无凭证的适配器定义。"""
         self.key = key
+        self._settings = settings
         self.kind: ConnectorKind = "cli" if key == "tencent_news" else "api"
         self.definitions, self.invoke = ADAPTERS[key]
 
@@ -62,6 +63,8 @@ class PersonalConnector:
         """闭包只捕获工具名，避免缓存用户凭证或复用上次调用身份。"""
         key = make_tool_key(self.key, definition.name)
         risk = override.risk if override else definition.risk
+        # 这里只分类服务端内置动作，不根据外部插件的任意名称推断权限或预算。
+        is_search = definition.name.startswith("search")
 
         async def handler(context: ToolContext, arguments: BaseModel) -> object:
             """仅在权限复核后使用该成员的凭证发起一次请求。"""
@@ -86,7 +89,11 @@ class PersonalConnector:
             risk=risk,
             approval=override.approval if override else definition.approval,
             timeout_seconds=_TOOL_TIMEOUT_SECONDS,
-            quota_per_run=_TOOL_QUOTA_PER_RUN,
+            quota_per_run=(
+                self._settings.tool_search_max_calls_per_run if is_search
+                else self._settings.tool_read_max_calls_per_run
+            ),
+            budget_kind="search" if is_search else "read",
             handler=handler,
             audit=audit,
             source="connector",

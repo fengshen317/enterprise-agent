@@ -45,13 +45,15 @@ def material_specs(settings: Settings) -> tuple[ToolSpec, ToolSpec]:
             description="跨对话搜索本人在当前工作空间上传的材料。按文件名和提取文字查找，请用简短关键词。",
             args_model=SearchMaterialsArgs, risk="read", approval="never",
             timeout_seconds=settings.tool_timeout_seconds,
-            quota_per_run=4, handler=search, audit=audit_search,
+            quota_per_run=settings.tool_search_max_calls_per_run, budget_kind="search",
+            handler=search, audit=audit_search,
         ),
         ToolSpec(
             key=READ_MATERIAL, version=1, display_name="读取个人材料",
             description=("用已确认的材料 ID 分段读取提取的文字，按 next_offset 翻页。"
                          "图片可通过文件名定位并提供原图链接。"),
             args_model=ReadMaterialArgs, risk="read", approval="never", timeout_seconds=settings.tool_timeout_seconds,
-            quota_per_run=4, handler=read, audit=audit_read,
+            quota_per_run=settings.tool_read_max_calls_per_run, budget_kind="read",
+            handler=read, audit=audit_read,
         ),
     )

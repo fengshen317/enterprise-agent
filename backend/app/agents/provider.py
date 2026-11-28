@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 ChatHistory = list[tuple[str, str]]
 _PREVIEW_START = "assistant_preview_start"
 _PREVIEW_CLEAR = "assistant_preview_clear"
+_GRAPH_STEPS_PER_MODEL_CALL = 3
 
 
 def load_agent_sdk() -> None:
@@ -144,7 +145,7 @@ class DeepSeekProvider:
                     Returns:
                         带审计标识的 JSON 结果。
                     """
-                    return await executor.invoke(_key, kwargs)
+                    return await executor.invoke(_key, kwargs, reserve_final=self.child_role is not None)
 
                 allowed_tools.append(
                     StructuredTool.from_function(
@@ -156,6 +157,7 @@ class DeepSeekProvider:
                 )
         permitted = {spec.key for spec in assembly.tools} if assembly is not None else set()
         system_prompt = assembly.system_prompt(self.child_role) if assembly is not None else BASE_SYSTEM_PROMPT
+        closing_due_to_budget = False
 
         @wrap_tool_call
         async def authorized_tool(
@@ -173,7 +175,9 @@ class DeepSeekProvider:
             if executor is None or request.tool_call["name"] not in permitted:
                 raise ApplicationError("TOOL_NOT_ALLOWED", "当前工具未获授权", 403)
             return ToolMessage(
-                content=await executor.invoke(request.tool_call["name"], request.tool_call["args"]),
+                content=await executor.invoke(
+                    request.tool_call["name"], request.tool_call["args"], reserve_final=self.child_role is not None
+                ),
                 tool_call_id=request.tool_call["id"],
             )
 
@@ -193,6 +197,7 @@ class DeepSeekProvider:
 
             async def invoke_model() -> ModelResponse:
                 """将单次模型动作作为重试边界，避免重放已完成工具。"""
+                nonlocal closing_due_to_budget
                 # 内联图片有独立的字节和数量限制，不能把 base64 算进文本预算。
                 characters = 0
                 for message in request.messages:
@@ -211,12 +216,15 @@ class DeepSeekProvider:
                 active_tools = list(allowed_tools)
                 model_request = request
                 if executor is not None:
-                    exhausted = await executor.exhausted_tool_keys() & permitted
+                    budget = await executor.budget_snapshot(reserve_final=self.child_role is not None)
+                    closing_due_to_budget = closing_due_to_budget or budget.closing
+                    exhausted = budget.exhausted & permitted
                     if exhausted:
                         active_tools = [tool for tool in allowed_tools if tool.name not in exhausted]
                         notice = (
                             "本轮以下工具的调用配额已耗尽，已移除：" + "、".join(sorted(exhausted))
                             + "。请使用已有查询结果回答；资料不足时明确说明，不能编造或重复调用这些工具。"
+                            "用户继续提问会开启新一轮查询，请说明仍需补查的范围。"
                         )
                         content = request.system_message.content if request.system_message is not None else ""
                         updated_content = (
@@ -237,7 +245,7 @@ class DeepSeekProvider:
                     raise
 
             response = (
-                await executor.model_call(invoke_model)
+                await executor.model_call(invoke_model, reserve_final=self.child_role is not None)
                 if isinstance(executor, ChatAgentExecutor)
                 else await invoke_model()
             )
@@ -275,8 +283,10 @@ class DeepSeekProvider:
             modes: list[StreamMode] = ["updates"] if on_preview is None else ["updates", "messages", "custom"]
             preview = ""
             publishing = False
+            has_answer = False
             async for event in agent.astream(
-                state, stream_mode=modes, version="v2", config={"recursion_limit": 40}
+                state, stream_mode=modes, version="v2",
+                config={"recursion_limit": self.settings.model_max_calls_per_run * _GRAPH_STEPS_PER_MODEL_CALL}
             ):
                 # 独立运行的子图会继承父图命名空间，正文过滤只用于根对话的公开预览。
                 if on_preview is not None and event["ns"]:
@@ -314,9 +324,14 @@ class DeepSeekProvider:
                                 "MODEL_OUTPUT_TRUNCATED", "模型回答达到长度限制，请缩小问题范围", 422
                             )
                         if not message.tool_calls and message.text:
+                            has_answer = has_answer or bool(message.text.strip())
                             yield message.text
                 if on_preview is not None:
                     on_preview("")
+            if closing_due_to_budget and has_answer and self.child_role is None:
+                from app.services.tool_budget import BUDGET_CLOSING_NOTE
+
+                yield "\n\n> " + BUDGET_CLOSING_NOTE
         finally:
             await model.root_async_client.close()
             await asyncio.to_thread(model.root_client.close)

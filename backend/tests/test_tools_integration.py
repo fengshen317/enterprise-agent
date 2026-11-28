@@ -2,20 +2,25 @@
 
 import asyncio
 import json
+from dataclasses import replace
 from uuid import UUID
 
 import httpx
 import pytest
 from fastapi import FastAPI
+from pydantic import BaseModel
 from sqlalchemy import select, update
 
 from app.agents.provider import DeepSeekProvider
+from app.capabilities.spec import ToolContext
 from app.connectors.base import ConnectorError
 from app.core.errors import ApplicationError
 from app.models.identity import Workspace, WorkspaceMembership
 from app.models.tool_call import ToolCall
 from app.schemas.chat import RunCreate
 from app.schemas.tools import TOOL_NAME, RunStatsArgs
+from app.services.chat_agent import ChatAgentExecutor
+from app.services.tool_budget import BUDGET_CLOSING_NOTE
 from app.services.tools import ToolExecutor
 from tests.auth_helpers import add_identity
 from tests.test_chat_integration import ControlledProvider, new_conversation, settled, submit
@@ -198,11 +203,14 @@ async def test_revoke_before_publishing_drops_tool_result(
     assert (await client.get(f"/api/runs/{executor.run_id}/tool-calls")).status_code == 403
 
 
-@pytest.mark.parametrize("call_limit", [1, 8])
-@pytest.mark.parametrize("requested_tool", [TOOL_NAME, "task", "read_file"])
+@pytest.mark.parametrize(
+    "requested_tool,call_limit,total_limit,model_limit",
+    [(TOOL_NAME, 1, 30, 30), (TOOL_NAME, 8, 30, 30), (TOOL_NAME, 8, 1, 30), (TOOL_NAME, 8, 30, 2),
+     ("task", 1, 30, 30), ("task", 8, 30, 30), ("read_file", 1, 30, 30), ("read_file", 8, 30, 30)],
+)
 async def test_real_sdk_tool_roundtrip_and_builtin_denial(
     chat: tuple[FastAPI, httpx.AsyncClient, ControlledProvider],
-    monkeypatch: pytest.MonkeyPatch, requested_tool: str, call_limit: int
+    monkeypatch: pytest.MonkeyPatch, requested_tool: str, call_limit: int, total_limit: int, model_limit: int
 ) -> None:
     """真实 Deep Agents 图执行数据库工具，内置能力在执行前被拒绝。
 
@@ -211,6 +219,8 @@ async def test_real_sdk_tool_roundtrip_and_builtin_denial(
         monkeypatch: 只替换供应商 HTTP 传输。
         requested_tool: 模型尝试调用的工具。
         call_limit: 业务工具的运行内配额。
+        total_limit: 所有业务工具共享的总预算。
+        model_limit: 主子助手共享的模型动作总预算。
     """
     from langchain_deepseek import ChatDeepSeek
 
@@ -239,10 +249,12 @@ async def test_real_sdk_tool_roundtrip_and_builtin_denial(
             "publish_private_skill",
             "create_private_agent",
         }
+        if len(captured) > 1 and (total_limit == 1 or model_limit == 2):
+            expected_tools.clear()
         if len(captured) > 1 and call_limit == 1:
             expected_tools.remove(TOOL_NAME)
             assert "配额已耗尽" in body["messages"][0]["content"]
-        assert {item["function"]["name"] for item in body["tools"]} == expected_tools
+        assert {item["function"]["name"] for item in body.get("tools", [])} == expected_tools
         if len(captured) == 1:
             delta = {
                 "tool_calls": [
@@ -288,7 +300,10 @@ async def test_real_sdk_tool_roundtrip_and_builtin_denial(
         monkeypatch.setattr("langchain_deepseek.ChatDeepSeek", model)
         runtime = app.state.chat_runtime
         runtime.settings = runtime.settings.model_copy(
-            update={"deepseek_api_key": "test-only", "tool_max_calls_per_run": call_limit}
+            update={
+                "deepseek_api_key": "test-only", "tool_max_calls_per_run": call_limit,
+                "tool_total_calls_per_run": total_limit, "model_max_calls_per_run": model_limit,
+            }
         )
         # model_copy 不执行 SecretStr 转换，明确构造有效类型。
         from pydantic import SecretStr
@@ -305,7 +320,10 @@ async def test_real_sdk_tool_roundtrip_and_builtin_denial(
         ]
         if requested_tool == TOOL_NAME:
             assert terminal["run"]["status"] == "completed", terminal
-            assert terminal["message"]["content"] == "最近7天有1次运行（包含本次）。"
+            expected_answer = "最近7天有1次运行（包含本次）。"
+            if total_limit == 1 or model_limit == 2:
+                expected_answer += "\n\n> " + BUDGET_CLOSING_NOTE
+            assert terminal["message"]["content"] == expected_answer
             assert len(captured) == 2 and audits[0]["status"] == "completed"
         else:
             assert terminal["run"]["error_code"] == "TOOL_NOT_ALLOWED", terminal
@@ -393,3 +411,102 @@ async def test_connector_failure_keeps_safe_category_in_result_and_audit(
     assert rows[0]["status"] == "failed"
     assert rows[0]["error_code"] == expected_code
     assert "private" not in json.dumps(rows)
+
+
+async def test_business_budget_is_shared_across_tools_and_executor_instances(
+    chat: tuple[FastAPI, httpx.AsyncClient, ControlledProvider],
+) -> None:
+    """不同工具、不同执行器的并发请求也只能占用同一份业务总预算。"""
+    app, client, _ = chat
+    executor = await executor_for(app, client)
+    executor.settings = executor.settings.model_copy(update={"tool_total_calls_per_run": 2})
+    base = executor.assembly.tool_map[TOOL_NAME]
+    executor.assembly = replace(
+        executor.assembly,
+        tools=(
+            replace(base, key="budget_first", quota_per_run=15),
+            replace(base, key="budget_second", quota_per_run=15),
+        ),
+    )
+    other = ToolExecutor(executor.factory, executor.settings, executor.run_id, assembly=executor.assembly)
+    outcomes = await asyncio.gather(
+        *(target.invoke(name, {"days": index + 1}) for index, (target, name) in enumerate([
+            (executor, "budget_first"), (other, "budget_second"),
+            (executor, "budget_first"), (other, "budget_second"),
+        ]))
+    )
+    assert sum(json.loads(value)["ok"] for value in outcomes) == 2
+    budget = await other.budget_snapshot()
+    assert budget.business_calls == 2 and budget.closing
+    assert budget.exhausted == executor.assembly.tool_keys
+    async with executor.factory() as session:
+        rows = (await session.scalars(select(ToolCall).where(ToolCall.run_id == executor.run_id))).all()
+    assert sum(row.budget_reserved for row in rows) == 2
+    assert all(not row.is_system for row in rows)
+    assert sum(row.error_code == "TOOL_CALL_LIMIT" for row in rows) == 2
+    # 下一轮有新的 Run，使用相同工具也不会继承上一轮用尽的次数。
+    fresh = await executor_for(app, client)
+    assert (await fresh.budget_snapshot()).business_calls == 0
+    assert json.loads(await fresh.invoke(TOOL_NAME, {}))["ok"]
+
+
+async def test_repeated_read_is_blocked_without_persisting_query_or_response(
+    chat: tuple[FastAPI, httpx.AsyncClient, ControlledProvider],
+) -> None:
+    """真实执行入口保留失败审计，检测状态不将原始查询或结果写入数据库。"""
+    app, client, _ = chat
+    executor = await executor_for(app, client)
+    calls = 0
+
+    async def same_result(context: ToolContext, arguments: BaseModel) -> object:
+        """返回不应出现在审计里的私有数据。"""
+        nonlocal calls
+        calls += 1
+        assert isinstance(arguments, RunStatsArgs)
+        return {"private-response": arguments.days}
+
+    base = executor.assembly.tool_map[TOOL_NAME]
+    executor.assembly = replace(
+        executor.assembly, tools=(replace(base, handler=same_result, audit=lambda arguments, result: {"count": 1}),)
+    )
+    for _ in range(3):
+        assert json.loads(await executor.invoke(TOOL_NAME, {"days": 7}))["ok"]
+    blocked = json.loads(await executor.invoke(TOOL_NAME, {"days": 7}))
+    assert blocked["error_code"] == "TOOL_NO_PROGRESS"
+    assert "没有带来新信息" in blocked["error_message"]
+    assert calls == 3
+    assert json.loads(await executor.invoke(TOOL_NAME, {"days": 8}))["ok"]
+    assert calls == 4
+    rows = (await client.get(f"/api/runs/{executor.run_id}/tool-calls")).json()
+    assert any(row["error_code"] == "TOOL_NO_PROGRESS" for row in rows)
+    assert "private-response" not in json.dumps(rows)
+
+
+async def test_child_model_calls_leave_one_root_summary_call(
+    chat: tuple[FastAPI, httpx.AsyncClient, ControlledProvider],
+) -> None:
+    """子 Agent 被拒绝的预留不占预算，主助手始终还能整理一次结果。"""
+    app, client, _ = chat
+    source = await executor_for(app, client)
+    settings = source.settings.model_copy(update={"model_max_calls_per_run": 3})
+    executor = ChatAgentExecutor(source.factory, settings, source.run_id)
+
+    async def answer() -> str:
+        """模拟已完成的单个模型动作。"""
+        await asyncio.sleep(0)
+        return "已有资料"
+
+    await executor.model_call(answer)
+    children = await asyncio.gather(
+        executor.model_call(answer, reserve_final=True), executor.model_call(answer, reserve_final=True),
+        return_exceptions=True,
+    )
+    assert sum(isinstance(value, ApplicationError) for value in children) == 1
+    assert (await executor.budget_snapshot()).model_calls == 2
+    assert await executor.model_call(answer) == "已有资料"
+    assert (await executor.budget_snapshot()).model_calls == 3
+    async with executor.factory() as session:
+        rows = (await session.scalars(select(ToolCall).where(ToolCall.run_id == executor.run_id))).all()
+    assert all(row.is_system for row in rows)
+    assert sum(row.budget_reserved for row in rows) == 3
+    assert any(not row.budget_reserved and row.error_code == "MODEL_CALL_LIMIT" for row in rows)

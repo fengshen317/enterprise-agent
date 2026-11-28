@@ -19,7 +19,8 @@ def test_web_search_spec_registered() -> None:
     assert spec.key == "web_search"
     assert spec.risk == "read"
     assert spec.approval == "never"
-    assert spec.quota_per_run == 3
+    assert spec.quota_per_run == 8
+    assert spec.budget_kind == "search"
     assert spec.timeout_seconds == 10
 
 

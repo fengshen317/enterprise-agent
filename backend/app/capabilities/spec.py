@@ -84,6 +84,7 @@ class ToolSpec:
     connector_key: str | None = None
     input_schema_override: dict[str, object] | None = None
     owner_user_id: UUID | None = None
+    budget_kind: Literal["default", "search", "read"] = "default"
 
     def allows_user(self, user_id: UUID | None) -> bool:
         """私有工具仅允许服务端确认的绑定账号。"""

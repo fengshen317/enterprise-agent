@@ -36,7 +36,7 @@ async def test_closing_one_model_keeps_other_runs_open(provider_name: str) -> No
         second.root_client.close()
 
 
-@pytest.mark.parametrize("finish_reason", ["stop", "length", "tool_calls"])
+@pytest.mark.parametrize("finish_reason", ["stop", "length", "tool_calls", "empty_closing"])
 @pytest.mark.parametrize("provider_name", ["deepseek", "openai_compatible", "mimo"])
 async def test_real_sdk_stream_with_mock_http(
     monkeypatch: pytest.MonkeyPatch, finish_reason: str, provider_name: str
@@ -78,6 +78,8 @@ async def test_real_sdk_stream_with_mock_http(
         assert body.get("thinking") == (None if compatible and not mimo else {"type": "disabled"})
         chunks = []
         for content, finish in [("你好", None), ("，世界", None), ("", finish_reason)]:
+            if finish_reason == "empty_closing":
+                content, finish = "", "stop" if finish else None
             chunk = {
                 "id": "test-stream",
                 "object": "chat.completion.chunk",
@@ -130,8 +132,22 @@ async def test_real_sdk_stream_with_mock_http(
             )
         )
         provider.validate()
+        if finish_reason == "empty_closing":
+            from unittest.mock import AsyncMock, Mock
+
+            from app.capabilities.spec import AgentAssembly
+            from app.services.tool_budget import ToolBudgetSnapshot
+            from app.services.tools import ToolExecutor
+
+            executor = Mock(spec=ToolExecutor)
+            executor.assembly = AgentAssembly(None, "empty", 1, "", expected_model, (), (), {}, False, False)
+            executor.budget_snapshot = AsyncMock(return_value=ToolBudgetSnapshot(frozenset(), True, 30, 1))
+            provider.tool_executor = executor
         previews: list[str] = []
         stream = provider.stream([("user", "你好")], on_preview=previews.append)
+        if finish_reason == "empty_closing":
+            assert not [part async for part in stream]
+            return
         if finish_reason == "tool_calls":
             with pytest.raises(ApplicationError, match="不支持执行工具"):
                 _ = [part async for part in stream]

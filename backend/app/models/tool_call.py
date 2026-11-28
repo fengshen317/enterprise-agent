@@ -31,6 +31,8 @@ class ToolCall(Base):
     tool_version: Mapped[int | None] = mapped_column(Integer)
     risk_level: Mapped[str | None] = mapped_column(String(16))
     approval_required: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    budget_reserved: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     arguments_digest: Mapped[str | None] = mapped_column(String(64))
     days: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20), default="running", server_default="running")

@@ -160,12 +160,12 @@ async def test_chat_creates_and_schedules_a_versioned_assistant(
             if not results:
                 return response(name="get_my_run_stats", arguments={"days": 1})
             return response(content="运行日报已生成。")
-        assert {
-            "create_private_skill",
-            "publish_private_skill",
-            "create_private_agent",
-            "create_scheduled_task",
-        } <= tools
+        write_steps = [
+            "create_private_skill", "publish_private_skill", "create_private_agent", "create_scheduled_task",
+        ]
+        # 已完成的单次写工具耗尽后要移除，但后续审批步骤仍必须可用。
+        assert set(write_steps[len(results):]) <= tools
+        assert not set(write_steps[:len(results)]) & tools
         if not results:
             return response(name="create_private_skill", arguments=skill_body)
         skill = results[0]["data"]

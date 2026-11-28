@@ -121,6 +121,7 @@ def knowledge_specs(settings: Settings) -> list[ToolSpec]:
             approval="never",
             timeout_seconds=settings.ragflow_timeout_seconds + settings.tool_timeout_seconds,
             quota_per_run=settings.knowledge_max_calls_per_run,
+            budget_kind="search",
             handler=search,
             audit=search_audit,
         ),

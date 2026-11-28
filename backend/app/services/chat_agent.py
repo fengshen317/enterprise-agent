@@ -32,7 +32,6 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 MAX_PLAN_UPDATES = 12
 MAX_DELEGATIONS = 6
-MAX_MODEL_CALLS = 30
 
 
 class ChatAgentExecutor(ToolExecutor):
@@ -197,16 +196,18 @@ class ChatAgentExecutor(ToolExecutor):
                 .values(result=json.dumps(data, ensure_ascii=False))
             )
 
-    async def model_call(self, call: Callable[[], Awaitable[T]]) -> T:
+    async def model_call(self, call: Callable[[], Awaitable[T]], *, reserve_final: bool = False) -> T:
         """只重试当前模型动作，不重新执行图中已完成的工具。
 
         Args:
             call: 当前模型请求。
+            reserve_final: 子 Agent 必须给主助手保留一次整理结果的调用。
 
         Returns:
             完整成功响应，失败尝试正文不会发布。
         """
-        identifier, allowed = await self._begin("model_request", MAX_MODEL_CALLS)
+        limit = self.settings.model_max_calls_per_run - int(reserve_final)
+        identifier, allowed = await self._begin("model_request", limit)
         try:
             if not allowed:
                 raise ApplicationError("MODEL_CALL_LIMIT", "本次对话的模型调用次数已达上限", 422)

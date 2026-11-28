@@ -49,7 +49,13 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:8686", "http://127.0.0.1:8686"]
     tools_enabled: bool = True
     tool_timeout_seconds: float = Field(default=5, gt=0, le=30)
-    tool_max_calls_per_run: int = Field(default=4, ge=1, le=10)
+    # 旧配置保留为单工具硬上限；分类配额与整轮总量分别控制。
+    tool_max_calls_per_run: int = Field(default=15, ge=1, le=100)
+    tool_search_max_calls_per_run: int = Field(default=8, ge=1, le=100)
+    tool_read_max_calls_per_run: int = Field(default=15, ge=1, le=100)
+    tool_total_calls_per_run: int = Field(default=30, ge=1, le=200)
+    tool_no_progress_limit: int = Field(default=3, ge=2, le=10)
+    model_max_calls_per_run: int = Field(default=30, ge=2, le=200)
     report_sandbox_image: str = Field(default="", max_length=250)
     report_sandbox_runtime: str = Field(default="", max_length=80)
     report_sandbox_broker_url: str = Field(default="", max_length=500)
@@ -92,7 +98,7 @@ class Settings(BaseSettings):
     knowledge_test_top_k: int = Field(default=20, ge=1, le=50)
     knowledge_similarity_threshold: float = Field(default=0.2, ge=0, le=1)
     knowledge_max_context_characters: int = Field(default=8000, ge=1000, le=50000)
-    knowledge_max_calls_per_run: int = Field(default=3, ge=1, le=10)
+    knowledge_max_calls_per_run: int = Field(default=8, ge=1, le=100)
     knowledge_max_file_bytes: int = Field(default=20_000_000, ge=1_000_000, le=100_000_000)
     # 自动知识库检索注入：每次提问自动检索并注入参考资料。
     auto_retrieve_max_characters: int = Field(default=4000, ge=500, le=20000)

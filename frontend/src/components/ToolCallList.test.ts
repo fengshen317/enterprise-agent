@@ -148,3 +148,12 @@ it('只为成功审计中的真实对象标识生成站内入口', async () => {
   expect(wrapper.get('details').element.open).toBe(false)
   wrapper.unmount()
 })
+
+it('重复查询显示停止该路径而不是服务故障', async () => {
+  vi.mocked(getToolCalls).mockResolvedValue([{ ...row, status: 'failed', result: null, error_code: 'TOOL_NO_PROGRESS' }])
+  const wrapper = mount(ToolCallList, { props: { runId: 'r1', messageStatus: 'streaming' } })
+  await flushPromises()
+  expect(wrapper.text()).toContain('重复查询没有新信息，已停止该查询路径')
+  expect(wrapper.text()).not.toContain('查询服务暂时不可用')
+  wrapper.unmount()
+})

@@ -29,6 +29,7 @@ from app.services.auth import require_membership
 from app.services.knowledge import KnowledgeService
 from app.services.read_tools import query_run_stats
 from app.services.system_logs import emit_system_log
+from app.services.tool_budget import ToolBudgetSnapshot, ToolProgressGuard, effective_tool_limit
 
 if TYPE_CHECKING:
     from app.services.approvals import ApprovalService
@@ -92,6 +93,7 @@ class ToolExecutor:
         self.factory, self.settings, self.run_id = factory, settings, run_id
         self.knowledge_service = knowledge_service
         self.registry = registry or build_default_registry(settings, knowledge_service)
+        self.progress_guard = ToolProgressGuard(settings.tool_no_progress_limit)
         self.approval_service = approval_service
         self.schedule_store = schedule_store
         self.assembly = (
@@ -141,30 +143,48 @@ class ToolExecutor:
         return scope
 
     def _call_limit(self, spec: ToolSpec) -> int:
-        """系统工具保留自身预算，业务工具再受部署配置约束。"""
-        return spec.quota_per_run if spec.system else min(spec.quota_per_run, self.settings.tool_max_calls_per_run)
+        """按工具类别分配调用额度，同时保留显式的更严格限制。"""
+        return effective_tool_limit(spec, self.settings)
 
-    async def exhausted_tool_keys(self) -> frozenset[str]:
-        """按运行共享审计计数收窄下一轮工具，避免模型反复尝试耗尽的能力。"""
+    async def budget_snapshot(self, *, reserve_final: bool = False) -> ToolBudgetSnapshot:
+        """读取运行共享预算，并在模型额度用尽前停止增加工具任务。"""
         async with self.factory() as session:
             await self._scope(session)
             rows = await session.execute(
-                select(ToolCall.tool_name, func.count().label("call_count"))
-                .where(ToolCall.run_id == self.run_id)
-                .group_by(ToolCall.tool_name)
+                select(ToolCall.tool_name, ToolCall.is_system, func.count().label("call_count"))
+                .where(ToolCall.run_id == self.run_id, ToolCall.budget_reserved.is_(True))
+                .group_by(ToolCall.tool_name, ToolCall.is_system)
             )
-            counts = {row.tool_name: row.call_count for row in rows}
-        return frozenset(
-            spec.key for spec in self.assembly.tools if counts.get(spec.key, 0) >= self._call_limit(spec)
+            counts: dict[str, int] = {}
+            business_calls = 0
+            for name, is_system, count in rows:
+                counts[name] = count
+                if not is_system:
+                    business_calls += count
+        model_calls = counts.get("model_request", 0)
+        closing = (
+            business_calls >= self.settings.tool_total_calls_per_run
+            or model_calls >= self.settings.model_max_calls_per_run - int(reserve_final)
         )
+        exhausted = frozenset(
+            spec.key for spec in self.assembly.tools if closing or counts.get(spec.key, 0) >= self._call_limit(spec)
+        )
+        return ToolBudgetSnapshot(exhausted, closing, business_calls, model_calls)
 
-    async def _begin(self, name: str, limit: int, spec: ToolSpec | None = None) -> tuple[UUID, bool]:
+    async def exhausted_tool_keys(self) -> frozenset[str]:
+        """兼容现有调用方，返回当前不再对模型提供的工具集合。"""
+        return (await self.budget_snapshot()).exhausted
+
+    async def _begin(
+        self, name: str, limit: int, spec: ToolSpec | None = None, *, reserve_final: bool = False
+    ) -> tuple[UUID, bool]:
         """锁定运行后按能力计数，防止并行调用绕过次数限制。
 
         Args:
             name: 已注册能力名。
             limit: 该能力配额。
             spec: 可选的工具声明，用于在审计行记录风险。
+            reserve_final: 子助手要保留主助手最后一次模型调用。
 
         Returns:
             审计 ID 和是否允许执行。
@@ -175,20 +195,45 @@ class ToolExecutor:
             count = await session.scalar(
                 select(func.count())
                 .select_from(ToolCall)
-                .where(ToolCall.run_id == self.run_id, ToolCall.tool_name == name)
+                .where(
+                    ToolCall.run_id == self.run_id, ToolCall.tool_name == name, ToolCall.budget_reserved.is_(True)
+                )
             )
+            allowed = (count or 0) < limit
+            is_system = spec is None or spec.system
+            if name != "model_request":
+                total = await session.scalar(
+                    select(func.count()).select_from(ToolCall).where(
+                        ToolCall.run_id == self.run_id,
+                        ToolCall.is_system.is_(False),
+                        ToolCall.budget_reserved.is_(True),
+                    )
+                )
+                model_calls = await session.scalar(
+                    select(func.count()).select_from(ToolCall).where(
+                        ToolCall.run_id == self.run_id,
+                        ToolCall.tool_name == "model_request",
+                        ToolCall.budget_reserved.is_(True),
+                    )
+                )
+                allowed = (
+                    allowed and (total or 0) < self.settings.tool_total_calls_per_run
+                    and (model_calls or 0) < self.settings.model_max_calls_per_run - int(reserve_final)
+                )
             identifier = uuid4()
             session.add(
                 ToolCall(
                     id=identifier,
                     run_id=self.run_id,
                     tool_name=name,
+                    is_system=is_system,
+                    budget_reserved=allowed,
                     tool_version=spec.version if spec is not None else None,
                     risk_level=spec.risk if spec is not None else None,
                     approval_required=spec.approval == "always" if spec is not None else False,
                 )
             )
-            return identifier, (count or 0) < limit
+            return identifier, allowed
 
     async def _stats(self, arguments: RunStatsArgs) -> RunStatsResult:
         """查询当前用户与空间的运行聚合，不读取消息。
@@ -321,12 +366,13 @@ class ToolExecutor:
             default=str,
         )
 
-    async def invoke(self, name: str, raw_arguments: dict[str, object]) -> str:
+    async def invoke(self, name: str, raw_arguments: dict[str, object], *, reserve_final: bool = False) -> str:
         """统一注册表入口，返回有审计依据的 JSON 结果。
 
         Args:
             name: 稳定工具标识。
             raw_arguments: 不可信模型参数，不原样存储或回显。
+            reserve_final: 子助手的工具动作不得消耗主助手最后一次模型调用。
 
         Returns:
             成功结果或明确失败状态。
@@ -338,7 +384,7 @@ class ToolExecutor:
             raise ApplicationError("TOOL_NOT_ALLOWED", "当前工具未获授权", 403)
         # 系统工具按自身配额，业务工具再受全局单次运行上限约束。
         limit = self._call_limit(spec)
-        identifier, allowed = await self._begin(name, limit, spec)
+        identifier, allowed = await self._begin(name, limit, spec, reserve_final=reserve_final)
         arguments: BaseModel | None = None
         approval_approved = False
         try:
@@ -373,21 +419,28 @@ class ToolExecutor:
                         ensure_ascii=False,
                     )
                 approval_approved = True
-            async with asyncio.timeout(spec.timeout_seconds):
-                async with self.factory() as session:
-                    scope, conversation_id = await self._scope_row(session)
-                    if approval_approved:
-                        # 管理员可能在成员查看审批卡期间停用了工具。
-                        enabled = await session.scalar(
-                            select(WorkspaceToolPolicy.enabled).filter_by(
-                                workspace_id=scope.workspace_id, tool_key=name
+            async def execute() -> object:
+                """将鉴权和超时纳入实际调用，重复检测不能复用旧身份。"""
+                assert arguments is not None
+                async with asyncio.timeout(spec.timeout_seconds):
+                    async with self.factory() as session:
+                        scope, conversation_id = await self._scope_row(session)
+                        if approval_approved:
+                            # 管理员可能在成员查看审批卡期间停用了工具。
+                            enabled = await session.scalar(
+                                select(WorkspaceToolPolicy.enabled).filter_by(
+                                    workspace_id=scope.workspace_id, tool_key=name
+                                )
                             )
-                        )
-                        if enabled is False:
-                            raise ApplicationError("TOOL_NOT_ALLOWED", "当前空间已停用此工具", 403)
-                if not spec.allows_user(scope.user_id):
-                    raise ApplicationError("TOOL_NOT_ALLOWED", "当前工具未获授权", 403)
-                result = await spec.handler(self._context(scope, conversation_id, identifier), arguments)
+                            if enabled is False:
+                                raise ApplicationError("TOOL_NOT_ALLOWED", "当前空间已停用此工具", 403)
+                    if not spec.allows_user(scope.user_id):
+                        raise ApplicationError("TOOL_NOT_ALLOWED", "当前工具未获授权", 403)
+                    return await spec.handler(self._context(scope, conversation_id, identifier), arguments)
+            if spec.risk == "read" and spec.approval == "never" and not spec.system:
+                result = await self.progress_guard.execute(name, arguments.model_dump(mode="json"), execute)
+            else:
+                result = await execute()
             audit = spec.audit(arguments, result)
             raw_days = getattr(arguments, "days", None)
             days = raw_days if isinstance(raw_days, int) else None
@@ -422,7 +475,7 @@ class ToolExecutor:
                 diagnostics = {"phase": "transport"}
             elif isinstance(exc, ApplicationError):
                 code = exc.code
-                if code.startswith("REPORT_"):
+                if code.startswith("REPORT_") or code in {"TOOL_NO_PROGRESS", "TOOL_CALL_LIMIT"}:
                     error_message = exc.message
             else:
                 code = "TOOL_EXECUTION_FAILED"

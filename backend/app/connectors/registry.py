@@ -505,7 +505,7 @@ class ConnectorRegistry:
                 return PersonalCliConnector(row.key, row.config, self._settings)
             from app.connectors.personal import PersonalConnector
 
-            return PersonalConnector(row.key)
+            return PersonalConnector(row.key, self._settings)
         if row.kind == "api":
             if row.key == RSS.key:
                 from app.connectors.rss import RssConnector

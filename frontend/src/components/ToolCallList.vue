@@ -30,6 +30,7 @@ const statuses: Record<ToolCall['status'], string> = {
 }
 const errors: Record<string, string> = {
   TOOL_TIMEOUT: '查询超时', TOOL_INVALID_ARGUMENTS: '查询条件无效', TOOL_CALL_LIMIT: '本次回答的查询次数已达上限',
+  TOOL_NO_PROGRESS: '重复查询没有新信息，已停止该查询路径',
   TOOL_EXECUTION_FAILED: '查询服务暂时不可用', PROCESS_RESTARTED: '服务重启中断了查询',
   WORKSPACE_ACCESS_DENIED: '空间权限已失效', WORKSPACE_ARCHIVED: '空间已归档', ACCESS_REVOKED: '执行权限已失效',
   KNOWLEDGE_ACCESS_DENIED: '没有可访问的知识库', KNOWLEDGE_DISABLED: '知识库未启用',
