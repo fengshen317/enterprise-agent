@@ -62,6 +62,7 @@ const prompts = computed(() => currentAgent.value?.starter_prompts.length
 const statuses: Record<string, string> = { pending: '等待生成', running: '正在生成', completed: '已完成', failed: '生成失败', cancelled: '已停止' }
 let dispose: (() => void) | null = null
 let revision = 0
+let reconnectAttempt = 0
 let pending: { conversationId: string; content: string; fileKeys: string; key: string } | null = null
 let alive = true
 
@@ -243,16 +244,23 @@ function applySnapshot(snapshot: Snapshot): void {
   void scrollToEnd()
 }
 async function reconnect(): Promise<void> {
-  if (!run.value) return
+  if (!run.value || !active.value) return
   const id = run.value.id
+  const context = revision
+  const attempt = ++reconnectAttempt
+  // 断线查询可能晚于停止、切换会话或下一次重连返回。
+  const isCurrent = () => alive && revision === context && reconnectAttempt === attempt && run.value?.id === id && active.value
   dispose?.(); dispose = null
   try {
     const snapshot = await getRun(id)
+    if (!isCurrent()) return
     applySnapshot(snapshot)
-    if (snapshot.run.conversation_id === currentId.value && isActive(snapshot.run)) {
+    if (isActive(snapshot.run)) {
       dispose = watchRun(id, applySnapshot, message => { connection.value = message })
     }
-  } catch (value) { showError(value) }
+  } catch (value) {
+    if (isCurrent()) connection.value = value instanceof Error ? value.message : '未能恢复回答，请重新连接'
+  }
 }
 async function loadConversation(): Promise<void> {
   const token = ++revision
@@ -343,8 +351,12 @@ async function send(): Promise<void> {
     if (currentId.value === id && draftKey.value === submissionKey && alive) {
       await loadConversation()
       if (!alive || currentId.value !== id || draftKey.value !== submissionKey) return
-      applySnapshot(snapshot)
-      await reconnect()
+      // 历史加载已经恢复最新正文及订阅，仅在历史缺少本轮时用提交回执恢复。
+      const latest = messages.value.find(message => message.run_id && message.run_id === run.value?.id)
+      if (!latest || latest.sequence < snapshot.message.sequence) {
+        applySnapshot(snapshot)
+        if (isActive(snapshot.run)) await reconnect()
+      }
       await refreshList()
     }
   } catch (value) { if (alive && currentId.value === id && draftKey.value === submissionKey) showError(value) }

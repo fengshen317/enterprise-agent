@@ -15,6 +15,9 @@ from app.models.conversation import Conversation, Message, Run
 from app.models.identity import AuthSession, User, Workspace, WorkspaceMembership
 from app.services.accounts import AccountManager
 
+PROBE_TRIGGER_CHARS = 600
+PROBE_SUMMARY_CHARS = 200
+
 
 async def main(compression: bool = False) -> bool:
     """验证真实模型追问及可选持久化压缩，不打印密钥或异常正文。
@@ -41,9 +44,10 @@ async def main(compression: bool = False) -> bool:
     if compression:
         settings = settings.model_copy(
             update={
-                "model_context_characters": 1000,
+                # 只提前触发历史摘要，为真实 Agent 的系统提示保留正常上下文空间。
                 "context_compression_enabled": True,
-                "context_compression_trigger_ratio": 0.7,
+                "context_compression_trigger_ratio": PROBE_TRIGGER_CHARS / settings.model_context_characters,
+                "context_summary_characters": PROBE_SUMMARY_CHARS,
             }
         )
     app = create_app(settings)

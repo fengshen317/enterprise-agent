@@ -614,3 +614,72 @@ it('运行快照更新时保留报表与已展开内容，并支持基于报表�
   expect(wrapper.get('textarea').element.value).toContain(reportRef.title)
   wrapper.unmount()
 })
+
+it('发送后采纳历史中已完成的回答，不再用提交时的快照覆盖正文', async () => {
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/chat/:conversationId?', component: ChatView }] })
+  await router.push('/chat/c1')
+  const wrapper = mount(ChatView, { global: { plugins: [router] } })
+  await flushPromises()
+  const finished: Snapshot = {
+    run: { ...current.run, status: 'completed' },
+    message: { ...current.message, status: 'completed', content: '已经持久化的完整回答' },
+  }
+  vi.mocked(api.createRun).mockResolvedValue(current)
+  vi.mocked(api.getMessages).mockResolvedValue({ items: [first, finished.message], has_more: false, active_run_id: null })
+  vi.mocked(api.getRun).mockResolvedValueOnce(finished).mockRejectedValue(new Error('连接中断'))
+  await wrapper.get('textarea').setValue('很快就能回答的问题')
+  await wrapper.get('form').trigger('submit')
+  await flushPromises()
+  expect(wrapper.text()).toContain(finished.message.content)
+  expect(wrapper.find('.chat-composer__stop').exists()).toBe(false)
+  expect(api.watchRun).not.toHaveBeenCalled()
+  wrapper.unmount()
+})
+
+it('重新连接期间停止生成，迟到的运行中快照不能重新开启流', async () => {
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/chat/:conversationId?', component: ChatView }] })
+  await router.push('/chat/c1')
+  vi.mocked(api.getMessages).mockResolvedValue({ items: [first, current.message], has_more: false, active_run_id: 'r2' })
+  const wrapper = mount(ChatView, { global: { plugins: [router] } })
+  await flushPromises()
+  vi.mocked(api.watchRun).mock.calls[0]![2]('连接中断')
+  await flushPromises()
+  let resume!: (value: Snapshot) => void
+  vi.mocked(api.getRun).mockImplementationOnce(() => new Promise(resolve => { resume = resolve }))
+  await wrapper.get('.chat__connection button').trigger('click')
+  vi.mocked(api.cancelRun).mockResolvedValue({
+    run: { ...current.run, status: 'cancelled' }, message: { ...current.message, status: 'interrupted' },
+  })
+  await wrapper.get('.chat-composer__stop').trigger('click')
+  await flushPromises()
+  resume(current)
+  await flushPromises()
+  expect(wrapper.text()).toContain('已停止')
+  expect(api.watchRun).toHaveBeenCalledTimes(1)
+  wrapper.unmount()
+})
+
+it('重连失败可再次尝试，恢复后清除故障提示并仅保留最新连接', async () => {
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/chat/:conversationId?', component: ChatView }] })
+  await router.push('/chat/c1')
+  vi.mocked(api.getMessages).mockResolvedValue({ items: [first, current.message], has_more: false, active_run_id: 'r2' })
+  const wrapper = mount(ChatView, { global: { plugins: [router] } })
+  await flushPromises()
+  vi.mocked(api.watchRun).mock.calls[0]![2]('连接中断')
+  await flushPromises()
+  vi.mocked(api.getRun).mockRejectedValueOnce(new Error('网络暂不可用'))
+  await wrapper.get('.chat__connection button').trigger('click')
+  await flushPromises()
+  expect(wrapper.text()).toContain('网络暂不可用')
+  let resume!: (value: Snapshot) => void
+  vi.mocked(api.getRun).mockImplementationOnce(() => new Promise(resolve => { resume = resolve }))
+  await wrapper.get('.chat__connection button').trigger('click')
+  await wrapper.get('.chat__connection button').trigger('click')
+  await flushPromises()
+  resume(current)
+  await flushPromises()
+  expect(api.watchRun).toHaveBeenCalledTimes(2)
+  expect(wrapper.text()).not.toContain('网络暂不可用')
+  expect(wrapper.find('.chat__connection').exists()).toBe(false)
+  wrapper.unmount()
+})
