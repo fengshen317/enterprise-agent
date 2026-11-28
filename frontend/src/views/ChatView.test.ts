@@ -1,8 +1,12 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { createMemoryHistory, createRouter } from 'vue-router'
+import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import ChatView from './ChatView.vue'
+import PersonalConnectionsView from './PersonalConnectionsView.vue'
+import { getConnector, savePersonalAccount, type ConnectorDetail } from '../api/connectors'
+import { listPersonalModels } from '../api/personalModels'
+import { listWeChatAccounts } from '../api/channels'
 import * as api from '../api/chat'
 import * as agentApi from '../api/agents'
 import type { Message, Snapshot } from '../api/chat'
@@ -13,6 +17,11 @@ import { getToolCalls, type ToolCall } from '../api/tools'
 import { useAuthStore } from '../stores/auth'
 
 vi.mock('../api/agents', () => ({ listAgents: vi.fn() }))
+vi.mock('../api/connectors', async original => ({
+  ...await original<typeof import('../api/connectors')>(), getConnector: vi.fn(), savePersonalAccount: vi.fn(),
+}))
+vi.mock('../api/personalModels', () => ({ listPersonalModels: vi.fn() }))
+vi.mock('../api/channels', () => ({ listWeChatAccounts: vi.fn() }))
 vi.mock('../api/tools', () => ({ getToolCalls: vi.fn() }))
 vi.mock('../api/chatReports', async (getActual) => ({ ...await getActual<typeof import('../api/chatReports')>(), getChatReport: vi.fn() }))
 vi.mock('../api/materials', async (importOriginal) => {
@@ -24,6 +33,14 @@ vi.mock('../api/chat', async () => {
   return { ...original, listConversations: vi.fn(), getMessages: vi.fn(), getRun: vi.fn(), createRun: vi.fn(), createRunWithFiles: vi.fn(), cancelRun: vi.fn(), watchRun: vi.fn(), createConversation: vi.fn() }
 })
 const first: Message = { id: 'm1', conversation_id: 'c1', run_id: null, sequence: 1, role: 'user', content: '旧问题', status: 'completed' }
+const mailAccount = { bound: false, guide_url: 'https://example.com/imap', fields: [
+  { key: 'email', label: '邮箱地址', secret: false }, { key: 'auth_code', label: '授权码', secret: true },
+] }
+const mailDetail: ConnectorDetail = {
+  key: 'qq_mail', kind: 'api', name: 'QQ 邮箱', description: '', icon: '', enabled: true, status: 'connected',
+  last_error: null, last_error_code: null, last_checked_at: null, last_success_at: null, auth_status: 'unknown',
+  auth_action: null, config_fields: [], config_values: {}, tools: [], personal_account: mailAccount,
+}
 const old: Snapshot = { run: { id: 'r1', conversation_id: 'c1', status: 'completed', model: 'test', error_code: null, error_message: null }, message: { ...first, id: 'm2', run_id: 'r1', sequence: 2, role: 'assistant', content: '旧回答' } }
 const current: Snapshot = { run: { ...old.run, id: 'r2', status: 'running' }, message: { ...old.message, id: 'm4', run_id: 'r2', sequence: 4, content: '部分内容', status: 'streaming' } }
 const imageAttachment = { id: 'f1', filename: '图表.png', media_type: 'image/png', size_bytes: 4, text_available: false, text_truncated: false }
@@ -78,6 +95,94 @@ it('从 QQ 邮箱进入问答只预填草稿，且不覆盖正在编辑的内容
   expect(composer.element.value).toBe('保留这条草稿')
   expect(api.createRun).not.toHaveBeenCalled()
   expect(api.createConversation).not.toHaveBeenCalled()
+  wrapper.unmount()
+})
+
+it('员工从账号入口绑定邮箱后回到原对话，查询草稿等待确认发送', async () => {
+  const auth = useAuthStore()
+  auth.session!.workspaces = [{ id: 'w1', name: '测试空间', slug: 'space', status: 'active', role: 'member' }]
+  vi.mocked(getConnector).mockResolvedValue(mailDetail)
+  vi.mocked(savePersonalAccount).mockResolvedValue({ ...mailAccount, bound: true })
+  vi.mocked(listWeChatAccounts).mockResolvedValue([])
+  vi.mocked(listPersonalModels).mockResolvedValue({ profiles: [], shared_default: {
+    name: '空间模型', model_id: 'shared-test', base_url: '', vision_model_id: '', provider: 'deepseek',
+  } })
+  const router = createRouter({ history: createMemoryHistory(), routes: [
+    { path: '/account/connections', component: PersonalConnectionsView },
+    { path: '/chat/:conversationId?', name: 'chat', component: ChatView },
+    { path: '/channels/wechat', component: { template: '<div />' } },
+    { path: '/account/models', component: { template: '<div />' } },
+  ] })
+  await router.push('/account/connections?conversation=c1')
+  const wrapper = mount(RouterView, { global: { plugins: [router] } })
+  await flushPromises()
+  expect(wrapper.get('a[href="/channels/wechat"]').text()).toBe('管理微信')
+  expect(wrapper.text()).toContain('空间默认 · shared-test')
+  expect(wrapper.get('a[href="/account/models"]').text()).toBe('管理模型')
+  expect(wrapper.find('a[href*="plugin=qq_mail"]').exists()).toBe(false)
+  await wrapper.get('button[aria-expanded="false"]').trigger('click')
+  await wrapper.get('input[type="email"]').setValue('member@example.com')
+  await wrapper.get('input[type="password"]').setValue('example-code')
+  await wrapper.get('.personal-account__form').trigger('submit')
+  await flushPromises()
+  await wrapper.get('a[href="/chat/c1?plugin=qq_mail"]').trigger('click')
+  await flushPromises()
+  expect(router.currentRoute.value.fullPath).toBe('/chat/c1')
+  expect(wrapper.get('textarea').element.value).toContain('项目会议通知')
+  expect(api.createRun).not.toHaveBeenCalled()
+  wrapper.unmount()
+})
+
+it('对话内绑定邮箱支持重试，返回时保留当前问题与附件', async () => {
+  vi.mocked(getConnector).mockResolvedValue(mailDetail)
+  vi.mocked(savePersonalAccount).mockRejectedValueOnce(new Error('保存失败')).mockResolvedValue({ ...mailAccount, bound: true })
+  const router = createRouter({ history: createMemoryHistory(), routes: [
+    { path: '/chat/:conversationId?', component: ChatView },
+    { path: '/materials', component: { template: '<div />' } },
+  ] })
+  await router.push('/chat/c1')
+  const wrapper = mount(ChatView, { global: { plugins: [router] } })
+  await flushPromises()
+  await wrapper.get('textarea').setValue('只查明天下午的会议')
+  const control = wrapper.get('input[type="file"]')
+  Object.defineProperty(control.element, 'files', { configurable: true, value: [new File(['agenda'], '议程.txt')] })
+  await control.trigger('change')
+  await wrapper.get('[aria-label="更多功能"]').trigger('click')
+  await wrapper.findAll('button').find(b => b.text() === '查邮箱里的会议通知')!.trigger('click')
+  await flushPromises()
+  await wrapper.get('input[type="email"]').setValue('member@example.com')
+  await wrapper.get('input[type="password"]').setValue('example-code')
+  await wrapper.get('.personal-account__form').trigger('submit')
+  await flushPromises()
+  expect(wrapper.get('[role="dialog"]').text()).toContain('保存失败')
+  await wrapper.get('.personal-account__form').trigger('submit')
+  await flushPromises()
+  expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+  expect(router.currentRoute.value.path).toBe('/chat/c1')
+  expect(wrapper.get('textarea').element.value).toBe('只查明天下午的会议')
+  expect(wrapper.get('[aria-label="待发送附件"]').text()).toContain('议程.txt')
+  expect(api.createRunWithFiles).not.toHaveBeenCalled()
+  wrapper.unmount()
+})
+
+it('已绑定的邮箱快捷入口直接准备问题，空间停用时保留原草稿', async () => {
+  const bound = { ...mailDetail, personal_account: { ...mailAccount, bound: true } }
+  vi.mocked(getConnector).mockResolvedValueOnce({ ...bound, enabled: false }).mockResolvedValue(bound)
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/chat/:conversationId?', component: ChatView }] })
+  await router.push('/chat')
+  const wrapper = mount(ChatView, { global: { plugins: [router] } })
+  await flushPromises()
+  const shortcut = wrapper.findAll('button').find(b => b.text().includes('查邮箱里的会议通知'))!
+  await shortcut.trigger('click')
+  await flushPromises()
+  expect(wrapper.get('[role="dialog"]').find('input[type="password"]').exists()).toBe(false)
+  await wrapper.get('[aria-label="关闭插件详情"]').trigger('click')
+  expect(wrapper.get('textarea').element.value).toBe('')
+  await shortcut.trigger('click')
+  await flushPromises()
+  expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+  expect(wrapper.get('textarea').element.value).toContain('项目会议通知')
+  expect(api.createRun).not.toHaveBeenCalled()
   wrapper.unmount()
 })
 

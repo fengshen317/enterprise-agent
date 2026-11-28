@@ -9,6 +9,7 @@ import AnswerMessage from '../components/chat/AnswerMessage.vue'
 import ApprovalCard from '../components/chat/ApprovalCard.vue'
 import CapabilityDrawer from '../components/chat/CapabilityDrawer.vue'
 import ChatComposer from '../components/chat/ChatComposer.vue'
+import ConnectorConfigDialog from './connectors/ConnectorConfigDialog.vue'
 import ChatFileCard from '../components/chat/ChatFileCard.vue'
 import type { SourceChunk } from '../components/chat/ChunkSourceCard.vue'
 import SourceDrawer from '../components/chat/SourceDrawer.vue'
@@ -34,6 +35,8 @@ const run = ref<Run | null>(null)
 const approval = ref<Approval | null>(null)
 const selectedAgentId = ref<string | null>(null)
 const drawerOpen = ref(false)
+const mailDialogOpen = ref(false)
+const meetingQuestion = '请在我的 QQ 邮箱里找到最近一封项目会议通知，读取正文并告诉我会议时间。'
 const loading = ref(false)
 const submitting = ref(false)
 const stopping = ref(false)
@@ -194,6 +197,12 @@ async function applyDecision(updated: Approval): Promise<void> {
 }
 function usePrompt(text: string): void {
   writeDraft(text)
+  void composer.value?.focus()
+}
+async function resumeMailQuestion(): Promise<void> {
+  mailDialogOpen.value = false
+  if (!input.value.trim()) writeDraft(meetingQuestion)
+  await nextTick()
   void composer.value?.focus()
 }
 const sourceSelection = ref<{ chunks: SourceChunk[]; index: number | null } | null>(null)
@@ -396,12 +405,14 @@ watch(sendModeKey, key => {
   catch { sendMode.value = 'enter' }
 }, { immediate: true })
 watch(currentId, loadConversation, { immediate: true })
+watch(fileDraftKey, () => { mailDialogOpen.value = false }, { flush: 'sync' })
 watch(() => route.query.plugin, async (key) => {
-  if (key !== 'qq_mail' || currentId.value) return
-  if (!input.value.trim()) writeDraft('请在我的 QQ 邮箱里找到最近一封项目会议通知，读取正文并告诉我会议时间。')
+  if (key !== 'qq_mail') return
+  const context = fileDraftKey.value
+  if (!input.value.trim()) writeDraft(meetingQuestion)
   await router.replace({ query: { ...route.query, plugin: undefined } })
   await nextTick()
-  if (alive && !currentId.value) void composer.value?.focus()
+  if (alive && fileDraftKey.value === context) void composer.value?.focus()
 }, { immediate: true })
 watch(() => route.query.material, async (id) => {
   if (typeof id !== 'string' || !id) return
@@ -510,6 +521,13 @@ onBeforeUnmount(() => {
             <h2>从一个问题开始</h2>
             <p>当前使用「{{ currentAgent?.name ?? '序列助手' }}」。可以直接提问，也可以描述要完成的任务。</p>
             <div class="chat__prompts">
+              <button
+                type="button"
+                :disabled="submitting || active"
+                @click="mailDialogOpen = true"
+              >
+                查邮箱里的会议通知 ↗
+              </button>
               <button
                 v-for="prompt in prompts"
                 :key="prompt"
@@ -678,6 +696,14 @@ onBeforeUnmount(() => {
             </div>
           </template>
           <template #tools="{ close }">
+            <button
+              type="button"
+              class="chat__mail-shortcut"
+              :disabled="active || loading || submitting"
+              @click="close(); mailDialogOpen = true"
+            >
+              查邮箱里的会议通知
+            </button>
             <RouterLink
               class="chat__material-link"
               to="/materials"
@@ -707,6 +733,13 @@ onBeforeUnmount(() => {
         </p>
       </div>
     </section>
+    <ConnectorConfigDialog
+      v-if="mailDialogOpen"
+      connector-key="qq_mail"
+      member-mode
+      @close="mailDialogOpen = false; composer?.focus()"
+      @mail-ready="resumeMailQuestion"
+    />
   </div>
 </template>
 

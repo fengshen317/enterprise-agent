@@ -158,7 +158,10 @@ async function changeWorkspace(event: Event): Promise<void> {
           >API 配置</RouterLink>
         </nav>
         <div class="workspace__account">
-          <span>{{ auth.session?.user.display_name }}</span><RouterLink to="/account/models">模型配置</RouterLink><RouterLink to="/account/password">修改密码</RouterLink><button
+          <span>{{ auth.session?.user.display_name }}</span><RouterLink
+            :to="{ path: '/account/connections', query: route.name === 'chat' && typeof route.params.conversationId === 'string'
+              ? { conversation: route.params.conversationId } : {} }"
+          >我的账号与连接</RouterLink><RouterLink to="/account/password">修改密码</RouterLink><button
             type="button"
             @click="signOut"
           >

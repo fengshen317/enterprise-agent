@@ -4,6 +4,7 @@ import { useAuthStore } from './stores/auth'
 import LoginView from './views/LoginView.vue'
 import ChangePasswordView from './views/ChangePasswordView.vue'
 import PersonalModelsView from './views/PersonalModelsView.vue'
+import PersonalConnectionsView from './views/PersonalConnectionsView.vue'
 import { createRouter, createWebHistory } from 'vue-router'
 import App from './App.vue'
 import SystemStatusView from './views/SystemStatusView.vue'
@@ -33,6 +34,7 @@ const router = createRouter({
     { path: '/login', name: 'login', component: LoginView },
     { path: '/account/password', name: 'change-password', component: ChangePasswordView, meta: { title: '修改密码' } },
     { path: '/account/models', component: PersonalModelsView, meta: { title: '模型配置' } },
+    { path: '/account/connections', component: PersonalConnectionsView, meta: { title: '我的账号与连接' } },
     { path: '/chat/:conversationId?', name: 'chat', component: ChatView, meta: { title: '问答' } },
     { path: '/agents', component: AgentListView, meta: { title: '智能体' } },
     { path: '/agents/new', component: AgentEditorView, meta: { title: '智能体' } },

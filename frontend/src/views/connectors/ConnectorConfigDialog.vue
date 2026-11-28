@@ -24,7 +24,7 @@ import {
 } from '../../api/connectors'
 
 const props = defineProps<{ connectorKey: string; adminMode?: boolean; memberMode?: boolean }>()
-const emit = defineEmits<{ close: []; accountUpdated: [account: PersonalAccount] }>()
+const emit = defineEmits<{ close: []; accountUpdated: [account: PersonalAccount]; mailReady: [] }>()
 const auth = useAuthStore()
 const store = useConnectorsStore()
 const isAdmin = computed(() => !props.memberMode
@@ -116,7 +116,11 @@ async function load(): Promise<void> {
       }
     }
   } catch (value) {
-    if (current(version)) showError(value)
+    if (current(version)) {
+      if (props.memberMode && props.connectorKey === 'qq_mail' && value instanceof ApiError && value.status === 404) {
+        error.value = '当前工作空间未开放 QQ 邮箱，请联系空间管理员。'
+      } else showError(value)
+    }
   } finally {
     if (current(version)) loading.value = false
   }
@@ -286,6 +290,9 @@ function updateAccount(account: PersonalAccount): void {
   emit('accountUpdated', account)
 }
 
+watch(() => props.memberMode && detail.value?.key === 'qq_mail' && detail.value.enabled && detail.value.personal_account?.bound,
+  ready => { if (ready) emit('mailReady') })
+
 onMounted(() => {
   closeButton.value?.focus()
   void load()
@@ -326,6 +333,20 @@ onUnmounted(() => { stopped = true; stop() })
         加载中…
       </div>
 
+      <div
+        v-else-if="!detail && error"
+        class="connector-dialog__section"
+      >
+        <p role="alert">
+          {{ error }}
+        </p>
+        <button
+          type="button"
+          @click="load"
+        >
+          重新加载
+        </button>
+      </div>
       <template v-else-if="detail">
         <!-- 状态信息 -->
         <div
@@ -362,6 +383,12 @@ onUnmounted(() => { stopped = true; stop() })
           </p>
         </div>
 
+        <p
+          v-if="accountOnly && detail.key === 'qq_mail' && !detail.enabled"
+          class="connector-dialog__section"
+        >
+          当前工作空间未开放 QQ 邮箱，请联系空间管理员。
+        </p>
         <PersonalConnectorAccount
           v-if="detail.personal_account && !adminMode"
           :key="store.scope + detail.key"
@@ -380,7 +407,7 @@ onUnmounted(() => { stopped = true; stop() })
             class="connector-dialog__btn connector-dialog__btn--primary"
             :to="{ path: '/chat', query: { plugin: 'qq_mail' } }"
           >
-            去问答 ↗
+            去问答查会议通知 ↗
           </RouterLink>
         </footer>
         <YangJiBaoHoldings
